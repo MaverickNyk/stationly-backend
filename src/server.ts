@@ -5,7 +5,6 @@ import morgan from 'morgan';
 import path from 'path';
 import * as dotenv from 'dotenv';
 import apiRoutes from './routes/apiRoutes';
-import { LiveUpdateService } from './services/liveUpdateService';
 
 dotenv.config();
 
@@ -28,12 +27,9 @@ app.get('/', (req, res) => {
 
 app.use('/api/v1', apiRoutes);
 
-// Start Server & Background Services
+// Start Server
 app.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
-    
-    // Start background FCM engine for live board simulation
-    LiveUpdateService.start();
 });
