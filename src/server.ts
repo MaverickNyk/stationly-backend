@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import * as dotenv from 'dotenv';
 import apiRoutes from './routes/apiRoutes';
+import { LiveUpdateService } from './services/liveUpdateService';
 
 dotenv.config();
 
@@ -15,6 +16,7 @@ app.use(cors());
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json());
+app.use('/icons', express.static('public/icons'));
 
 // Routes
 app.get('/', (req, res) => {
@@ -23,9 +25,12 @@ app.get('/', (req, res) => {
 
 app.use('/api/v1', apiRoutes);
 
-// Start Server
+// Start Server & Background Services
 app.listen(port, () => {
     console.log(`--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
+    
+    // Start background FCM engine for live board simulation
+    LiveUpdateService.start();
 });

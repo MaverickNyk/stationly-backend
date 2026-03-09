@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { formatModeLabel, getIconUrl, formatDestination } from '../utils/formatters';
 
 export class TflService {
     private static baseUrl = 'https://api.stationly.co.uk/StationlyBE/api/v1';
@@ -8,10 +9,11 @@ export class TflService {
             const response = await axios.get(`${this.baseUrl}/modes`);
             return response.data.map((mode: any) => ({
                 id: mode.modeName,
-                label: mode.modeName.charAt(0).toUpperCase() + mode.modeName.slice(1)
+                label: formatModeLabel(mode.modeName),
+                iconUrl: getIconUrl(mode.modeName)
             }));
         } catch (e) {
-            return [{ id: "tube", label: "Underground" }];
+            return [{ id: "tube", label: "Underground", iconUrl: getIconUrl("tube") }];
         }
     }
 
@@ -34,12 +36,7 @@ export class TflService {
                 const dirName = dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1);
                 let label = `${dirName} towards`;
                 if (dir.destinations && dir.destinations.length > 0) {
-                    const destNames = dir.destinations.map((d: any) =>
-                        d.name.replace(" Underground Station", "")
-                            .replace(" DLR Station", "")
-                            .replace(" Rail Station", "")
-                            .trim()
-                    ).join('\n');
+                    const destNames = dir.destinations.map((d: any) => formatDestination(d.name)).join('\n');
                     label = `${dirName} towards\n${destNames}`;
                 }
                 return {

@@ -15,6 +15,7 @@ export interface SduiComponent {
 
 export interface SduiLayout {
     id: string;
+    version?: string;
     title: string;
     theme: {
         primaryColor: string;
@@ -286,6 +287,7 @@ export class SduiService {
     static getSelectionLayout(): SduiLayout {
         return {
             id: "station_selection_screen",
+            version: "1.2",
             title: "Stationly Setup",
             theme: {
                 primaryColor: "#FFB81C",
