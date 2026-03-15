@@ -161,6 +161,46 @@ Stationly provides a high-performance middleware for transport data, specializin
                         template: { type: 'string', example: 'selection_flow' },
                         data: { type: 'object' }
                     }
+                },
+                PredictionItem: {
+                    type: 'object',
+                    properties: {
+                        destId: { type: 'string', example: '940GZZLUEDM' },
+                        platform: { type: 'string', example: 'Platform 1' },
+                        eta: { type: 'string', format: 'date-time' },
+                        displayName: { type: 'string', example: 'Upminster' }
+                    }
+                },
+                LinePredictions: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string', example: 'district' },
+                        name: { type: 'string', example: 'District' },
+                        dirs: {
+                            type: 'object',
+                            additionalProperties: {
+                                type: 'object',
+                                properties: {
+                                    preds: {
+                                        type: 'array',
+                                        items: { $ref: '#/components/schemas/PredictionItem' }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                StationPredictionResponse: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string', example: '940GZZLUBKG' },
+                        name: { type: 'string', example: 'Barking Underground Station' },
+                        lut: { type: 'string', format: 'date-time' },
+                        lines: {
+                            type: 'object',
+                            additionalProperties: { $ref: '#/components/schemas/LinePredictions' }
+                        }
+                    }
                 }
             }
         },

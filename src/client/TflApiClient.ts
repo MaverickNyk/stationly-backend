@@ -68,4 +68,18 @@ export class TflApiClient {
         const response = await tflClient.get(`/Line/Mode/${mode}/Status`);
         return response.data;
     }
+
+    /**
+     * Get Real-time Arrivals for a Station
+     */
+    static async getArrivalsForStation(naptanId: string): Promise<any[]> {
+        try {
+            const response = await tflClient.get(`/StopPoint/${naptanId}/Arrivals`);
+            return response.data || [];
+        } catch (error: any) {
+            // Log warning but return empty list - avoids 500ing on invalid IDs
+            console.warn(`[TflApi] Failed to fetch arrivals for ${naptanId}: ${error.message}`);
+            return [];
+        }
+    }
 }

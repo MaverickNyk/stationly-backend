@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { TflApiClient } from '../client/TflApiClient';
 import { formatDestination } from '../utils/formatters';
-import { LineInfo, LineRouteResponse, LineStatusResponse } from '../models';
+import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '../models';
 
 import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
 
@@ -144,12 +144,12 @@ export class LineController {
                                 }) as any);
                             }
                         });
-
+                        
                         const directions = Object.keys(groupedDirections).map(dirKey => ({
                             direction: dirKey,
                             destinations: Array.from(groupedDirections[dirKey]).map(s => JSON.parse(s as any))
                         }));
-
+                        
                         routeData = {
                             id: rawRoute.id,
                             name: rawRoute.name,
@@ -219,26 +219,60 @@ export class LineController {
     static async getLineStatuses(req: Request, res: Response) {
         try {
             const { lineId, mode } = req.query;
-            let query: any = db.collection('lineStatuses');
+            const modeStr = mode as string || 'tube'; // Default to tube if no mode provided
             
-            if (mode) {
-                query = query.where('mode', '==', mode);
-            }
-            if (lineId) {
-                query = query.where('id', '==', lineId);
-            }
+            // Check cache freshness (using a sample doc if filtering by mode)
+            const collectionRef = db.collection('lineStatuses');
+            let cacheCheckQuery: any = collectionRef;
+            if (modeStr) cacheCheckQuery = cacheCheckQuery.where('mode', '==', modeStr);
             
-            const snapshot = await query.get();
-            const statuses: any[] = [];
-            snapshot.forEach((doc: any) => {
-                const data = doc.data();
+            const snapshot = await cacheCheckQuery.limit(1).get();
+            let needsRefresh = snapshot.empty;
+            
+            if (!snapshot.empty) {
+                const latestDoc = snapshot.docs[0].data();
+                const lastUpdated = new Date(latestDoc.lastUpdatedTime).getTime();
+                if (Date.now() - lastUpdated > 30000) {
+                    needsRefresh = true;
+                }
+            }
+
+            if (needsRefresh) {
+                console.log(`STATUS: ⚪ Cache MISS/OLD for ${modeStr} statuses. Fetching from TfL...`);
+                const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
                 
-                // Emulate Java logic for UI presentation
-                data.reason = assignGoodServiceReason(data.statusSeverityDescription, data.reason);
+                const batch = db.batch();
+                const nowIso = new Date().toISOString();
                 
-                statuses.push(data);
-            });
-            return res.json(statuses);
+                rawStatuses.forEach(ls => {
+                    const status: LineStatusResponse = {
+                        id: ls.id,
+                        name: ls.name,
+                        statusSeverityDescription: ls.lineStatuses[0]?.statusSeverityDescription || "Unknown",
+                        reason: assignGoodServiceReason(
+                            ls.lineStatuses[0]?.statusSeverityDescription, 
+                            ls.lineStatuses[0]?.reason
+                        ),
+                        mode: ls.modeName,
+                        lastUpdatedTime: nowIso
+                    };
+                    const docRef = collectionRef.doc(ls.id);
+                    batch.set(docRef, status);
+                });
+                
+                await batch.commit();
+                console.log(`STATUS: ✅ Saved fresh ${modeStr} statuses to Firestore`);
+            }
+
+            // Final query after potential refresh
+            let query: any = collectionRef;
+            if (mode) query = query.where('mode', '==', mode);
+            if (lineId) query = query.where('id', '==', lineId);
+            
+            const finalSnapshot = await query.get();
+            const results = finalSnapshot.docs.map((d: any) => d.data());
+            
+            return res.json(results);
         } catch (error) {
             console.error("Error fetching line statuses:", error);
             return res.status(500).json({ error: "Internal Server Error" });

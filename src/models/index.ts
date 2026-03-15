@@ -31,6 +31,30 @@ export interface LineRouteResponse {
     directions: DirectionInfo[];
 }
 
+export interface PredictionItem {
+    destId: string;
+    platform: string;
+    eta: string; // ISO-8601
+    displayName: string;
+}
+
+export interface DirectionPredictions {
+    preds: PredictionItem[];
+}
+
+export interface LinePredictions {
+    id: string;
+    name: string;
+    dirs: Record<string, DirectionPredictions>;
+}
+
+export interface StationPredictionResponse {
+    id: string;
+    name: string;
+    lut: string; // Last Updated Time (ISO-8601)
+    lines: Record<string, LinePredictions>;
+}
+
 export interface LineStatusResponse {
     id: string;
     name: string;

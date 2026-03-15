@@ -1,9 +1,119 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { TflApiClient } from '../client/TflApiClient';
-import { Station } from '../models';
+import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions, PredictionItem } from '../models';
+import { formatDestination } from '../utils/formatters';
 
 export class StationController {
+    /**
+     * @swagger
+     * /stations/predictions/{naptanId}:
+     *   get:
+     *     summary: Get Station Predictions
+     *     description: Retrieves real-time arrival predictions for a station. Returns cached results if updated within 30 seconds.
+     *     tags: [Stations]
+     *     parameters:
+     *       - in: path
+     *         name: naptanId
+     *         required: true
+     *         schema:
+     *           type: string
+     *     responses:
+     *       200:
+     *         description: Station predictions
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: '#/components/schemas/StationPredictionResponse'
+     */
+    static async getStationPredictions(req: Request, res: Response) {
+        try {
+            const naptanId = req.params.naptanId;
+            const docRef = db.collection('stationPredictions').doc(naptanId);
+            const doc = await docRef.get();
+
+            if (doc.exists) {
+                const data = doc.data() as StationPredictionResponse;
+                const lastUpdated = new Date(data.lut).getTime();
+                const now = Date.now();
+
+                if (now - lastUpdated < 30000) {
+                    console.log(`PRED: 🟢 Firestore HIT for predictions (naptanId: ${naptanId})`);
+                    return res.json(data);
+                }
+            }
+
+            console.log(`PRED: ⚪ Firestore MISS/OLD for predictions (naptanId: ${naptanId}). Fetching from TfL...`);
+            const rawArrivals = await TflApiClient.getArrivalsForStation(naptanId);
+            
+            if (!rawArrivals || rawArrivals.length === 0) {
+                console.log(`PRED: ⚠️ TfL returned zero results for ${naptanId}. Clearing any stale cache.`);
+                if (doc.exists) await docRef.delete();
+                
+                return res.status(404).json({ 
+                    error: "No active predictions available for this station at this time",
+                    id: naptanId 
+                });
+            }
+
+            const stationName = rawArrivals[0].stationName || "Unknown Station";
+            const predictionsMap: Record<string, LinePredictions> = {};
+
+            rawArrivals.forEach(arr => {
+                const lineId = arr.lineId;
+                const direction = arr.direction || (arr.platformName.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
+                const dirKey = direction.charAt(0).toUpperCase() + direction.slice(1).toLowerCase();
+
+                if (!predictionsMap[lineId]) {
+                    predictionsMap[lineId] = {
+                        id: lineId,
+                        name: arr.lineName,
+                        dirs: {}
+                    };
+                }
+
+                if (!predictionsMap[lineId].dirs[dirKey]) {
+                    predictionsMap[lineId].dirs[dirKey] = { preds: [] };
+                }
+
+                predictionsMap[lineId].dirs[dirKey].preds.push({
+                    destId: arr.destinationNaptanId,
+                    platform: arr.platformName,
+                    eta: arr.expectedArrival,
+                    displayName: formatDestination(arr.towards || arr.destinationName)
+                });
+            });
+
+            // Sort predictions by ETA
+            Object.values(predictionsMap).forEach(line => {
+                Object.values(line.dirs).forEach(dir => {
+                    dir.preds.sort((a, b) => new Date(a.eta).getTime() - new Date(b.eta).getTime());
+                });
+            });
+
+            const response: StationPredictionResponse = {
+                id: naptanId,
+                name: stationName,
+                lut: new Date().toISOString(),
+                lines: predictionsMap
+            };
+
+            // Async update firestore
+            setImmediate(async () => {
+                try {
+                    await docRef.set(response);
+                    console.log(`PRED: ✅ Saved fresh predictions for ${naptanId}`);
+                } catch (err) {
+                    console.error("Failed to save predictions to Firestore", err);
+                }
+            });
+
+            return res.json(response);
+        } catch (error) {
+            console.error(`Error fetching predictions for ${req.params.naptanId}:`, error);
+            return res.status(500).json({ error: "Internal Server Error" });
+        }
+    }
     /**
      * @swagger
      * /stations/line/{lineId}:
