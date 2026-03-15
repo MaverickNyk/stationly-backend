@@ -312,28 +312,28 @@ export class SduiService {
                     type: "dropdown",
                     id: "mode",
                     label: "1. Select Mode",
-                    dataSourceUrl: "/sdui/app/data/modes"
+                    dataSourceUrl: "/modes"
                 },
                 {
                     type: "dropdown",
                     id: "line",
                     label: "2. Select Line",
                     dependsOn: "mode",
-                    dataSourceUrl: "/sdui/app/data/lines?mode={mode}"
+                    dataSourceUrl: "/lines/mode/{mode}"
                 },
                 {
                     type: "dropdown",
                     id: "direction",
                     label: "3. Select Direction",
                     dependsOn: "line",
-                    dataSourceUrl: "/sdui/app/data/directions?line={line}"
+                    dataSourceUrl: "/lines/{line}/route"
                 },
                 {
                     type: "dropdown",
                     id: "station",
                     label: "4. Select Station",
                     dependsOn: "direction",
-                    dataSourceUrl: "/sdui/app/data/stations?line={line}&direction={direction}"
+                    dataSourceUrl: "/stations/search?searchKey={line}_{direction}"
                 },
                 {
                     type: "button",

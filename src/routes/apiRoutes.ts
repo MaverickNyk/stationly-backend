@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { SduiController } from '../controllers/sduiController';
 import { UserController } from '../controllers/userController';
+import { ModeController } from '../controllers/modeController';
+import { LineController } from '../controllers/lineController';
+import { StationController } from '../controllers/stationController';
 
 const router = Router();
 
@@ -11,10 +14,20 @@ router.get('/sdui/app/register', SduiController.getRegisterLayout);
 router.get('/sdui/app/forgot-password', SduiController.getForgotPasswordLayout);
 router.get('/sdui/app/profile/:uid', UserController.getSduiProfile);
 
-// --- SDUI Dropdown Data Routes ---
-router.get('/sdui/app/data/:type', SduiController.getDropdownData);
+// --- Mode Routes ---
+router.get('/modes', ModeController.getModes);
+
+// --- Line Routes ---
+router.get('/lines/mode/:mode', LineController.getLinesByMode);
+router.get('/lines/status', LineController.getLineStatuses);
+router.get('/lines/:lineId/route', LineController.getLineRoute);
+
+// --- Station Routes ---
+router.get('/stations/line/:lineId', StationController.getStationsByLine);
+router.get('/stations/search', StationController.searchStations);
 
 // --- User Profile & Station Sync Routes ---
+router.get('/user/sync/profile', UserController.getUserProfile);
 router.post('/user/sync/profile', UserController.syncProfile);
 router.post('/user/sync/stations', UserController.syncStations);
 router.post('/user/stations/add', UserController.addStation);

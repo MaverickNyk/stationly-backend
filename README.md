@@ -1,139 +1,109 @@
-# Stationly Unified Backend 🚀
+# Stationly Unified Backend 🚉
 
-The **Stationly Unified Backend** is a high-performance, TypeScript-powered API service designed to centralize user management, authentication synchronization, and a flexible Server-Driven UI (SDUI) engine for the Stationly ecosystem.
+The `stationly-backend` is the primary, high-performance API Gateway and User Management system for the Stationly mobile and web applications. It serves as the modern Node.js replacement for the public-facing components of the legacy Java `StationlyBE` monolith.
 
-## 🌟 Key Features
-
-- **Server-Driven UI (SDUI)**: Dynamically control mobile and web app layouts (Login, Profile, Station Selection) from the backend without waiting for app store updates.
-- **User Profile Sync**: seamlessly synchronize user information and preferences between Firebase Auth and Firestore.
-- **Station Management**: Manage user-specific station subscriptions with real-time Firestore persistence.
-- **TfL Integration Proxy**: dynamic fetching of London Underground modes, lines, directions, and stations via a proxied TfL service.
-- **Security First**: Implements `helmet` for security headers, `cors` for cross-origin management, and `morgan` for detailed request logging.
+The backend leverages a Server-Driven UI (SDUI) architecture, robust caching via Firestore, and acts as a transparent proxy to the Transport for London (TfL) API, ensuring maximum speed while respecting rate limits.
 
 ---
 
-## 🛠️ Technology Stack
+## 🏗️ Architecture
 
-| Technology | Purpose |
-| :--- | :--- |
-| **TypeScript** | Type-safe development and modern JS features |
-| **Express.js** | Fast, unopinionated web framework for Node.js |
-| **Firestore** | Scalable NoSQL database for user profiles and subscriptions |
-| **Firebase Admin** | Secure server-side interaction with Firebase services |
-| **Axios** | HTTP client for external TfL data fetching |
-| **Nodemon** | Hot-reloading development server |
+The Stationly ecosystem is split into a **Two-Tier Backend Architecture**:
+
+1.  **StationlyBE (Java)**: The **Pure Syncer**. Runs purely in the background on the OCI server. It polls TfL data periodically and synchronizes it directly to Firebase/Firestore. It pushes real-time arrival predictions via FCM. It exposes *no public endpoints*.
+2.  **stationly-backend (Node.js)**: The **Public API Gateway** (This project). It handles all incoming traffic from the iOS/Android and Web Apps. It serves user profile operations, reads live station info from Firestore, caches heavy TfL Route Data, handles authentication state, and provides the SDUI layouts that build the mobile apps out of thin air.
 
 ---
 
-## 📁 Project Structure
+## 🚀 Key Features
 
-```text
-stationly-backend/
-├── src/
-│   ├── config/             # Configuration files (Firebase, environment)
-│   ├── controllers/        # Request handlers (SDUI, User)
-│   ├── middleware/         # Express middlewares
-│   ├── models/             # Data models and interfaces
-│   ├── routes/             # API route definitions
-│   ├── services/           # Business logic (Firestore, TfL, SDUI)
-│   └── server.ts           # Application entry point
-├── dist/                   # Compiled JavaScript output
-├── tsconfig.json           # TypeScript configuration
-└── package.json            # Dependencies and scripts
+*   **Server-Driven UI (SDUI)**: Delivers dynamic JSON payloads to render the Login, Registration, Password Reset, Profile, and multi-step Station Selection screens natively on mobile apps.
+*   **Firestore & TfL Hybrid Retrieval**: Fast data retrieval. It queries Firestore first (populated by the Java worker). On cache miss (e.g. searching for a station), it flawlessly falls back to the TfL API, serves the client, and asynchronously patches the database.
+*   **TfL Rate-Limiter**: Implements a strict 300 requests/minute (210ms throttle) to prevent bans, mirroring the robust logic of the old Java system.
+*   **User Management**: Syncs users, subscriptions, and layout preferences with Firebase Authentication.
+*   **Modern Documentation**: Automatically generates rich OpenAPI documentation served on an elegant Scalar UI interface.
+
+---
+
+## 🛠️ Tech Stack
+
+*   **Runtime**: Node.js (TypeScript)
+*   **Framework**: Express.js
+*   **Database**: Google Cloud Firestore / Firebase Admin SDK
+*   **API Gateway**: Axios (with custom rate-limiting interceptors)
+*   **Documentation**: Swagger-JSDoc + Scalar UI
+*   **Security**: Helmet, CORS
+
+---
+
+## 💻 Local Setup
+
+1.  **Clone the Repository**
+2.  **Install Dependencies**: `npm install`
+3.  **Environment Variables**: Create a `.env` file in the root based on `.env.example`:
+    ```env
+    PORT=3000
+    TFL_APP_KEY=your_tfl_app_key_here
+    TFL_API_TIMEOUT=30000
+    FIREBASE_SERVICE_ACCOUNT_PATH=./path/to/firebase-credentials.json
+    FIREBASE_DATABASE_URL=https://your-project.firebaseio.com
+    ```
+4.  **Run Development Server**: `npm run dev`
+5.  **View API Docs**: Navigate to `http://localhost:3000/docs`
+
+---
+
+## 📍 API Overview
+
+Interactive documentation is available at **`/docs`** once the server is running. Key routes include:
+
+*   **SDUI Layouts**: `/api/v1/sdui/app/*` (Layouts for Login, Profile, etc.)
+*   **Transport Modes**: `/api/v1/modes`
+*   **Lines & Routes**: `/api/v1/lines/mode/:mode`, `/api/v1/lines/:lineId/route`
+*   **Stations**: `/api/v1/stations/search`, `/api/v1/stations/line/:lineId`
+*   **Users**: `/api/v1/user/sync/*`
+
+---
+
+## ☁️ Deployment Strategy (Oracle Cloud)
+
+The application will be deployed to the same Oracle Cloud instance as the Java Syncer, managed by PM2, and reverse-proxied by NGINX.
+
+### 1. NGINX Configuration Update
+The current NGINX setup routes all traffic on `api.stationly.co.uk` to the Java backend at port 8080.
+**Goal**: Point NGINX root `/` and `/api/v1` to the new Node.js backend port (e.g., `3000`), while keeping the background java worker completely internal.
+
+```nginx
+# Location: /etc/nginx/sites-available/api.stationly.co.uk
+server {
+    server_name api.stationly.co.uk;
+    listen 443 ssl; 
+
+    # Redirect root directly to the new Scalar docs
+    location = / {
+        return 301 https://api.stationly.co.uk/docs;
+    }
+
+    # Proxy all API requests to the Node.js Backend on port 3000
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
 
----
+### 2. Node.js Deployment Script
+A bash script (`.scripts/deploy.sh`) will be used to automate pushing the code to the Oracle server, updating NPM packages, building the TypeScript project, and restarting PM2.
 
-## 🚀 Getting Started
+**Deployment Steps via `deploy.sh`**:
+1. Run `npm run build` locally to ensure code compiles.
+2. `rsync` or `scp` the `package.json`, `package-lock.json`, `tsconfig.json`, `src/`, and `public/` directories to the server (excluding `node_modules`).
+3. SSH into the server to run:
+   * `npm ci` (clean install production dependencies).
+   * `npm run build` (generate `dist` folder).
+   * `pm2 restart stationly-backend` (seamless restart).
 
-### Prerequisites
-
-- **Node.js**: v16+ recommended
-- **Firebase Project**: A Firebase service account key (`serviceAccountKey.json`)
-- **Environment Variables**: A `.env` file in the root directory
-
-### Setup Instructions
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd stationly-backend
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Environment Setup**:
-   Create a `.env` file and add the following:
-   ```env
-   PORT=3000
-   FIREBASE_PROJECT_ID=your-project-id
-   FIREBASE_KEY_PATH=./path/to/serviceAccountKey.json
-   ```
-
-4. **Run in Development**:
-   ```bash
-   npm run dev
-   ```
-
-5. **Build for Production**:
-   ```bash
-   npm run build
-   npm start
-   ```
-
----
-
-## 📡 API Documentation (v1)
-
-Base URL: `http://localhost:3000/api/v1`
-
-### 🎨 Server-Driven UI (SDUI)
-
-| Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/sdui/app/layout` | `GET` | Fetches the Dynamic Station Selection layout |
-| `/sdui/app/login` | `GET` | Fetches the Login Screen layout |
-| `/sdui/app/profile/:uid` | `GET` | Fetches the Profile Screen layout for a specific user |
-| `/sdui/app/data/:type` | `GET` | Fetches dynamic dropdown data (modes, lines, etc.) |
-
-### 👤 User & Station Sync
-
-| Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/user/sync/profile` | `POST` | Syncs user auth details to the database |
-| `/user/sync/stations` | `POST` | Bulk syncs local subscriptions to the cloud |
-| `/user/stations/add` | `POST` | Subscribes a user to a new station |
-| `/user/stations/delete`| `POST` | Unsubscribes a user from a station |
-
----
-
-## 🧩 Architecture Overview
-
-For a detailed deep dive into the SDUI patterns, Firestore data models, and TfL integration, please see the [Architecture Documentation](./ARCHITECTURE.md).
-
-### 1. SDUI Engine
-The `SduiService` serves "Blueprints". Each blueprint is a JSON object containing components (inputs, buttons, text, dropdowns) with defined actions and themes. The frontend renders these components natively.
-
-### 2. User Service
-The `UserService` manages Firestore documents. It handles the "Create or Update" logic for users and manages an array of `SubscribedStation` objects within the user's document.
-
-### 3. TfL Proxy
-The `TflService` uses `axios` to fetch live data from external services, transforming them into simplified labels and IDs used by the SDUI dropdowns.
-
----
-
-## 🤝 Contributing
-
-1. Fork the project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📄 License
-This project is private and intended for use within the Stationly ecosystem.
+This architecture ensures a zero-downtime, fully automated deployment pipeline for the new Node.js gateway.
