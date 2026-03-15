@@ -15,11 +15,21 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+.env.*.local
 
 # Firebase keys / Sensitive data
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!openapi.json
 serviceAccountKey.json
 test-key.json
 *.pem
+*.key
+*.pub
+auth_key*
+firebase-*.json
 
 # Editor folders
 .vscode/
