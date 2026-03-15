@@ -48,7 +48,11 @@ export function formatDestination(name?: string): string {
 /**
  * Returns the fully qualified icon URL for a mode
  */
-export function getIconUrl(modeName?: string, baseUrl: string = "http://localhost:3000"): string | null {
+export function getIconUrl(modeName?: string): string | null {
     const path = getIconPath(modeName);
-    return path ? `${baseUrl}${path}` : null;
+    if (!path) return null;
+    
+    // Use environment variable for base URL if available, else default to production domain
+    const baseUrl = process.env.APP_BASE_URL || "https://api.stationly.co.uk";
+    return `${baseUrl}${path}`;
 }
