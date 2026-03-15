@@ -1,4 +1,5 @@
 import { db } from '../config/firebase';
+import { SubscriptionService } from './subscriptionService';
 
 export interface UserProfile {
     uid: string;
@@ -55,7 +56,7 @@ export class UserService {
             const cleanedData = Object.fromEntries(
                 Object.entries(data).filter(([_, v]) => v !== undefined)
             );
-            
+
             const updateData = {
                 ...cleanedData,
                 updatedAt: timestamp,
@@ -63,12 +64,12 @@ export class UserService {
                 lastLoggedInTime: timestamp
             };
             await userRef.update(updateData);
-            
+
             const existingData = snapshot.data();
-            return { 
+            return {
                 stations: [], // Default fallback
-                ...existingData, 
-                ...updateData 
+                ...existingData,
+                ...updateData
             } as unknown as UserProfile;
         }
     }
@@ -83,11 +84,27 @@ export class UserService {
 
     static async syncStations(uid: string, stations: SubscribedStation[]) {
         const userRef = this.collection.doc(uid);
-        const timestamp = new Date().toISOString();
+        const snapshot = await userRef.get();
+        const oldStations = snapshot.exists ? (snapshot.data()?.stations || []) : [];
+        
         await userRef.update({
             stations,
-            updatedAt: timestamp
+            updatedAt: new Date().toISOString()
         });
+
+        // Delegate to SubscriptionService
+        setImmediate(async () => {
+            const oldIds = oldStations.map((s: any) => s.id as string);
+            const newIds = stations.map(s => s.id);
+
+            for (const id of oldIds.filter((id: string) => !newIds.includes(id))) {
+                await SubscriptionService.decrementSubscription(id);
+            }
+            for (const id of newIds.filter((id: string) => !oldIds.includes(id))) {
+                await SubscriptionService.incrementSubscription(id);
+            }
+        });
+
         return { success: true, count: stations.length };
     }
 
@@ -97,16 +114,21 @@ export class UserService {
         if (!snapshot.exists) throw new Error('User not found');
 
         const userData = snapshot.data() as UserProfile;
+        const oldStations = userData.stations || [];
 
         // As requested by user: For now we are only allowing user to have one board 
-        // so when a user updates the board you need to delete the last board from the array 
-        // and update it with the new board.
         const updatedStations = [station];
 
         await userRef.update({
             stations: updatedStations,
             updatedAt: new Date().toISOString()
         });
+
+        setImmediate(async () => {
+            for (const s of oldStations) await SubscriptionService.decrementSubscription(s.id);
+            await SubscriptionService.incrementSubscription(station.id);
+        });
+
         return { ...userData, stations: updatedStations };
     }
 
@@ -117,10 +139,16 @@ export class UserService {
 
         const userData = snapshot.data() as UserProfile;
         const updatedStations = userData.stations.filter(s => !(s.id === stationId && s.line === lineId));
+        
         await userRef.update({
             stations: updatedStations,
             updatedAt: new Date().toISOString()
         });
+
+        setImmediate(async () => {
+            await SubscriptionService.decrementSubscription(stationId);
+        });
+
         return { ...userData, stations: updatedStations };
     }
 

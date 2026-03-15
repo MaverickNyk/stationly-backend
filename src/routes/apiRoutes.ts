@@ -26,6 +26,7 @@ router.get('/lines/:lineId/route', LineController.getLineRoute);
 router.get('/stations/line/:lineId', StationController.getStationsByLine);
 router.get('/stations/search', StationController.searchStations);
 router.get('/stations/predictions/:naptanId', StationController.getStationPredictions);
+router.get('/stations/subscribed-ids', StationController.getSubscribedStationIds);
 
 // --- User Profile & Station Sync Routes ---
 router.get('/user/sync/profile', UserController.getUserProfile);
