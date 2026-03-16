@@ -3,7 +3,7 @@ import { db } from '../config/firebase';
 import { TflApiClient } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions, PredictionItem } from '../models';
-import { formatDestination } from '../utils/formatters';
+import { formatDestination, formatPlatform } from '../utils/formatters';
 
 export class StationController {
     /**
@@ -104,7 +104,7 @@ export class StationController {
 
                 predictionsMap[lineId].dirs[dirKey].preds.push({
                     destId: arr.destinationNaptanId,
-                    platform: arr.platformName,
+                    platform: formatPlatform(arr.modeName, arr.platformName),
                     eta: arr.expectedArrival,
                     displayName: formatDestination(arr.towards || arr.destinationName)
                 });

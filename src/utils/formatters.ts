@@ -46,6 +46,49 @@ export function formatDestination(name?: string): string {
 }
 
 /**
+ * Format TfL platform string to a clean, displayable UI text.
+ * Prevents "Unknown", "Stop Stop S", or "Platform Platform 1".
+ */
+export function formatPlatform(mode: string | undefined, platform: string | undefined): string {
+    const isBus = mode?.toLowerCase() === 'bus';
+
+    if (!platform || platform.toLowerCase() === 'null' || platform.trim() === '' || platform.toLowerCase() === 'unknown') {
+        return isBus ? "Stop not assigned" : "Platform not assigned";
+    }
+
+    let p = platform.trim();
+
+    if (isBus) {
+        if (p.toLowerCase().startsWith('stop ')) {
+            p = p.substring(5).trim();
+        }
+        return `Stop ${p.toUpperCase()}`;
+    }
+
+    if (p.includes(' - ')) {
+        const parts = p.split(' - ');
+        if (parts.length >= 2) {
+            const desc = parts[0].trim();
+            let plat = parts[1].trim();
+            if (!plat.toLowerCase().startsWith('platform')) {
+                plat = `Platform ${plat}`;
+            }
+            return `${plat} (${desc})`;
+        }
+    }
+
+    if (/^\d+$/.test(p)) {
+        return `Platform ${p}`;
+    }
+
+    if (/^plat \d+$/i.test(p)) {
+        return p.replace(/^plat /i, 'Platform ');
+    }
+
+    return p;
+}
+
+/**
  * Returns the fully qualified icon URL for a mode
  */
 export function getIconUrl(modeName?: string): string | null {
