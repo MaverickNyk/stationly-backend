@@ -7,6 +7,7 @@ import * as dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import apiRoutes from './routes/apiRoutes';
 import { SubscriptionService } from './services/subscriptionService';
+import { AuthMiddleware } from './middleware/authMiddleware';
 
 dotenv.config();
 
@@ -63,10 +64,17 @@ Stationly provides a high-performance middleware for transport data, specializin
         ],
         components: {
             securitySchemes: {
-                bearerAuth: {
+                StationlyKey: {
+                    type: 'apiKey',
+                    in: 'header',
+                    name: 'X-Stationly-Key',
+                    description: 'Your Stationly Developer API Key'
+                },
+                FirebaseToken: {
                     type: 'http',
                     scheme: 'bearer',
                     bearerFormat: 'JWT',
+                    description: 'Firebase ID Token for user-specific data access'
                 }
             },
             schemas: {
@@ -212,6 +220,9 @@ Stationly provides a high-performance middleware for transport data, specializin
             { name: 'Users', description: 'Synchronization of user profiles and personalized station subscriptions.' },
             { name: 'SDUI', description: 'Server-Driven UI layout definitions for dynamic mobile application screens.' },
             { name: 'Auth', description: 'Layout endpoints for authentication flows (Login, Register, Password Reset).' }
+        ],
+        security: [
+            { StationlyKey: [] }
         ]
     },
     apis: [
@@ -252,6 +263,7 @@ app.use('/api/v1', apiRoutes);
 app.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     SubscriptionService.initializeListener();
+    AuthMiddleware.initializeKeyRegistryListener();
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
     console.log(`Docs: http://localhost:${port}/docs`);
