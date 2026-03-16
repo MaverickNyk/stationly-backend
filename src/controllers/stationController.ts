@@ -1,10 +1,36 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { TflApiClient } from '../client/TflApiClient';
+import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions, PredictionItem } from '../models';
 import { formatDestination } from '../utils/formatters';
 
 export class StationController {
+    /**
+     * @swagger
+     * /stations/subscribed-ids:
+     *   get:
+     *     summary: Get Subscribed Station IDs
+     *     description: Returns a list of all Naptan IDs that have at least one active user subscription. Respond with zero Firestore reads using in-memory cache.
+     *     tags: [Stations]
+     *     responses:
+     *       200:
+     *         description: List of subscribed Naptan IDs
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: array
+     *               items:
+     *                 type: string
+     */
+    static getSubscribedStationIds(req: Request, res: Response) {
+        if (!SubscriptionService.getIsReady()) {
+            console.log("PRED: ⚠️ Subscription registry not yet ready, serving empty list.");
+            return res.json([]);
+        }
+        return res.json(SubscriptionService.getSubscribedStationIds());
+    }
+
     /**
      * @swagger
      * /stations/predictions/{naptanId}:
