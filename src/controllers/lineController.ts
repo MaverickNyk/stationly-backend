@@ -5,6 +5,7 @@ import { formatDestination } from '../utils/formatters';
 import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '../models';
 
 import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
+import { DataCacheService } from '../services/dataCacheService';
 
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
@@ -41,42 +42,52 @@ export class LineController {
     static async getLinesByMode(req: Request, res: Response) {
         try {
             const mode = req.params.mode;
-            const snapshot = await db.collection('lines').where('modeName', '==', mode).get();
-            let lines: (LineInfo & { label?: string })[] = [];
+            const station = req.query.station as string;
             
-            snapshot.forEach(doc => {
-                lines.push(doc.data() as any);
-            });
-
-            // Cache Miss: Fallback to TfL API
-            if (lines.length === 0) {
-                console.log(`DATA: ⚪ Firestore MISS for lines (mode: ${mode}). Fetching from TfL...`);
-                const rawLines = await TflApiClient.getLinesByMode(mode);
+            // --- NEW: Filter by specific Station if provided (Discovery Mode) ---
+            if (station && !station.includes('{station}')) {
+                console.log(`DATA: 🔍 Filtering lines for station ${station} (Discovery Mode) using Cache`);
+                const stationData = DataCacheService.getAllStations().find(s => s.naptanId === station || s.id === station);
                 
+                if (stationData && stationData.modes && stationData.modes[mode]) {
+                    const lineIdsAtStation = Object.keys(stationData.modes[mode].lines);
+                    const allLines = DataCacheService.getLinesByMode(mode);
+                    const filteredLines = allLines.filter(l => lineIdsAtStation.includes(l.id))
+                        .map(l => ({ ...l, label: l.name }));
+                    
+                    if (filteredLines.length > 0) {
+                        return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
+                    }
+                }
+                console.warn(`DATA: ⚠️ No cached lines found for station ${station} matching mode ${mode}.`);
+            }
+
+            // Standard Path: Get all lines for mode from cache
+            const cachedLines = DataCacheService.getLinesByMode(mode);
+            if (cachedLines.length > 0) {
+                const sduiLines = cachedLines.map(l => ({
+                    ...l,
+                    label: l.name || l.label
+                }));
+                return res.json(sduiLines.sort((a, b) => a.label.localeCompare(b.label)));
+            }
+
+            // Deep Fallback: Firestore
+            const snapshot = await db.collection('lines').where('modeName', '==', mode).get();
+            let lines: any[] = [];
+            snapshot.forEach(doc => lines.push({ id: doc.id, ...doc.data() as any }));
+
+            if (lines.length === 0) {
+                const rawLines = await TflApiClient.getLinesByMode(mode);
                 lines = rawLines.map(l => ({
                     id: l.id,
                     name: l.name,
                     modeName: l.modeName,
-                    label: l.name // SDUI mapping
-                }));
-
-                const batch = db.batch();
-                lines.forEach(line => {
-                    const docRef = db.collection('lines').doc(line.id);
-                    batch.set(docRef, line);
-                });
-                await batch.commit();
-                console.log("DATA: ✅ Fallback lines saved to Firestore");
-            } else {
-                console.log(`DATA: 🟢 Firestore HIT for lines (mode: ${mode})`);
-                lines = lines.map(l => ({
-                    ...l,
-                    label: l.label || l.name,
+                    label: l.name
                 }));
             }
-
-            lines.sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name));
-            return res.json(lines);
+            
+            return res.json(lines.sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name)));
         } catch (error) {
             console.error(`Error fetching lines for mode ${req.params.mode}:`, error);
             return res.status(500).json([{ id: "piccadilly", label: "Piccadilly", name: "Piccadilly" }]);
@@ -94,7 +105,7 @@ export class LineController {
      *       - in: path
      *         name: lineId
      *         required: true
-     *         schema:
+         *         schema:
      *           type: string
      *     responses:
      *       200:
@@ -114,62 +125,32 @@ export class LineController {
     static async getLineRoute(req: Request, res: Response) {
         try {
             const lineId = req.params.lineId;
-            const doc = await db.collection('routes').doc(lineId).get();
-            let routeData: LineRouteResponse | null = null;
-
-            if (doc.exists) {
-                console.log(`DATA: 🟢 Firestore HIT for route (lineId: ${lineId})`);
-                routeData = doc.data() as LineRouteResponse;
+            
+            // 1. Try Memory Cache first (SQLite populated)
+            let routeData = DataCacheService.getRoute(lineId);
+            
+            if (routeData) {
+                console.log(`DATA: 🔵 Cache HIT for route (lineId: ${lineId})`);
             } else {
-                console.log(`DATA: ⚪ Firestore MISS for route (lineId: ${lineId}). Fetching from TfL...`);
+                console.log(`DATA: ⚪ Cache MISS for route (lineId: ${lineId}). Checking Firestore...`);
+                // 2. Try Firestore if not in local cache (only if quota allows)
                 try {
-                    const rawRoute = await TflApiClient.getLineRoute(lineId);
-                    
-                    if (rawRoute && rawRoute.routeSections) {
-                        const groupedDirections: { [key: string]: Set<{id: string, name: string}> } = {};
-                        
-                        rawRoute.routeSections.forEach((section: any) => {
-                            const direction = section.direction;
-                            const destinationName = section.destinationName;
-                            const destinationId = section.destination;
-                            
-                            if (direction && destinationName && destinationId) {
-                                if (!groupedDirections[direction]) {
-                                    groupedDirections[direction] = new Set();
-                                }
-                                
-                                groupedDirections[direction].add(JSON.stringify({
-                                    id: destinationId,
-                                    name: destinationName
-                                }) as any);
-                            }
-                        });
-                        
-                        const directions = Object.keys(groupedDirections).map(dirKey => ({
-                            direction: dirKey,
-                            destinations: Array.from(groupedDirections[dirKey]).map(s => JSON.parse(s as any))
-                        }));
-                        
-                        routeData = {
-                            id: rawRoute.id,
-                            name: rawRoute.name,
-                            modeName: rawRoute.modeName,
-                            directions: directions
-                        };
-
-                        await db.collection('routes').doc(lineId).set(routeData);
-                        console.log("DATA: ✅ Fallback route saved to Firestore");
+                    const doc = await db.collection('routes').doc(lineId).get();
+                    if (doc.exists) {
+                        routeData = doc.data() as LineRouteResponse;
                     }
-                } catch (apiError) {
-                    console.error("TfL API Route Fallback failed", apiError);
+                } catch (fsErr) {
+                    console.warn(`DATA: ⚠️ Firestore Route lookup failed (likely quota).`);
                 }
             }
 
+            // Fallback: If still nothing, return basic directions
             if (!routeData) {
-                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
+                console.warn(`DATA: ⚠️ No route data for ${lineId}. Returning generic directions.`);
+                return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
-            // Map the routeData for SDUI so it receives a flat array of formatted directions natively
+            // Map the routeData for SDUI so it receives a flat array of formatted directions
             const sduiMappedDirections = (routeData.directions || []).map((dir: any) => {
                 const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
                 let label = `${dirName} towards`;

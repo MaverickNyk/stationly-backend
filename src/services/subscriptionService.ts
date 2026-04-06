@@ -1,4 +1,5 @@
 import { db } from '../config/firebase';
+import { LocalDbService } from '../services/localDbService';
 
 /**
  * SubscriptionService handles the global tracking of stations that users are subscribed to.
@@ -11,18 +12,48 @@ export class SubscriptionService {
 
     /**
      * Initializes a real-time listener for the subscribed stations document.
-     * This keeps an in-memory Set updated at zero additional read cost after initial load.
+     * Persisted to SQLite for zero-failure boot.
      */
-    static initializeListener() {
+    static async initializeListener() {
+        if (this.isReady) return;
+
         console.log("SUBSCRIPTION: 📡 Initializing Subscribed Stations listener...");
-        this.registryRef.onSnapshot((doc) => {
+
+        // 1. Load from SQLite first
+        try {
+            const registry = await LocalDbService.all<{ naptanId: string }>('SELECT naptanId FROM subscribed_stations');
+            this.subscribedIds = new Set(registry.map(r => r.naptanId));
+            console.log(`SUBSCRIPTION: 📁 Loaded ${this.subscribedIds.size} stations from SQLite.`);
+        } catch (err) {
+            console.error("SUBSCRIPTION: ❌ Failed to load from SQLite", err);
+        }
+
+        // 2. Setup Firestore listener
+        this.registryRef.onSnapshot(async (doc) => {
             if (doc.exists) {
                 const data = doc.data();
                 const counts = data?.stationCounts || {};
-                this.subscribedIds = new Set(Object.keys(counts));
+                const newIds = Object.keys(counts);
+                
+                this.subscribedIds = new Set(newIds);
+
+                // Update SQLite
+                for (const naptanId of newIds) {
+                    await LocalDbService.updateSubscribedStation(naptanId, counts[naptanId]);
+                }
+
+                // Cleanup stations that are no longer subscribed
+                const currentNaptans = await LocalDbService.all<{ naptanId: string }>('SELECT naptanId FROM subscribed_stations');
+                for (const row of currentNaptans) {
+                    if (!(row.naptanId in counts)) {
+                        await LocalDbService.updateSubscribedStation(row.naptanId, 0);
+                    }
+                }
+
                 console.log(`SUBSCRIPTION: 🔄 Sync complete. Subscribed stations: ${this.subscribedIds.size}`);
             } else {
                 this.subscribedIds = new Set();
+                await LocalDbService.run('DELETE FROM subscribed_stations');
                 console.log("SUBSCRIPTION: 🔄 Document missing, subscribed list cleared.");
             }
             this.isReady = true;

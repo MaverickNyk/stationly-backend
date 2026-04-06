@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { db, auth } from '../config/firebase';
+import { LocalDbService } from '../services/localDbService';
 
 /**
  * StationlyAuth Middleware
@@ -12,28 +13,58 @@ export class AuthMiddleware {
     /**
      * Real-time Key Registry Listener
      * Keeps a local RAM cache of active API keys in sync with Firestore.
-     * ZERO reads per request after initial sync.
+     * Persisted to SQLite for zero-failure boot.
      */
-    static initializeKeyRegistryListener() {
+    static async initializeKeyRegistryListener() {
         if (this.isInitialized) return;
 
         console.log("AUTH: 🔄 Initializing real-time API Key registry...");
+
+        // 1. Load from SQLite first
+        try {
+            const savedKeys = await LocalDbService.all<any>('SELECT * FROM api_keys WHERE status = "active"');
+            savedKeys.forEach(data => {
+                this.keyCache.set(data.key, {
+                    id: data.clientId,
+                    tier: data.tier,
+                    name: data.clientName
+                });
+            });
+            console.log(`AUTH: 📁 Loaded ${this.keyCache.size} keys from SQLite.`);
+        } catch (err) {
+            console.error("AUTH: ❌ Failed to load from SQLite", err);
+        }
         
-        db.collection('api_keys').onSnapshot(snapshot => {
-            const newCache = new Map<string, any>();
-            
-            snapshot.forEach(doc => {
-                const data = doc.data();
-                if (data.status === 'active' && data.key) {
-                    newCache.set(data.key, {
-                        id: data.clientId || doc.id,
+        // 2. Setup Firestore listener
+        db.collection('api_keys').onSnapshot(async snapshot => {
+            snapshot.docChanges().forEach(async change => {
+                const data = change.doc.data();
+                const id = change.doc.id;
+                
+                if (change.type === 'removed' || (data.status !== 'active')) {
+                    if (data.key) {
+                        this.keyCache.delete(data.key);
+                        await LocalDbService.run('DELETE FROM api_keys WHERE key = ?', [data.key]);
+                    }
+                } else if (data.key && data.status === 'active') {
+                    const client = {
+                        clientId: data.clientId || id,
                         tier: data.tier || 'free',
-                        name: data.clientName || 'Unknown Client'
+                        clientName: data.clientName || 'Unknown Client',
+                        status: data.status
+                    };
+                    
+                    this.keyCache.set(data.key, {
+                        id: client.clientId,
+                        tier: client.tier,
+                        name: client.clientName
                     });
+
+                    // Persist to SQLite
+                    await LocalDbService.upsertApiKey(data.key, client);
                 }
             });
 
-            this.keyCache = newCache;
             this.isInitialized = true;
             console.log(`AUTH: ✅ Key registry updated. ${this.keyCache.size} active keys in RAM cache.`);
         }, err => {

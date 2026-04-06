@@ -32,6 +32,7 @@ router.get('/lines/status', LineController.getLineStatuses);
 router.get('/lines/:lineId/route', LineController.getLineRoute);
 router.get('/stations/line/:lineId', StationController.getStationsByLine);
 router.get('/stations/search', StationController.searchStations);
+router.get('/stations/nearby', StationController.searchStations);
 router.get('/stations/predictions/:naptanId', StationController.getStationPredictions);
 
 // --- DEVELOPER/INTERNAL ROUTES ---

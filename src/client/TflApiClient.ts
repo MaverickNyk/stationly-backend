@@ -82,4 +82,24 @@ export class TflApiClient {
             return [];
         }
     }
+
+    /**
+     * Get Nearby Stop Points (Stations and Bus Stops)
+     */
+    static async getNearbyStopPoints(lat: number, lon: number, radius: number): Promise<any[]> {
+        const stopTypes = 'NaptanMetroStation,NaptanRailStation,NaptanBusStop';
+        const response = await tflClient.get('/StopPoint', {
+            params: { lat, lon, radius, stopTypes, useStopPointHierarchy: true }
+        });
+        // TfL returns { stopPoints: [...] } for this endpoint
+        return response.data.stopPoints || [];
+    }
+
+    /**
+     * Get Detailed Stop Point Info
+     */
+    static async getStopPoint(naptanId: string): Promise<any> {
+        const response = await tflClient.get(`/StopPoint/${naptanId}`);
+        return response.data;
+    }
 }

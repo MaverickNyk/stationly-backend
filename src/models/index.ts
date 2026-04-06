@@ -87,4 +87,9 @@ export interface Station {
     lastUpdatedTime?: string;
     modes: Record<string, StationModeGroup>;
     searchKeys: string[];
+    // SDUI & Search Extras
+    id?: string;
+    label?: string;
+    isMajor?: boolean;
+    distance?: number;
 }

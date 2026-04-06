@@ -47,3 +47,6 @@ firebase-*.json
 Thumbs.db
 ehthumbs.db
 desktop.ini
+/data
+*.sqlite
+*.sqlite-journal
