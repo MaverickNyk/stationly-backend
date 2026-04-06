@@ -287,17 +287,17 @@ export class SduiService {
      */
     static getSelectionLayout(track: string = 'manual'): SduiLayout {
         const isDiscovery = track === 'discovery';
-        
+
         const commonHeader = [
             { type: "text", id: "welcome_header", text: "Design Your\nBoard", style: "title" },
             { type: "text", id: "welcome_subtitle", text: "Select a route to begin tracking live London signals on your home screen.", style: "subtitle" },
             { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
-            { 
-                 type: "flow_picker", id: "tracking_flow", label: "How should we locate it?", dependsOn: "mode",
-                 options: [
+            {
+                type: "flow_picker", id: "tracking_flow", label: "How should we locate it?", dependsOn: "mode",
+                options: [
                     { id: "discovery", label: "Near Me", icon: "gps_fixed", description: "Use GPS auto-detect" },
                     { id: "manual", label: "Search Network", icon: "search", description: "Browse all stations" }
-                 ] 
+                ]
             }
         ];
 
