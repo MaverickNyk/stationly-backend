@@ -11,6 +11,7 @@ export interface SduiComponent {
     color?: string; // hex code
     imageUrl?: string; // For image components
     textAlign?: string; // e.g. center
+    options?: any[]; // For FlowPicker/GridPicker
 }
 
 export interface SduiLayout {
@@ -282,65 +283,79 @@ export class SduiService {
     }
 
     /**
-     * Layout for the station selection flow (re-using previous logic)
+     * Layout for the station selection flow (Switchable based on track)
      */
-    static getSelectionLayout(): SduiLayout {
-        return {
-            id: "station_selection_screen",
-            version: "1.2",
-            title: "Stationly Setup",
-            theme: {
-                primaryColor: "#FFB81C",
-                backgroundColor: "#000000"
-            },
-            loadingMessage: "Connecting to TfL Signals...",
-            successMessage: "Your Board is now active!",
-            components: [
+    static getSelectionLayout(track: string = 'manual'): SduiLayout {
+        const isDiscovery = track === 'discovery';
+        
+        const commonHeader = [
+            { type: "text", id: "welcome_header", text: "Design Your\nBoard", style: "title" },
+            { type: "text", id: "welcome_subtitle", text: "Select a route to begin tracking live London signals on your home screen.", style: "subtitle" },
+            { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
+            { 
+                 type: "flow_picker", id: "tracking_flow", label: "Choose Setting Path", dependsOn: "mode",
+                 options: [
+                    { id: "discovery", label: "Discovery Mode", icon: "gps_fixed", description: "Automatic detection" },
+                    { id: "manual", label: "Manual Setup", icon: "search", description: "Network-wide browsing" }
+                 ] 
+            }
+        ];
+
+        let specificComponents: SduiComponent[] = [];
+
+        if (isDiscovery) {
+            // Discovery: FLOW -> STATION -> LINE -> DIRECTION
+            specificComponents = [
                 {
-                    type: "text",
-                    id: "welcome_header",
-                    text: "Design Your\nBoard",
-                    style: "title"
+                    type: "dropdown", id: "station", label: "2. Select Station",
+                    dependsOn: "tracking_flow",
+                    dataSourceUrl: "/stations/search?mode={mode}&lat={lat}&lon={lon}"
                 },
                 {
-                    type: "text",
-                    id: "welcome_subtitle",
-                    text: "Select a route to begin tracking live London signals on your home screen.\n\nNote: Predictions are updated every 60s.",
-                    style: "subtitle"
+                    type: "dropdown", id: "line", label: "3. Select Line",
+                    dependsOn: "station",
+                    dataSourceUrl: "/lines/mode/{mode}?station={station}"
                 },
                 {
-                    type: "dropdown",
-                    id: "mode",
-                    label: "1. Select Mode",
-                    dataSourceUrl: "/modes"
-                },
+                    type: "dropdown", id: "direction", label: "4. Select Direction",
+                    dependsOn: "line",
+                    dataSourceUrl: "/lines/{line}/route"
+                }
+            ];
+        } else {
+            // Manual: FLOW -> LINE -> DIRECTION -> STATION
+            specificComponents = [
                 {
-                    type: "dropdown",
-                    id: "line",
-                    label: "2. Select Line",
-                    dependsOn: "mode",
+                    type: "dropdown", id: "line", label: "2. Select Line",
+                    dependsOn: "tracking_flow",
                     dataSourceUrl: "/lines/mode/{mode}"
                 },
                 {
-                    type: "dropdown",
-                    id: "direction",
-                    label: "3. Select Direction",
+                    type: "dropdown", id: "direction", label: "3. Select Direction",
                     dependsOn: "line",
                     dataSourceUrl: "/lines/{line}/route"
                 },
                 {
-                    type: "dropdown",
-                    id: "station",
-                    label: "4. Select Station",
+                    type: "dropdown", id: "station", label: "4. Select Station",
                     dependsOn: "direction",
-                    dataSourceUrl: "/stations/search?searchKey={line}_{direction}"
-                },
+                    dataSourceUrl: "/stations/line/{line}"
+                }
+            ];
+        }
+
+        return {
+            id: "station_selection_screen",
+            version: isDiscovery ? "discovery-1.5" : "manual-1.5",
+            title: "Stationly Setup",
+            theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
+            loadingMessage: "Configuring layout...",
+            successMessage: "Your Board is now active!",
+            components: [
+                ...commonHeader,
+                ...specificComponents,
                 {
-                    type: "button",
-                    id: "save_button",
-                    label: "Activate Live Board",
-                    action: "SAVE_SELECTION_ACTION",
-                    color: "#FFB81C"
+                    type: "button", id: "save_button", label: "Activate Live Board",
+                    action: "SAVE_SELECTION_ACTION", color: "#FFB81C"
                 }
             ]
         };

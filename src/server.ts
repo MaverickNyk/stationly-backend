@@ -8,6 +8,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import apiRoutes from './routes/apiRoutes';
 import { SubscriptionService } from './services/subscriptionService';
 import { AuthMiddleware } from './middleware/authMiddleware';
+import { DataCacheService } from './services/dataCacheService';
 
 dotenv.config();
 
@@ -262,8 +263,7 @@ app.use('/api/v1', apiRoutes);
 // Start Server
 app.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
-    SubscriptionService.initializeListener();
-    AuthMiddleware.initializeKeyRegistryListener();
+    DataCacheService.initialize();
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
     console.log(`Docs: http://localhost:${port}/docs`);

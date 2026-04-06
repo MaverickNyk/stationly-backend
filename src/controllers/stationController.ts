@@ -2,8 +2,8 @@ import { Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { TflApiClient } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
-import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions, PredictionItem } from '../models';
-import { formatDestination, formatPlatform } from '../utils/formatters';
+import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
+import { DataCacheService } from '../services/dataCacheService';
 
 export class StationController {
     /**
@@ -11,24 +11,18 @@ export class StationController {
      * /stations/subscribed-ids:
      *   get:
      *     summary: Get Subscribed Station IDs
-     *     description: Returns a list of all Naptan IDs that have at least one active user subscription. Respond with zero Firestore reads using in-memory cache.
      *     tags: [Stations]
      *     responses:
      *       200:
      *         description: List of subscribed Naptan IDs
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items:
-     *                 type: string
      */
     static getSubscribedStationIds(req: Request, res: Response) {
         if (!SubscriptionService.getIsReady()) {
             console.log("PRED: ⚠️ Subscription registry not yet ready, serving empty list.");
             return res.json([]);
         }
-        return res.json(SubscriptionService.getSubscribedStationIds());
+        const ids = SubscriptionService.getSubscribedStationIds();
+        return res.json(ids);
     }
 
     /**
@@ -36,153 +30,113 @@ export class StationController {
      * /stations/predictions/{naptanId}:
      *   get:
      *     summary: Get Station Predictions
-     *     description: Retrieves real-time arrival predictions for a station. Returns cached results if updated within 30 seconds.
      *     tags: [Stations]
-     *     parameters:
-     *       - in: path
-     *         name: naptanId
-     *         required: true
-     *         schema:
-     *           type: string
-     *     responses:
-     *       200:
-     *         description: Station predictions
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: '#/components/schemas/StationPredictionResponse'
      */
     static async getStationPredictions(req: Request, res: Response) {
+        const { naptanId } = req.params;
         try {
-            const naptanId = req.params.naptanId;
-            const docRef = db.collection('stationPredictions').doc(naptanId);
-            const doc = await docRef.get();
-
-            if (doc.exists) {
-                const data = doc.data() as StationPredictionResponse;
-                const lastUpdated = new Date(data.lut).getTime();
-                const now = Date.now();
-
-                if (now - lastUpdated < 30000) {
-                    console.log(`PRED: 🟢 Firestore HIT for predictions (naptanId: ${naptanId})`);
-                    return res.json(data);
-                }
-            }
-
-            console.log(`PRED: ⚪ Firestore MISS/OLD for predictions (naptanId: ${naptanId}). Fetching from TfL...`);
-            const rawArrivals = await TflApiClient.getArrivalsForStation(naptanId);
-            
-            if (!rawArrivals || rawArrivals.length === 0) {
-                console.log(`PRED: ⚠️ TfL returned zero results for ${naptanId}. Clearing any stale cache.`);
-                if (doc.exists) await docRef.delete();
-                
-                return res.status(404).json({ 
-                    error: "No active predictions available for this station at this time",
-                    id: naptanId 
-                });
-            }
-
-            const stationName = rawArrivals[0].stationName || "Unknown Station";
-            const predictionsMap: Record<string, LinePredictions> = {};
-
-            rawArrivals.forEach(arr => {
-                const lineId = arr.lineId;
-                const direction = arr.direction || (arr.platformName.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
-                const dirKey = direction.charAt(0).toUpperCase() + direction.slice(1).toLowerCase();
-
-                if (!predictionsMap[lineId]) {
-                    predictionsMap[lineId] = {
-                        id: lineId,
-                        name: arr.lineName,
-                        dirs: {}
-                    };
-                }
-
-                if (!predictionsMap[lineId].dirs[dirKey]) {
-                    predictionsMap[lineId].dirs[dirKey] = { preds: [] };
-                }
-
-                predictionsMap[lineId].dirs[dirKey].preds.push({
-                    destId: arr.destinationNaptanId,
-                    platform: formatPlatform(arr.modeName, arr.platformName),
-                    eta: arr.expectedArrival,
-                    displayName: formatDestination(arr.towards || arr.destinationName)
-                });
-            });
-
-            // Sort predictions by ETA
-            Object.values(predictionsMap).forEach(line => {
-                Object.values(line.dirs).forEach(dir => {
-                    dir.preds.sort((a, b) => new Date(a.eta).getTime() - new Date(b.eta).getTime());
-                });
-            });
-
-            const response: StationPredictionResponse = {
-                id: naptanId,
-                name: stationName,
-                lut: new Date().toISOString(),
-                lines: predictionsMap
-            };
-
-            // Async update firestore
-            setImmediate(async () => {
-                try {
-                    await docRef.set(response);
-                    console.log(`PRED: ✅ Saved fresh predictions for ${naptanId}`);
-                } catch (err) {
-                    console.error("Failed to save predictions to Firestore", err);
-                }
-            });
-
-            return res.json(response);
+            const predictions = await StationController.fetchPredictions(naptanId);
+            return res.json(predictions);
         } catch (error) {
-            console.error(`Error fetching predictions for ${req.params.naptanId}:`, error);
-            return res.status(500).json({ error: "Internal Server Error" });
+            console.error(`Error fetching predictions for ${naptanId}:`, error);
+            return res.status(500).json({ error: "Failed to fetch predictions" });
         }
     }
+
+    private static async fetchPredictions(naptanId: string): Promise<StationPredictionResponse> {
+        console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
+        
+        // 1. Fetch raw arrivals from TfL
+        const arrivals = await TflApiClient.getArrivalsForStation(naptanId);
+        
+        // 2. Group by Line and Direction
+        const lines: Record<string, LinePredictions> = {};
+        
+        arrivals.forEach(arrival => {
+            const lineId = arrival.lineId.toLowerCase();
+            const direction = arrival.direction || (arrival.platformName.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
+            
+            if (!lines[lineId]) {
+                lines[lineId] = {
+                    id: arrival.lineId,
+                    name: arrival.lineName,
+                    dirs: {}
+                };
+            }
+            
+            if (!lines[lineId].dirs[direction]) {
+                lines[lineId].dirs[direction] = { preds: [] };
+            }
+            
+            lines[lineId].dirs[direction].preds.push({
+                destId: arrival.destinationNaptanId || 'unknown',
+                platform: arrival.platformName,
+                eta: arrival.expectedArrival,
+                displayName: arrival.destinationName
+            });
+        });
+
+        // 3. Sort predictions by ETA
+        Object.values(lines).forEach((line: LinePredictions) => {
+            Object.values(line.dirs).forEach((dir: DirectionPredictions) => {
+                dir.preds.sort((a, b) => new Date(a.eta).getTime() - new Date(b.eta).getTime());
+            });
+        });
+
+        return {
+            id: naptanId,
+            name: arrivals[0]?.stationName || "Unknown Station",
+            lut: new Date().toISOString(),
+            lines
+        };
+    }
+
     /**
      * @swagger
      * /stations/line/{lineId}:
      *   get:
-     *     summary: Get Stations on Line
-     *     description: Retrieves all stations associated with a specific line.
+     *     summary: Get Stations by Line
+     *     description: Returns all stations on a given line. Served from in-memory cache (backed by SQLite). Falls back to Firestore if cache is not yet ready.
      *     tags: [Stations]
      *     parameters:
      *       - in: path
      *         name: lineId
      *         required: true
-     *         schema:
-     *           type: string
+     *         schema: { type: string }
      *     responses:
      *       200:
-     *         description: A list of stations for the given line.
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items:
-     *                 $ref: '#/components/schemas/Station'
+     *         description: List of stations on the line.
      */
     static async getStationsByLine(req: Request, res: Response) {
+        const { lineId } = req.params;
         try {
-            const lineId = req.params.lineId;
-            const snapshot = await db.collection('stations')
-                .where('searchKeys', 'array-contains', lineId.toLowerCase())
-                .get();
-            const stations: (Station & { id: string; label: string })[] = [];
-            snapshot.forEach(doc => {
-                const data = doc.data() as Station;
-                stations.push({
-                    ...data,
-                    id: data.naptanId || doc.id,
-                    label: data.commonName
+            let stations = DataCacheService.getStationsByLine(lineId);
+            
+            // Fallback if cache not ready
+            if (stations.length === 0 && !DataCacheService.getIsReady()) {
+                const snapshot = await db.collection('stations')
+                    .where('searchKeys', 'array-contains', lineId)
+                    .get();
+                
+                stations = snapshot.docs.map(doc => {
+                    const data = doc.data() as any;
+                    return {
+                        id: doc.id,
+                        label: data.commonName || data.name || doc.id,
+                        ...data
+                    };
                 });
-            });
-            stations.sort((a, b) => (a.label || a.commonName).localeCompare(b.label || b.commonName));
-            return res.json(stations);
+            }
+
+            const sduiOptions = stations.map(s => ({
+                id: s.id || s.naptanId,
+                label: s.commonName || s.label || (s as any).name || s.id,
+                iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
+            }));
+            
+            return res.json(sduiOptions);
         } catch (error) {
-            console.error(`Error fetching stations for lineId ${req.params.lineId}:`, error);
-            return res.status(500).json({ error: "Internal Server Error" });
+            return res.status(500).json({ error: "Failed to fetch stations" });
         }
     }
 
@@ -190,143 +144,188 @@ export class StationController {
      * @swagger
      * /stations/search:
      *   get:
-     *     summary: Search Stations
-     *     description: Search stations by mode, line, direction, or combination. Optionally filter by location.
+     *     summary: Search or Discover Nearby Stations
+     *     description: |
+     *       Unified station search endpoint. Served from in-memory cache (backed by SQLite).
+     *       - **Text search**: Pass `searchKey` to search by station name or NaPTAN ID.
+     *       - **Nearby search**: Pass `lat`, `lon`, and optional `radius` (km, default 2.41) to find nearby stations.
+     *         Falls back to TfL API if results are sparse. Also aliased at `/stations/nearby`.
      *     tags: [Stations]
      *     parameters:
      *       - in: query
      *         name: searchKey
-     *         description: "Search key. Examples: 'tube' (all tube stations), 'northern' (all northern line), 'tube_northern' (tube + northern), 'northern_inbound' (northern line inbound)"
-     *         schema:
-     *           type: string
+     *         schema: { type: string }
+     *         description: Station name or NaPTAN ID to search.
      *       - in: query
      *         name: lat
-     *         schema:
-     *           type: number
+     *         schema: { type: number }
      *       - in: query
      *         name: lon
-     *         schema:
-     *           type: number
+     *         schema: { type: number }
      *       - in: query
      *         name: radius
-     *         schema:
-     *           type: number
-     *           default: 1.0
+     *         schema: { type: number }
+     *         description: Search radius in km (max 2.41).
+     *       - in: query
+     *         name: mode
+     *         schema: { type: string }
+     *         description: Optional mode filter for nearby search (e.g. tube, bus).
      *     responses:
      *       200:
-     *         description: A list of stations matching the search criteria.
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: array
-     *               items:
-     *                 $ref: '#/components/schemas/Station'
+     *         description: List of matching stations.
      */
     static async searchStations(req: Request, res: Response) {
+        const { searchKey, lat, lon, radius = 2.41, mode } = req.query;
+
         try {
-            const searchKey = req.query.searchKey as string;
-            const lat = req.query.lat ? parseFloat(req.query.lat as string) : undefined;
-            const lon = req.query.lon ? parseFloat(req.query.lon as string) : undefined;
-            const radius = req.query.radius ? parseFloat(req.query.radius as string) : 1.0;
+            let stations: any[] = [];
 
-            if (searchKey) {
-                const snapshot = await db.collection('stations')
-                    .where('searchKeys', 'array-contains', searchKey.toLowerCase())
-                    .get();
-                let stations: (Station & { id: string; label: string })[] = [];
-
-                snapshot.forEach(doc => {
-                    const data = doc.data() as Station;
-                    stations.push({
-                        ...data,
-                        id: data.naptanId || doc.id,
-                        label: data.commonName
-                    });
-                });
-
-                // Cache Miss: Fallback to TfL API
-                if (stations.length === 0) {
-                    console.log(`DATA: ⚪ Firestore MISS for stations (searchKey: ${searchKey}). Resolving via fallback...`);
-                    const parts = searchKey.split('_');
-                    const lineIdCandidate = parts[0];
-                    if (lineIdCandidate) {
-                        try {
-                            const stopPoints = await TflApiClient.getStopPointsByLine(lineIdCandidate);
-                            if (stopPoints && stopPoints.length > 0) {
-                                // For ephemeral UI response, we don't filter stopType strictly here
-                                // to ensure the user at least sees SOMETHING if the mode is unknown.
-                                (stations as any) = stopPoints.map(sp => ({
-                                    naptanId: sp.naptanId,
-                                    commonName: sp.commonName,
-                                    lat: sp.lat,
-                                    lon: sp.lon,
-                                    stopType: sp.stopType,
-                                    id: sp.naptanId,
-                                    label: sp.commonName
-                                }));
-
-                                // Push to DB asynchronously (don't block the UI)
-                                setImmediate(async () => {
-                                    const batch = db.batch();
-                                    // But for DB persistence, we should be cleaner
-                                    stopPoints.forEach(sp => {
-                                        const docRef = db.collection('stations').doc(sp.naptanId);
-                                        const searchKeys = [lineIdCandidate.toLowerCase()];
-                                        if (parts[1]) searchKeys.push(`${lineIdCandidate}_${parts[1]}`.toLowerCase());
-
-                                        batch.set(docRef, {
-                                            naptanId: sp.naptanId,
-                                            commonName: sp.commonName,
-                                            lat: sp.lat,
-                                            lon: sp.lon,
-                                            stopType: sp.stopType,
-                                            searchKeys: searchKeys,
-                                            lastUpdatedTime: new Date().toISOString()
-                                        }, { merge: true });
-                                    });
-                                    await batch.commit();
-                                    console.log(`DATA: ✅ Discovered stations saved to Firestore for line: ${lineIdCandidate}`);
-                                });
-                            }
-                        } catch (err) {
-                            console.error("TfL StopPoint Fallback failed:", err);
-                        }
-                    }
-                } else {
-                    console.log(`DATA: 🟢 Firestore HIT for stations (searchKey: ${searchKey})`);
+            // 1. Semantic/Text Search
+            if (searchKey && !String(searchKey).includes('{mode}')) {
+                stations = DataCacheService.searchStationsByQuery(String(searchKey));
+                
+                // Firestore Fallback if cache is empty (initial load)
+                if (stations.length === 0 && !DataCacheService.getIsReady()) {
+                    console.log(`CACHE: ⚪ Cache not ready for searchKey '${searchKey}'. Checking Firestore...`);
+                    const snapshot = await db.collection('stations')
+                        .where('searchKeys', 'array-contains', String(searchKey))
+                        .get();
+                    stations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 }
 
-                stations.sort((a, b) => (a.label || a.commonName).localeCompare(b.label || b.commonName));
-                return res.json(stations);
-            } else if (lat !== undefined && lon !== undefined) {
-                if (radius <= 0) return res.status(400).json({ error: "Invalid radius" });
+                stations.sort((a, b) => (a.commonName || "").localeCompare(b.commonName || ""));
+                return res.json(stations.slice(0, 50));
+            } 
+            
+            // 2. Nearby Search (Lat/Lon)
+            else if (lat !== undefined && lon !== undefined) {
+                const startLat = Number(lat);
+                const startLon = Number(lon);
+                
+                if (isNaN(startLat) || isNaN(startLon)) {
+                    console.log(`DATA: 📍 Nearby search ignored (NaN coords)`);
+                    return res.json([]);
+                }
 
-                const snapshot = await db.collection('stations').get();
-                const stations: (Station & { id: string; label: string })[] = [];
-                snapshot.forEach(doc => {
-                    const data = doc.data() as Station;
-                    if (data.lat && data.lon) {
-                        const dLat = (data.lat - lat) * (Math.PI / 180);
-                        const dLon = (data.lon - lon) * (Math.PI / 180);
-                        const a =
-                            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                            Math.cos(lat * (Math.PI / 180)) * Math.cos(data.lat * (Math.PI / 180)) *
-                            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-                        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                        const distance = 6371 * c;
+                let radiusKm = Number(radius);
+                if (radiusKm > 100) radiusKm = radiusKm / 1000;
+                
+                const MAX_RADIUS_KM = 2.41; 
+                radiusKm = Math.min(radiusKm, MAX_RADIUS_KM);
 
-                        if (distance <= radius) {
-                            stations.push({
-                                ...data,
-                                id: data.naptanId || doc.id,
-                                label: data.commonName
+                console.log(`DATA: 📍 Nearby search active: lat=${startLat}, lon=${startLon}, radius=${radiusKm}km, mode=${mode || 'ANY'}`);
+
+                // Filter using in-memory cache
+                stations = DataCacheService.getNearbyStations(startLat, startLon, radiusKm, mode as string);
+                
+                // Firestore Fallback if cache is empty (initial load)
+                if (stations.length === 0 && !DataCacheService.getIsReady()) {
+                    console.log(`CACHE: ⚪ Cache not ready for nearby search. Checking Firestore...`);
+                    const snapshot = await db.collection('stations').get();
+                    snapshot.forEach(doc => {
+                        const data = doc.data() as Station;
+                        if (data.lat && data.lon) {
+                            const dLat = (data.lat - startLat) * (Math.PI / 180);
+                            const dLon = (data.lon - startLon) * (Math.PI / 180);
+                            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                                      Math.cos(startLat * (Math.PI / 180)) * Math.cos(data.lat * (Math.PI / 180)) *
+                                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                            const distance = 6371 * c;
+                            if (distance <= radiusKm) {
+                                stations.push({ ...data, id: doc.id, distance: Math.round(distance * 1000) });
+                            }
+                        }
+                    });
+                }
+
+                // 3. Fallback to real TfL API if results are sparse
+                if (stations.length < 5) {
+                    console.log(`DATA: ⚪ Insufficient results (${stations.length}). Fetching from TfL API...`);
+                    try {
+                        const stopPoints = await TflApiClient.getNearbyStopPoints(startLat, startLon, radiusKm * 1000);
+                        if (stopPoints && stopPoints.length > 0) {
+                            const tflStations = stopPoints.map((sp: any) => ({
+                                id: sp.naptanId,
+                                label: `${sp.commonName || sp.name} (${sp.distance ? Math.round(sp.distance) : 0}m)`,
+                                commonName: sp.commonName || sp.name,
+                                naptanId: sp.naptanId,
+                                lat: sp.lat,
+                                lon: sp.lon,
+                                distance: sp.distance ? Math.round(sp.distance) : 0,
+                                modes: sp.modes || [],
+                                stopType: sp.stopType || 'N/A'
+                            }));
+                            
+                            const merged = [...stations];
+                            tflStations.forEach((ts: any) => {
+                                if (!merged.find(m => m.id === ts.id)) merged.push(ts);
+                            });
+                            stations = merged;
+
+                            // Cache discoveries in Firestore (background)
+                            setImmediate(async () => {
+                                const batch = db.batch();
+                                stopPoints.slice(0, 15).forEach((sp: any) => {
+                                    const docRef = db.collection('stations').doc(sp.naptanId);
+                                    batch.set(docRef, {
+                                        naptanId: sp.naptanId,
+                                        commonName: sp.commonName || sp.name,
+                                        lat: sp.lat,
+                                        lon: sp.lon,
+                                        stopType: sp.stopType,
+                                        modes: sp.modes || [],
+                                        lastUpdated: new Date().toISOString()
+                                    }, { merge: true });
+                                });
+                                await batch.commit();
                             });
                         }
+                    } catch (err) {
+                        console.error("TfL Fallback failed:", err);
                     }
+                }
+
+                // Final Sort: Closest first (Discovery requirement)
+                stations.sort((a, b) => {
+                    return (a.distance || 999999) - (b.distance || 999999);
                 });
-                return res.json(stations);
+                
+                const finalOptions = stations.slice(0, 25).map(s => {
+                    const name = s.label || s.commonName || (s as any).name || s.id;
+                    
+                    // Convert meters to miles (1 mile = 1609.34 meters)
+                    const distMeters = s.distance || 0;
+                    const distMiles = distMeters / 1609.34;
+                    const formattedDist = distMiles.toFixed(1);
+                    
+                    return {
+                        id: s.id || s.naptanId,
+                        label: name,
+                        secondaryLabel: `${formattedDist} m`,
+                        iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
+                    };
+                });
+
+                return res.json(finalOptions);
+            } 
+            
+            // 3. Mode Fallback (All stations for a mode if no location)
+            else if (mode) {
+                console.log(`DATA: 📋 Mode fallback search for: ${mode}`);
+                stations = DataCacheService.getStationsByMode(mode as string);
+                
+                const fallbackOptions = stations.slice(0, 50).map(s => ({
+                    id: s.id || s.naptanId,
+                    label: s.label || s.commonName || (s as any).name || s.id,
+                }));
+                return res.json(fallbackOptions);
             } else {
-                return res.status(400).json({ error: "Missing required parameters" });
+                const searchOptions = stations.slice(0, 50).map(s => ({
+                    id: s.id || s.naptanId,
+                    label: s.label || s.commonName || (s as any).name || s.id,
+                }));
+                return res.json(searchOptions);
             }
         } catch (error) {
             console.error("Error searching stations:", error);

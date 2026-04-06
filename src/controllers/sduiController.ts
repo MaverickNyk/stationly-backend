@@ -75,6 +75,7 @@ export class SduiController {
      *               $ref: '#/components/schemas/Layout'
      */
     static getSelectionLayout(req: Request, res: Response) {
-        res.json(SduiService.getSelectionLayout());
+        const track = req.query.track as string;
+        res.json(SduiService.getSelectionLayout(track));
     }
 }
