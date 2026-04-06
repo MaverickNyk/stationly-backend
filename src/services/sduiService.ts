@@ -293,10 +293,10 @@ export class SduiService {
             { type: "text", id: "welcome_subtitle", text: "Select a route to begin tracking live London signals on your home screen.", style: "subtitle" },
             { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
             { 
-                 type: "flow_picker", id: "tracking_flow", label: "Choose Setting Path", dependsOn: "mode",
+                 type: "flow_picker", id: "tracking_flow", label: "How should we locate it?", dependsOn: "mode",
                  options: [
-                    { id: "discovery", label: "Discovery Mode", icon: "gps_fixed", description: "Automatic detection" },
-                    { id: "manual", label: "Manual Setup", icon: "search", description: "Network-wide browsing" }
+                    { id: "discovery", label: "Near Me", icon: "gps_fixed", description: "Use GPS auto-detect" },
+                    { id: "manual", label: "Search Network", icon: "search", description: "Browse all stations" }
                  ] 
             }
         ];
