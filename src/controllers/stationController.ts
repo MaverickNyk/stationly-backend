@@ -111,13 +111,13 @@ export class StationController {
         const { lineId } = req.params;
         try {
             let stations = DataCacheService.getStationsByLine(lineId);
-            
+
             // Fallback if cache not ready
             if (stations.length === 0 && !DataCacheService.getIsReady()) {
                 const snapshot = await db.collection('stations')
                     .where('searchKeys', 'array-contains', lineId)
                     .get();
-                
+
                 stations = snapshot.docs.map(doc => {
                     const data = doc.data() as any;
                     return {
@@ -133,7 +133,7 @@ export class StationController {
                 label: s.commonName || s.label || (s as any).name || s.id,
                 iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
             }));
-            
+
             return res.json(sduiOptions);
         } catch (error) {
             return res.status(500).json({ error: "Failed to fetch stations" });

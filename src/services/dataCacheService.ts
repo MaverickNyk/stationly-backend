@@ -210,16 +210,25 @@ export class DataCacheService {
     }
 
     /**
-     * Search stations by text (commonName)
+     * Search stations by text (commonName / naptanId) OR by exact searchKey match (e.g. line ID "39").
+     * Exact searchKey match takes priority so bus route lookups work correctly.
      */
     static searchStationsByQuery(query: string): Station[] {
         const q = query.toLowerCase();
-        return this.getAllStations()
-            .filter(s => 
-                (s.commonName || "").toLowerCase().includes(q) || 
-                (s.naptanId || "").toLowerCase().includes(q)
-            )
-            .slice(0, 50);
+        const all = this.getAllStations();
+
+        // First try exact match against the searchKeys array (e.g. line id "39")
+        const bySearchKey = all.filter(s =>
+            Array.isArray((s as any).searchKeys) &&
+            (s as any).searchKeys.some((k: string) => k.toLowerCase() === q)
+        );
+        if (bySearchKey.length > 0) return bySearchKey;
+
+        // Fall back to text search on commonName / naptanId
+        return all.filter(s =>
+            (s.commonName || "").toLowerCase().includes(q) ||
+            (s.naptanId || "").toLowerCase().includes(q)
+        ).slice(0, 50);
     }
 
     /**
