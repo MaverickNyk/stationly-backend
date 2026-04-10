@@ -1,52 +1,74 @@
 import rateLimit from 'express-rate-limit';
+import { Request } from 'express';
+
+// Key by X-Stationly-Key so limits are per client, not per IP.
+// Falls back to IP for unauthenticated requests (caught by auth middleware first anyway).
+const keyByClient = (req: Request): string =>
+    (req.header('X-Stationly-Key') || req.ip || 'unknown');
 
 /**
  * RateLimitMiddleware
  * Centralized place for all traffic control policies.
- * Keeps the code modular and easy to adjust per-endpoint.
+ * Each route group gets its own instance so counters don't bleed across endpoints.
  */
 export class RateLimitMiddleware {
-    /**
-     * Standard limiter: Protects common data endpoints (Modes, Lines, Stations).
-     * Prevents high-volume scraping while allowing normal app usage.
-     */
-    static standard = rateLimit({
-        windowMs: 15 * 60 * 1000, // 15 minutes
-        max: 100, // Limit each IP to 100 requests per window
-        message: {
-            error: "Too Many Requests",
-            message: "You've reached the limit for public data. Please contact support for higher limits."
-        },
+    // 300 req / 15 min per client key — enough for normal app usage across all flows
+    static modes = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByClient,
+        message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    static lines = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByClient,
+        message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    static stations = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByClient,
+        message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    static sdui = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByClient,
+        message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
         legacyHeaders: false,
     });
 
     /**
      * Strict limiter: Protects sensitive user sync endpoints.
-     * Prevents brute-forcing and saves Firestore write costs.
      */
     static strict = rateLimit({
-        windowMs: 15 * 60 * 1000, 
-        max: 20, 
-        message: {
-            error: "Rate Limit Exceeded",
-            message: "To protect user data, syncing is limited. Please try again later."
-        },
+        windowMs: 15 * 60 * 1000,
+        max: 20,
+        keyGenerator: keyByClient,
+        message: { error: "Rate Limit Exceeded", message: "To protect user data, syncing is limited. Please try again later." },
         standardHeaders: true,
         legacyHeaders: false,
     });
 
     /**
-     * Internal limiter: Relaxed limit for our own services (Syncer/Developer Keys).
-     * Used in conjunction with X-Stationly-Key.
+     * Developer limiter: For internal/subscribed-ids endpoint.
      */
     static developer = rateLimit({
-        windowMs: 1 * 60 * 1000, // 1 minute
-        max: 60, // 60 requests per minute
-        message: {
-            error: "API Quota Exceeded",
-            message: "Your developer key has hit its per-minute limit."
-        },
+        windowMs: 1 * 60 * 1000,
+        max: 60,
+        keyGenerator: keyByClient,
+        message: { error: "API Quota Exceeded", message: "Your developer key has hit its per-minute limit." },
         standardHeaders: true,
         legacyHeaders: false,
     });

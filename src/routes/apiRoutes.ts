@@ -13,11 +13,11 @@ const router = Router();
 // Every single request to Stationly API now requires a valid X-Stationly-Key
 router.use(AuthMiddleware.validateApiKey);
 
-// --- PUBLIC DATA ROUTES (Standard Rate Limit after API Key check) ---
-router.use('/modes', RateLimitMiddleware.standard);
-router.use('/lines', RateLimitMiddleware.standard);
-router.use('/stations', RateLimitMiddleware.standard);
-router.use('/sdui', RateLimitMiddleware.standard);
+// --- PUBLIC DATA ROUTES (Per-client rate limits after API Key check) ---
+router.use('/modes', RateLimitMiddleware.modes);
+router.use('/lines', RateLimitMiddleware.lines);
+router.use('/stations', RateLimitMiddleware.stations);
+router.use('/sdui', RateLimitMiddleware.sdui);
 
 // Layouts
 router.get('/sdui/app/layout', SduiController.getSelectionLayout);
