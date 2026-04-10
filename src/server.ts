@@ -15,6 +15,9 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Trust Nginx reverse proxy so req.ip reflects the real client IP (X-Forwarded-For)
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(cors());
 app.use(helmet({
