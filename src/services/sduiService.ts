@@ -338,7 +338,7 @@ export class SduiService {
                 {
                     type: "dropdown", id: "station", label: "4. Select Station",
                     dependsOn: "direction",
-                    dataSourceUrl: "/stations/line/{line}"
+                    dataSourceUrl: "/stations/search?searchKey={line}_{direction}"
                 }
             ];
         }

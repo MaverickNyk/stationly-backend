@@ -6,6 +6,9 @@ import { Request } from 'express';
 const keyByClient = (req: Request): string =>
     (req.header('X-Stationly-Key') || req.ip || 'unknown');
 
+// Suppress express-rate-limit's IPv6 validation — we key by app client token, not raw IP.
+const validate = { ip: false };
+
 /**
  * RateLimitMiddleware
  * Centralized place for all traffic control policies.
@@ -17,6 +20,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 300,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
         legacyHeaders: false,
@@ -26,6 +30,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 300,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
         legacyHeaders: false,
@@ -35,6 +40,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 300,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
         legacyHeaders: false,
@@ -44,6 +50,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 300,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
         legacyHeaders: false,
@@ -56,6 +63,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 20,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "Rate Limit Exceeded", message: "To protect user data, syncing is limited. Please try again later." },
         standardHeaders: true,
         legacyHeaders: false,
@@ -68,6 +76,7 @@ export class RateLimitMiddleware {
         windowMs: 1 * 60 * 1000,
         max: 60,
         keyGenerator: keyByClient,
+        validate,
         message: { error: "API Quota Exceeded", message: "Your developer key has hit its per-minute limit." },
         standardHeaders: true,
         legacyHeaders: false,
