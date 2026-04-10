@@ -194,7 +194,12 @@ export class StationController {
                 }
 
                 stations.sort((a, b) => (a.commonName || "").localeCompare(b.commonName || ""));
-                return res.json(stations.slice(0, 50));
+                const sduiOptions = stations.slice(0, 50).map(s => ({
+                    id: s.id || s.naptanId,
+                    label: s.commonName || s.label || (s as any).name || s.id,
+                    iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
+                }));
+                return res.json(sduiOptions);
             } 
             
             // 2. Nearby Search (Lat/Lon)
