@@ -131,7 +131,8 @@ export class StationController {
             const sduiOptions = stations.map(s => ({
                 id: s.id || s.naptanId,
                 label: s.commonName || s.label || (s as any).name || s.id,
-                iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
+                iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null,
+                color: null
             }));
 
             return res.json(sduiOptions);

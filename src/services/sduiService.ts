@@ -289,14 +289,18 @@ export class SduiService {
         const isDiscovery = track === 'discovery';
 
         const commonHeader = [
-            { type: "text", id: "welcome_header", text: "Design Your\nBoard", style: "title" },
-            { type: "text", id: "welcome_subtitle", text: "Select a route to begin tracking live London signals on your home screen.", style: "subtitle" },
+            // Screen 0 — Mode picker
+            { type: "text", id: "screen_mode_title", text: "Pick your\nchariot.", style: "screen_title" },
+            { type: "text", id: "screen_mode_subtitle", text: "Bus, tube, or DLR — we're not judging.", style: "screen_subtitle" },
             { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
+            // Screen 1 — Flow picker
+            { type: "text", id: "screen_flow_title", text: "Where's your usual haunt?", style: "screen_title" },
+            { type: "text", id: "screen_flow_subtitle", text: "Pick how you'd like to find your stop.", style: "screen_subtitle" },
             {
                 type: "flow_picker", id: "tracking_flow", label: "How should we locate it?", dependsOn: "mode",
                 options: [
-                    { id: "discovery", label: "Near Me", icon: "gps_fixed", description: "Use GPS auto-detect" },
-                    { id: "manual", label: "Search Network", icon: "search", description: "Browse all stations" }
+                    { id: "discovery", label: "Near Me", icon: "gps_fixed", description: "GPS'll sort it" },
+                    { id: "manual", label: "Browse Network", icon: "search", description: "I'll find my own way, cheers" }
                 ]
             }
         ];
@@ -306,16 +310,27 @@ export class SduiService {
         if (isDiscovery) {
             // Discovery: FLOW -> STATION -> LINE -> DIRECTION
             specificComponents = [
+                // Screen 2 — Nearby stations
+                { type: "text", id: "screen_station_title", text: "Nearby Stations", style: "screen_title" },
+                { type: "text", id: "screen_station_subtitle", text: "Closest escape routes first.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "station", label: "2. Select Station",
                     dependsOn: "tracking_flow",
                     dataSourceUrl: "/stations/search?mode={mode}&lat={lat}&lon={lon}"
                 },
+                // Screen 3 — Line
+                { type: "text", id: "screen_line_title", text: "Select Line", style: "screen_title" },
+                { type: "text", id: "screen_line_subtitle", text: "Lines stopping here.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "line", label: "3. Select Line",
                     dependsOn: "station",
                     dataSourceUrl: "/lines/mode/{mode}?station={station}"
                 },
+                // Screen 4 — Direction
+                { type: "text", id: "screen_direction_title", text: "Which direction?", style: "screen_title" },
+                { type: "text", id: "screen_direction_subtitle", text: "Which way are you fleeing today?", style: "screen_subtitle" },
+                { type: "text", id: "screen_direction_funfact_title", text: "Inbound vs Outbound — quick explainer", style: "info_card_title" },
+                { type: "text", id: "screen_direction_funfact", text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.", style: "info_card" },
                 {
                     type: "dropdown", id: "direction", label: "4. Select Direction",
                     dependsOn: "line",
@@ -325,16 +340,27 @@ export class SduiService {
         } else {
             // Manual: FLOW -> LINE -> DIRECTION -> STATION
             specificComponents = [
+                // Screen 2 — Line
+                { type: "text", id: "screen_line_title", text: "Which line?", style: "screen_title" },
+                { type: "text", id: "screen_line_subtitle", text: "Which line do you cling to daily?", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "line", label: "2. Select Line",
                     dependsOn: "tracking_flow",
                     dataSourceUrl: "/lines/mode/{mode}"
                 },
+                // Screen 3 — Direction
+                { type: "text", id: "screen_direction_title", text: "Which direction?", style: "screen_title" },
+                { type: "text", id: "screen_direction_subtitle", text: "Which way are you fleeing today?", style: "screen_subtitle" },
+                { type: "text", id: "screen_direction_funfact_title", text: "Inbound vs Outbound — quick explainer", style: "info_card_title" },
+                { type: "text", id: "screen_direction_funfact", text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.", style: "info_card" },
                 {
                     type: "dropdown", id: "direction", label: "3. Select Direction",
                     dependsOn: "line",
                     dataSourceUrl: "/lines/{line}/route"
                 },
+                // Screen 4 — Station
+                { type: "text", id: "screen_station_title", text: "Pick your stop.", style: "screen_title" },
+                { type: "text", id: "screen_station_subtitle", text: "Your daily departure point awaits.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "station", label: "4. Select Station",
                     dependsOn: "direction",
@@ -354,7 +380,7 @@ export class SduiService {
                 ...commonHeader,
                 ...specificComponents,
                 {
-                    type: "button", id: "save_button", label: "Activate Live Board",
+                    type: "button", id: "save_button", label: "Set Up My Board",
                     action: "SAVE_SELECTION_ACTION", color: "#FFB81C"
                 }
             ]

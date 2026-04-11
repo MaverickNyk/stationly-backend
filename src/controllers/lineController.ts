@@ -7,6 +7,32 @@ import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '
 import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 
+// Official TfL brand colors by line ID
+const TFL_LINE_COLORS: Record<string, string> = {
+    'bakerloo':           '#B36305',
+    'central':            '#E32017',
+    'circle':             '#FFD300',
+    'district':           '#00782A',
+    'hammersmith-city':   '#F3A9BB',
+    'jubilee':            '#A0A5A9',
+    'metropolitan':       '#9B0056',
+    'northern':           '#000000',
+    'piccadilly':         '#003688',
+    'victoria':           '#0098D4',
+    'waterloo-city':      '#95CDBA',
+    'dlr':                '#00A4A7',
+    'elizabeth':          '#6950A1',
+    'london-overground':  '#EE7C0E', // legacy / fallback
+    'lioness':            '#E2A12B', // Watford - Euston
+    'mildmay':            '#1A6DB4', // Stratford - Richmond/Clapham Jct
+    'windrush':           '#E2231A', // Clapham Jct - Highbury & Islington
+    'weaver':             '#7B2D8B', // Liverpool St - Enfield/Cheshunt/Chingford
+    'suffragette':        '#00843D', // Gospel Oak - Barking Riverside
+    'liberty':            '#6B717E', // Romford - Upminster
+    'tram':               '#84B817',
+    'cable-car':          '#E21836',
+};
+
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
         const index = Math.floor(Math.random() * GOOD_SERVICE_MESSAGES.length);
@@ -53,7 +79,7 @@ export class LineController {
                     const lineIdsAtStation = Object.keys(stationData.modes[mode].lines);
                     const allLines = DataCacheService.getLinesByMode(mode);
                     const filteredLines = allLines.filter(l => lineIdsAtStation.includes(l.id))
-                        .map(l => ({ ...l, label: l.name }));
+                        .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
                     
                     if (filteredLines.length > 0) {
                         return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
@@ -67,7 +93,8 @@ export class LineController {
             if (cachedLines.length > 0) {
                 const sduiLines = cachedLines.map(l => ({
                     ...l,
-                    label: l.name || l.label
+                    label: l.name || l.label,
+                    color: TFL_LINE_COLORS[l.id] || null
                 }));
                 return res.json(sduiLines.sort((a, b) => a.label.localeCompare(b.label)));
             }
@@ -83,7 +110,8 @@ export class LineController {
                     id: l.id,
                     name: l.name,
                     modeName: l.modeName,
-                    label: l.name
+                    label: l.name,
+                    color: TFL_LINE_COLORS[l.id] || null
                 }));
             }
             
