@@ -78,4 +78,16 @@ export class SduiController {
         const track = req.query.track as string;
         res.json(SduiService.getSelectionLayout(track));
     }
+
+    static getAboutLayout(req: Request, res: Response) {
+        res.json(SduiService.getAboutLayout());
+    }
+
+    static getHomeAnnouncement(req: Request, res: Response) {
+        res.json(SduiService.getHomeAnnouncement());
+    }
+
+    static getHomeConfig(req: Request, res: Response) {
+        res.json(SduiService.getHomeConfig());
+    }
 }

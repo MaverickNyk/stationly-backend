@@ -12,6 +12,16 @@ export interface SduiComponent {
     imageUrl?: string; // For image components
     textAlign?: string; // e.g. center
     options?: any[]; // For FlowPicker/GridPicker
+    // New component fields (card, section, link_row, announcement)
+    title?: string;
+    subtitle?: string;
+    body?: string;
+    url?: string;
+    icon?: string;
+    components?: SduiComponent[];
+    variant?: string;    // info | warning | tip
+    dismissKey?: string;
+    size?: number;
 }
 
 export interface SduiLayout {
@@ -279,6 +289,105 @@ export class SduiService {
                     color: "#FF5252"
                 }
             ]
+        };
+    }
+
+    /**
+     * About Stationly — static content for the profile About section
+     */
+    static getAboutLayout(): SduiLayout {
+        return {
+            id: "about_screen",
+            title: "About",
+            theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
+            components: [
+                {
+                    type: "card",
+                    id: "about_info",
+                    title: "Stationly",
+                    body: "Real-time London transport departures at your fingertips. Track buses, tubes, DLR, and Overground — all from one board.",
+                    style: "brand"
+                },
+                {
+                    type: "section",
+                    id: "links_section",
+                    components: [
+                        { type: "link_row", id: "website",  title: "Visit Website",    subtitle: "stationly.co.uk",            url: "https://stationly.co.uk",               icon: "public"      },
+                        { type: "link_row", id: "privacy",  title: "Privacy Policy",   subtitle: "How we handle your data",     url: "https://stationly.co.uk/privacy",        icon: "privacy_tip" },
+                        { type: "link_row", id: "terms",    title: "Terms of Service", subtitle: "Usage terms and conditions",  url: "https://stationly.co.uk/terms",          icon: "description" },
+                        { type: "link_row", id: "contact",  title: "Contact Us",       subtitle: "Questions or feedback",       url: "mailto:hello@stationly.co.uk",           icon: "email"       },
+                        { type: "link_row", id: "rate",     title: "Rate Stationly",   subtitle: "Love the app? Let us know",   url: "market://details?id=com.stationly.mobile", icon: "star"     }
+                    ]
+                },
+                {
+                    type: "card",
+                    id: "acknowledgements",
+                    body: "Powered by TfL Open Data. Contains OS data \u00a9 Crown copyright and database rights 2025. Neither TfL nor the UK Government endorse this app.",
+                    style: "subtle"
+                }
+            ]
+        };
+    }
+
+    /**
+     * Home announcement banner — leave components empty for no active announcement.
+     * To push a banner, add an announcement component here and deploy.
+     */
+    static getHomeAnnouncement(): SduiLayout {
+        return {
+            id: "home_announcement",
+            title: "Announcements",
+            theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
+            components: [
+                // Example (uncomment to activate):
+                // {
+                //     type: "announcement",
+                //     id: "maintenance_notice",
+                //     title: "Planned Maintenance",
+                //     body: "TfL data feeds may be intermittent on Sunday 13 Apr between 02:00–06:00.",
+                //     variant: "warning",
+                //     dismissKey: "maintenance_2026_04_13"
+                // }
+            ]
+        };
+    }
+
+    /**
+     * Flat string map controlling all hardcoded labels in the home / empty-state / explore UI.
+     * Update any value here and it takes effect on next app launch — no app update required.
+     */
+    static getHomeConfig(): object {
+        return {
+            id: "home_config",
+            strings: {
+                // Empty state screen
+                "empty.title":    "Your board is empty",
+                "empty.subtitle": "Pick a station and we\u2019ll show you live\ndepartures \u2014 just like the real board.",
+                "empty.cta":      "Set Up My Board",
+                "empty.chips":    "Tube,Bus,DLR,Overground",
+                "empty.footer":   "Powered by TfL Open Data",
+                // Summary header
+                "greeting.morning":   "Good morning",
+                "greeting.afternoon": "Good afternoon",
+                "greeting.evening":   "Good evening",
+                "greeting.night":     "Good night",
+                "header.location":    "London",
+                // Explore / Network section
+                "explore.title":              "Network",
+                "explore.good_service":       "Good Service",
+                "explore.good_service_sub":   "All lines running normally",
+                "explore.disruptions_sub":    "Delays on network",
+                "explore.period.morning":     "Morning rush hour",
+                "explore.period.morning_sub": "Expect busier trains",
+                "explore.period.evening":     "Evening rush hour",
+                "explore.period.evening_sub": "Expect busier trains",
+                "explore.period.late_night":  "Late night service",
+                "explore.period.late_night_sub": "Reduced frequency",
+                "explore.period.night":       "Night service",
+                "explore.period.night_sub":   "Reduced frequency",
+                "explore.period.offpeak":     "Off-peak",
+                "explore.period.offpeak_sub": "Normal frequency"
+            }
         };
     }
 
