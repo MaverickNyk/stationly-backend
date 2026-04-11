@@ -70,6 +70,12 @@ export class LocalDbService {
                 id TEXT PRIMARY KEY,
                 raw_data TEXT
             )`,
+            `CREATE TABLE IF NOT EXISTS line_statuses (
+                id TEXT PRIMARY KEY,
+                mode TEXT,
+                lastUpdatedTime TEXT,
+                raw_data TEXT
+            )`,
             // Indexes for speed
             `CREATE INDEX IF NOT EXISTS idx_stations_naptan ON stations(naptanId)`,
             `CREATE INDEX IF NOT EXISTS idx_stations_name ON stations(commonName)`,
@@ -176,6 +182,15 @@ export class LocalDbService {
     static async upsertRoute(id: string, data: any): Promise<void> {
         await this.run('INSERT OR REPLACE INTO routes (id, raw_data) VALUES (?, ?)', [
             id,
+            JSON.stringify(data)
+        ]);
+    }
+
+    static async upsertLineStatus(id: string, data: any): Promise<void> {
+        await this.run('INSERT OR REPLACE INTO line_statuses (id, mode, lastUpdatedTime, raw_data) VALUES (?, ?, ?, ?)', [
+            id,
+            data.mode || '',
+            data.lastUpdatedTime || '',
             JSON.stringify(data)
         ]);
     }

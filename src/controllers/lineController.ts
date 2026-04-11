@@ -6,6 +6,7 @@ import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '
 
 import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
+import { LocalDbService } from '../services/localDbService';
 
 // Official TfL brand colors by line ID
 const TFL_LINE_COLORS: Record<string, string> = {
@@ -106,6 +107,13 @@ export class LineController {
 
             if (lines.length === 0) {
                 const rawLines = await TflApiClient.getLinesByMode(mode);
+                const nowIso = new Date().toISOString();
+                const batch = db.batch();
+                rawLines.forEach(l => {
+                    const docRef = db.collection('lines').doc(l.id);
+                    batch.set(docRef, { id: l.id, name: l.name, modeName: l.modeName, lastUpdatedTime: nowIso }, { merge: true });
+                });
+                await batch.commit();
                 lines = rawLines.map(l => ({
                     id: l.id,
                     name: l.name,
@@ -114,7 +122,7 @@ export class LineController {
                     color: TFL_LINE_COLORS[l.id] || null
                 }));
             }
-            
+
             return res.json(lines.sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name)));
         } catch (error) {
             console.error(`Error fetching lines for mode ${req.params.mode}:`, error);
@@ -172,7 +180,34 @@ export class LineController {
                 }
             }
 
-            // Fallback: If still nothing, return basic directions
+            // 3. TfL API fallback — fetch, parse, and save
+            if (!routeData) {
+                console.log(`DATA: ⚪ Fetching route from TfL API for ${lineId}...`);
+                try {
+                    const raw = await TflApiClient.getLineRoute(lineId);
+                    const sectionsArray: any[] = Array.isArray(raw) ? raw : (raw?.routeSections || []);
+
+                    // Group routeSections by direction, collect unique destinations
+                    const dirMap: Record<string, { id: string; name: string }[]> = {};
+                    sectionsArray.forEach((section: any) => {
+                        const dir: string = (section.direction || 'outbound').toLowerCase();
+                        if (!dirMap[dir]) dirMap[dir] = [];
+                        if (section.destination && !dirMap[dir].find(d => d.id === section.destination)) {
+                            dirMap[dir].push({ id: section.destination, name: section.destinationName || section.destination });
+                        }
+                    });
+
+                    const directions = Object.entries(dirMap).map(([direction, destinations]) => ({ direction, destinations }));
+                    routeData = { directions, lastUpdatedTime: new Date().toISOString() };
+
+                    // Save to Firestore
+                    await db.collection('routes').doc(lineId).set(routeData);
+                    console.log(`DATA: ✅ Saved route for ${lineId} to Firestore (${directions.length} directions)`);
+                } catch (tflErr) {
+                    console.warn(`DATA: ⚠️ TfL route fetch failed for ${lineId}:`, tflErr);
+                }
+            }
+
             if (!routeData) {
                 console.warn(`DATA: ⚠️ No route data for ${lineId}. Returning generic directions.`);
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
@@ -228,59 +263,67 @@ export class LineController {
     static async getLineStatuses(req: Request, res: Response) {
         try {
             const { lineId, mode } = req.query;
-            const modeStr = mode as string || 'tube'; // Default to tube if no mode provided
-            
-            // Check cache freshness (using a sample doc if filtering by mode)
+            const modeStr = mode as string || 'tube';
+
+            // 1. Check in-memory cache freshness (30s TTL)
+            let cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+            if (lineId && !String(lineId).includes('{')) {
+                cachedStatuses = cachedStatuses.filter((s: any) => s.id === lineId);
+            }
+
+            const isFresh = cachedStatuses.length > 0 &&
+                cachedStatuses.every((s: any) => s.lastUpdatedTime && (Date.now() - new Date(s.lastUpdatedTime).getTime()) < 30000);
+
+            if (isFresh) {
+                console.log(`STATUS: 🔵 Cache HIT for ${modeStr} statuses (${cachedStatuses.length} results)`);
+                return res.json(cachedStatuses);
+            }
+
+            // 2. Fetch fresh data from TfL
+            console.log(`STATUS: ⚪ Cache MISS/OLD for ${modeStr} statuses. Fetching from TfL...`);
+            const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
+
             const collectionRef = db.collection('lineStatuses');
-            let cacheCheckQuery: any = collectionRef;
-            if (modeStr) cacheCheckQuery = cacheCheckQuery.where('mode', '==', modeStr);
-            
-            const snapshot = await cacheCheckQuery.limit(1).get();
-            let needsRefresh = snapshot.empty;
-            
-            if (!snapshot.empty) {
-                const latestDoc = snapshot.docs[0].data();
-                const lastUpdated = new Date(latestDoc.lastUpdatedTime).getTime();
-                if (Date.now() - lastUpdated > 30000) {
-                    needsRefresh = true;
+            const batch = db.batch();
+            const nowIso = new Date().toISOString();
+
+            rawStatuses.forEach(ls => {
+                const status: LineStatusResponse = {
+                    id: ls.id,
+                    name: ls.name,
+                    statusSeverityDescription: ls.lineStatuses[0]?.statusSeverityDescription || "Unknown",
+                    reason: assignGoodServiceReason(
+                        ls.lineStatuses[0]?.statusSeverityDescription,
+                        ls.lineStatuses[0]?.reason
+                    ),
+                    mode: ls.modeName,
+                    lastUpdatedTime: nowIso
+                };
+
+                // 3. Update in-memory cache immediately
+                DataCacheService.setLineStatus(ls.id, status);
+
+                // 4. Save to Firestore (batch)
+                batch.set(collectionRef.doc(ls.id), status);
+            });
+
+            await batch.commit();
+
+            // 5. Save to SQLite (background, non-blocking)
+            setImmediate(async () => {
+                for (const ls of rawStatuses) {
+                    const status = DataCacheService.getLineStatuses().find((s: any) => s.id === ls.id);
+                    if (status) await LocalDbService.upsertLineStatus(ls.id, status);
                 }
-            }
+            });
 
-            if (needsRefresh) {
-                console.log(`STATUS: ⚪ Cache MISS/OLD for ${modeStr} statuses. Fetching from TfL...`);
-                const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
-                
-                const batch = db.batch();
-                const nowIso = new Date().toISOString();
-                
-                rawStatuses.forEach(ls => {
-                    const status: LineStatusResponse = {
-                        id: ls.id,
-                        name: ls.name,
-                        statusSeverityDescription: ls.lineStatuses[0]?.statusSeverityDescription || "Unknown",
-                        reason: assignGoodServiceReason(
-                            ls.lineStatuses[0]?.statusSeverityDescription, 
-                            ls.lineStatuses[0]?.reason
-                        ),
-                        mode: ls.modeName,
-                        lastUpdatedTime: nowIso
-                    };
-                    const docRef = collectionRef.doc(ls.id);
-                    batch.set(docRef, status);
-                });
-                
-                await batch.commit();
-                console.log(`STATUS: ✅ Saved fresh ${modeStr} statuses to Firestore`);
-            }
+            console.log(`STATUS: ✅ Saved fresh ${modeStr} statuses (${rawStatuses.length} lines)`);
 
-            // Final query after potential refresh
-            let query: any = collectionRef;
-            if (mode) query = query.where('mode', '==', mode);
-            if (lineId) query = query.where('id', '==', lineId);
-            
-            const finalSnapshot = await query.get();
-            const results = finalSnapshot.docs.map((d: any) => d.data());
-            
+            // Return filtered results
+            let results = DataCacheService.getLineStatuses(modeStr);
+            if (lineId && !String(lineId).includes('{')) {
+                results = results.filter((s: any) => s.id === lineId);
+            }
             return res.json(results);
         } catch (error) {
             console.error("Error fetching line statuses:", error);

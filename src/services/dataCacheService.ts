@@ -9,6 +9,7 @@ export class DataCacheService {
     private static modes: Map<string, TransportMode> = new Map();
     private static lines: Map<string, any> = new Map();
     private static routes: Map<string, any> = new Map();
+    private static lineStatuses: Map<string, any> = new Map();
     private static isReady = false;
 
     /**
@@ -71,7 +72,13 @@ export class DataCacheService {
             this.routes.set(r.id, data);
         });
 
-        console.log(`CACHE: 📁 Load from SQLite success. Modes: ${this.modes.size}, Stations: ${this.stations.size}, Lines: ${this.lines.size}, Routes: ${this.routes.size}`);
+        const localStatuses = await LocalDbService.all<{ id: string, raw_data: string }>('SELECT id, raw_data FROM line_statuses');
+        localStatuses.forEach(s => {
+            const data = JSON.parse(s.raw_data);
+            this.lineStatuses.set(s.id, data);
+        });
+
+        console.log(`CACHE: 📁 Load from SQLite success. Modes: ${this.modes.size}, Stations: ${this.stations.size}, Lines: ${this.lines.size}, Routes: ${this.routes.size}, Statuses: ${this.lineStatuses.size}`);
     }
 
     private static async syncWithFirestore() {
@@ -86,6 +93,9 @@ export class DataCacheService {
 
         // Sync Stations (The 20k rows part)
         await this.syncCollection('stations', (id, data) => LocalDbService.upsertStation(id, data));
+
+        // Sync Line Statuses
+        await this.syncCollection('lineStatuses', (id, data) => LocalDbService.upsertLineStatus(id, data));
     }
 
     private static async syncCollection(collectionName: string, upsertFunc: (id: string, data: any) => Promise<void>) {
@@ -122,6 +132,12 @@ export class DataCacheService {
             // Update In-Memory Map
             if (collectionName === 'modes') {
                 this.modes.set(id, data as TransportMode);
+            } else if (collectionName === 'lines') {
+                this.lines.set(id, { ...data, id, modeName: data.modeName });
+            } else if (collectionName === 'routes') {
+                this.routes.set(id, data);
+            } else if (collectionName === 'lineStatuses') {
+                this.lineStatuses.set(id, data);
             } else {
                 this.stations.set(id, { ...data, id: (data as any).naptanId || id } as Station);
             }
@@ -192,6 +208,21 @@ export class DataCacheService {
                 } else {
                     this.routes.set(id, data);
                     await LocalDbService.upsertRoute(id, data);
+                }
+            });
+        });
+
+        // Sync Line Statuses
+        db.collection('lineStatuses').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
+            snapshot.docChanges().forEach(async change => {
+                const data = change.doc.data();
+                const id = change.doc.id;
+                if (change.type === 'removed') {
+                    this.lineStatuses.delete(id);
+                    await LocalDbService.run('DELETE FROM line_statuses WHERE id = ?', [id]);
+                } else {
+                    this.lineStatuses.set(id, data);
+                    await LocalDbService.upsertLineStatus(id, data);
                 }
             });
         });
@@ -293,6 +324,16 @@ export class DataCacheService {
     static getStationsByMode(mode: string): Station[] {
         return Array.from(this.stations.values())
             .filter(s => s.modes && Object.keys(s.modes).includes(mode));
+    }
+
+    static getLineStatuses(mode?: string): any[] {
+        const all = Array.from(this.lineStatuses.values());
+        if (!mode) return all;
+        return all.filter(s => s.mode === mode);
+    }
+
+    static setLineStatus(id: string, data: any): void {
+        this.lineStatuses.set(id, data);
     }
 }
 
