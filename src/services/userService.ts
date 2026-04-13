@@ -1,4 +1,4 @@
-import { db } from '../config/firebase';
+import { db, auth } from '../config/firebase';
 import { SubscriptionService } from './subscriptionService';
 
 export interface UserProfile {
@@ -150,6 +150,32 @@ export class UserService {
         });
 
         return { ...userData, stations: updatedStations };
+    }
+
+    static async deleteAccount(uid: string) {
+        const userRef = this.collection.doc(uid);
+        const snapshot = await userRef.get();
+
+        // Decrement subscription counts for all stations before deleting
+        if (snapshot.exists) {
+            const stations: SubscribedStation[] = snapshot.data()?.stations || [];
+            for (const s of stations) {
+                await SubscriptionService.decrementSubscription(s.id);
+            }
+        }
+
+        // Delete Firestore document
+        await userRef.delete();
+
+        // Delete Firebase Auth user via Admin SDK
+        try {
+            await auth.deleteUser(uid);
+        } catch (err: any) {
+            // If user is already deleted from Auth, that's fine — still return success
+            if (err.code !== 'auth/user-not-found') throw err;
+        }
+
+        return { success: true };
     }
 
     static async logOut(uid: string) {

@@ -251,6 +251,19 @@ export class UserController {
      *       400:
      *         description: UID required
      */
+    static async deleteAccount(req: Request, res: Response) {
+        const { uid } = req.body;
+        if (!uid) {
+            return res.status(400).json({ error: "UID required" });
+        }
+        try {
+            const result = await UserService.deleteAccount(uid);
+            res.json(result);
+        } catch (error: any) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
     static async logOut(req: Request, res: Response) {
         const { uid } = req.body;
         if (!uid) {

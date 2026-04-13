@@ -24,6 +24,9 @@ router.get('/sdui/app/layout', SduiController.getSelectionLayout);
 router.get('/sdui/app/login', SduiController.getLoginLayout);
 router.get('/sdui/app/register', SduiController.getRegisterLayout);
 router.get('/sdui/app/forgot-password', SduiController.getForgotPasswordLayout);
+router.get('/sdui/app/about', SduiController.getAboutLayout);
+router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
+router.get('/sdui/app/home-config', SduiController.getHomeConfig);
 
 // Metadata
 router.get('/modes', ModeController.getModes);
@@ -53,5 +56,6 @@ router.post('/user/sync/stations', UserController.syncStations);
 router.post('/user/stations/add', UserController.addStation);
 router.post('/user/stations/delete', UserController.deleteStation);
 router.post('/user/logout', UserController.logOut);
+router.post('/user/delete-account', UserController.deleteAccount);
 
 export default router;
