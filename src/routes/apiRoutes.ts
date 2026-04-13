@@ -56,5 +56,6 @@ router.post('/user/sync/stations', UserController.syncStations);
 router.post('/user/stations/add', UserController.addStation);
 router.post('/user/stations/delete', UserController.deleteStation);
 router.post('/user/logout', UserController.logOut);
+router.post('/user/delete-account', UserController.deleteAccount);
 
 export default router;
