@@ -386,7 +386,12 @@ export class SduiService {
                 "explore.period.night":       "Night service",
                 "explore.period.night_sub":   "Reduced frequency",
                 "explore.period.offpeak":     "Off-peak",
-                "explore.period.offpeak_sub": "Normal frequency"
+                "explore.period.offpeak_sub": "Normal frequency",
+                // Top bar
+                "topbar.live_label":          "Live Network",
+                // Board card status placeholders
+                "board.status_label":         "Status",
+                "board.connecting_label":     "Connecting to TfL signals..."
             }
         };
     }
