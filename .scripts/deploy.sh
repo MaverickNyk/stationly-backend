@@ -1,7 +1,7 @@
 # Configuration for deploying the Node.js backend
 REMOTE_USER="ubuntu"
 REMOTE_HOST="141.147.91.64"
-KEY_PATH="../ssh_oracle_staionly_backend.key"
+KEY_PATH="/Users/nikhilkumar/workspace/Projects/ssh_oracle_staionly_backend.key"
 REMOTE_DIR="~/stationly-backend"
 SERVICE_NAME="stationly-backend"
 
