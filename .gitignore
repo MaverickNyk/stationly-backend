@@ -50,3 +50,4 @@ desktop.ini
 /data
 *.sqlite
 *.sqlite-journal
+graphify-out/
