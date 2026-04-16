@@ -71,19 +71,34 @@ export class LineController {
             const mode = req.params.mode;
             const station = req.query.station as string;
             
-            // --- NEW: Filter by specific Station if provided (Discovery Mode) ---
+            // --- Filter by specific Station if provided (Discovery Mode) ---
+            // Aggregates lines from ALL stops in the same group (icsCode / stationNaptan),
+            // so that grouped bus stops show the full set of routes at that location.
             if (station && !station.includes('{station}')) {
                 console.log(`DATA: 🔍 Filtering lines for station ${station} (Discovery Mode) using Cache`);
-                const stationData = DataCacheService.getAllStations().find(s => s.naptanId === station || s.id === station);
-                
-                if (stationData && stationData.modes && stationData.modes[mode]) {
-                    const lineIdsAtStation = Object.keys(stationData.modes[mode].lines);
-                    const allLines = DataCacheService.getLinesByMode(mode);
-                    const filteredLines = allLines.filter(l => lineIdsAtStation.includes(l.id))
-                        .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
-                    
-                    if (filteredLines.length > 0) {
-                        return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
+                const repr = DataCacheService.getAllStations().find(s => s.naptanId === station || (s as any).id === station);
+
+                if (repr) {
+                    const groupKey = DataCacheService.getGroupKey(repr);
+                    const siblings = DataCacheService.getAllStations().filter(
+                        s => DataCacheService.getGroupKey(s) === groupKey
+                    );
+
+                    const lineIdsAtStation = new Set<string>();
+                    siblings.forEach(sib => {
+                        const modeData = sib.modes?.[mode];
+                        if (modeData) Object.keys(modeData.lines).forEach(id => lineIdsAtStation.add(id));
+                    });
+
+                    if (lineIdsAtStation.size > 0) {
+                        const allLines = DataCacheService.getLinesByMode(mode);
+                        const filteredLines = allLines
+                            .filter(l => lineIdsAtStation.has(l.id))
+                            .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
+
+                        if (filteredLines.length > 0) {
+                            return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
+                        }
                     }
                 }
                 console.warn(`DATA: ⚠️ No cached lines found for station ${station} matching mode ${mode}.`);

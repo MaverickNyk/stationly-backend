@@ -5,7 +5,44 @@ import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
 
+function formatDistance(meters: number): string {
+    const miles = meters / 1609.34;
+    return miles < 0.1 ? `${meters}m` : `${miles.toFixed(1)} mi`;
+}
+
+function isBusStation(s: any): boolean {
+    return s.modes && Object.keys(s.modes).includes('bus');
+}
+
 export class StationController {
+    /**
+     * @swagger
+     * /stations/resolve:
+     *   get:
+     *     summary: Resolve exact stop from station group
+     *     description: |
+     *       Given the representative naptanId of a grouped station, plus a mode / line / direction,
+     *       returns the exact physical stop (naptanId) within that group that serves the route.
+     *       Used after the user has selected a grouped station, a line, and a direction.
+     *     tags: [Stations]
+     *     parameters:
+     *       - { in: query, name: station,   required: true,  schema: { type: string } }
+     *       - { in: query, name: mode,      required: true,  schema: { type: string } }
+     *       - { in: query, name: line,      required: true,  schema: { type: string } }
+     *       - { in: query, name: direction, required: true,  schema: { type: string } }
+     *     responses:
+     *       200:
+     *         description: "{ naptanId: string }"
+     */
+    static resolveStation(req: Request, res: Response) {
+        const { station, mode, line, direction } = req.query as Record<string, string>;
+        if (!station || !mode || !line || !direction) {
+            return res.status(400).json({ error: "station, mode, line and direction are required" });
+        }
+        const naptanId = DataCacheService.resolveStation(station, mode, line, direction);
+        return res.json({ naptanId });
+    }
+
     /**
      * @swagger
      * /stations/subscribed-ids:
@@ -147,16 +184,16 @@ export class StationController {
      *   get:
      *     summary: Search or Discover Nearby Stations
      *     description: |
-     *       Unified station search endpoint. Served from in-memory cache (backed by SQLite).
-     *       - **Text search**: Pass `searchKey` to search by station name or NaPTAN ID.
-     *       - **Nearby search**: Pass `lat`, `lon`, and optional `radius` (km, default 2.41) to find nearby stations.
-     *         Falls back to TfL API if results are sparse. Also aliased at `/stations/nearby`.
+     *       Unified station search endpoint served from the in-memory cache (backed by SQLite).
+     *       - **Text search**: Pass `searchKey` to search by name or NaPTAN ID. Supports fuzzy matching.
+     *       - **Nearby search**: Pass `lat` + `lon` to get all stations sorted by proximity.
+     *         Also aliased at `/stations/nearby`.
      *     tags: [Stations]
      *     parameters:
      *       - in: query
      *         name: searchKey
      *         schema: { type: string }
-     *         description: Station name or NaPTAN ID to search.
+     *         description: Station name or NaPTAN ID (supports fuzzy spelling).
      *       - in: query
      *         name: lat
      *         schema: { type: number }
@@ -164,177 +201,110 @@ export class StationController {
      *         name: lon
      *         schema: { type: number }
      *       - in: query
-     *         name: radius
-     *         schema: { type: number }
-     *         description: Search radius in km (max 2.41).
-     *       - in: query
      *         name: mode
      *         schema: { type: string }
-     *         description: Optional mode filter for nearby search (e.g. tube, bus).
+     *         description: Optional mode filter (e.g. tube, bus).
      *     responses:
      *       200:
-     *         description: List of matching stations.
+     *         description: List of matching stations as SDUI dropdown options.
      */
     static async searchStations(req: Request, res: Response) {
-        const { searchKey, lat, lon, radius = 2.41, mode } = req.query;
+        const { searchKey, lat, lon, mode } = req.query;
+        const modeFilter = mode ? String(mode) : undefined;
 
         try {
-            let stations: any[] = [];
+            // ── Text search ────────────────────────────────────────────────────────
+            if (searchKey && !String(searchKey).includes('{')) {
+                let stations: any[] = DataCacheService.searchStationsByQuery(String(searchKey));
 
-            // 1. Semantic/Text Search
-            if (searchKey && !String(searchKey).includes('{mode}')) {
-                stations = DataCacheService.searchStationsByQuery(String(searchKey));
-                
-                // Firestore Fallback if cache is empty (initial load)
+                // Cold-start: cache not ready yet — fall back to Firestore
                 if (stations.length === 0 && !DataCacheService.getIsReady()) {
-                    console.log(`CACHE: ⚪ Cache not ready for searchKey '${searchKey}'. Checking Firestore...`);
+                    console.log(`CACHE: ⚪ Cache not ready for '${searchKey}', querying Firestore`);
                     const snapshot = await db.collection('stations')
                         .where('searchKeys', 'array-contains', String(searchKey))
                         .get();
                     stations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 }
 
-                stations.sort((a, b) => (a.commonName || "").localeCompare(b.commonName || ""));
-                const sduiOptions = stations.slice(0, 50).map(s => ({
-                    id: s.id || s.naptanId,
-                    label: s.commonName || s.label || (s as any).name || s.id,
-                    iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
-                }));
-                return res.json(sduiOptions);
-            } 
-            
-            // 2. Nearby Search (Lat/Lon)
-            else if (lat !== undefined && lon !== undefined) {
-                const startLat = Number(lat);
-                const startLon = Number(lon);
-                
-                if (isNaN(startLat) || isNaN(startLon)) {
-                    console.log(`DATA: 📍 Nearby search ignored (NaN coords)`);
-                    return res.json([]);
+                // Attach distances if caller supplied a location, then sort nearest-first
+                const userLat = lat !== undefined ? Number(lat) : NaN;
+                const userLon = lon !== undefined ? Number(lon) : NaN;
+                if (!isNaN(userLat) && !isNaN(userLon)) {
+                    stations = stations.map(s =>
+                        s.lat && s.lon
+                            ? { ...s, distance: DataCacheService.haversineMeters(userLat, userLon, s.lat, s.lon) }
+                            : s
+                    );
+                    stations.sort((a, b) => (a.distance ?? 999999) - (b.distance ?? 999999));
+                } else {
+                    stations.sort((a, b) => (a.commonName || '').localeCompare(b.commonName || ''));
                 }
 
-                let radiusKm = Number(radius);
-                if (radiusKm > 100) radiusKm = radiusKm / 1000;
-                
-                const MAX_RADIUS_KM = 2.41; 
-                radiusKm = Math.min(radiusKm, MAX_RADIUS_KM);
+                const grouped = DataCacheService.groupStations(stations);
+                return res.json(grouped.slice(0, 50).map(s => ({
+                    id: s.id || s.naptanId,
+                    label: s.commonName || s.label || s.id,
+                    iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
+                    secondaryLabel: s.distance !== undefined ? formatDistance(s.distance) : undefined,
+                })));
+            }
 
-                console.log(`DATA: 📍 Nearby search active: lat=${startLat}, lon=${startLon}, radius=${radiusKm}km, mode=${mode || 'ANY'}`);
+            // ── Nearby search ──────────────────────────────────────────────────────
+            if (lat !== undefined && lon !== undefined) {
+                const startLat = Number(lat);
+                const startLon = Number(lon);
+                if (isNaN(startLat) || isNaN(startLon)) return res.json([]);
 
-                // Filter using in-memory cache
-                stations = DataCacheService.getNearbyStations(startLat, startLon, radiusKm, mode as string);
-                
-                // Firestore Fallback if cache is empty (initial load)
+                console.log(`DATA: 📍 Nearby: lat=${startLat}, lon=${startLon}, mode=${modeFilter ?? 'ANY'}`);
+
+                let stations = DataCacheService.getNearbyStations(startLat, startLon, modeFilter);
+
+                // Cold-start: cache not ready yet — fall back to Firestore
                 if (stations.length === 0 && !DataCacheService.getIsReady()) {
-                    console.log(`CACHE: ⚪ Cache not ready for nearby search. Checking Firestore...`);
+                    console.log(`CACHE: ⚪ Cache not ready for nearby search, querying Firestore`);
                     const snapshot = await db.collection('stations').get();
                     snapshot.forEach(doc => {
                         const data = doc.data() as Station;
                         if (data.lat && data.lon) {
-                            const dLat = (data.lat - startLat) * (Math.PI / 180);
-                            const dLon = (data.lon - startLon) * (Math.PI / 180);
-                            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                                      Math.cos(startLat * (Math.PI / 180)) * Math.cos(data.lat * (Math.PI / 180)) *
-                                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-                            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                            const distance = 6371 * c;
-                            if (distance <= radiusKm) {
-                                stations.push({ ...data, id: doc.id, distance: Math.round(distance * 1000) });
-                            }
+                            stations.push({
+                                ...data,
+                                id: doc.id,
+                                distance: DataCacheService.haversineMeters(startLat, startLon, data.lat, data.lon),
+                            });
                         }
+                    });
+                    stations.sort((a, b) => {
+                        const d = a.distance - b.distance;
+                        return d !== 0 ? d : (a.commonName || '').localeCompare(b.commonName || '');
                     });
                 }
 
-                // 3. Fallback to real TfL API if results are sparse
-                if (stations.length < 5) {
-                    console.log(`DATA: ⚪ Insufficient results (${stations.length}). Fetching from TfL API...`);
-                    try {
-                        const stopPoints = await TflApiClient.getNearbyStopPoints(startLat, startLon, radiusKm * 1000);
-                        if (stopPoints && stopPoints.length > 0) {
-                            const tflStations = stopPoints.map((sp: any) => ({
-                                id: sp.naptanId,
-                                label: `${sp.commonName || sp.name} (${sp.distance ? Math.round(sp.distance) : 0}m)`,
-                                commonName: sp.commonName || sp.name,
-                                naptanId: sp.naptanId,
-                                lat: sp.lat,
-                                lon: sp.lon,
-                                distance: sp.distance ? Math.round(sp.distance) : 0,
-                                modes: sp.modes || [],
-                                stopType: sp.stopType || 'N/A'
-                            }));
-                            
-                            const merged = [...stations];
-                            tflStations.forEach((ts: any) => {
-                                if (!merged.find(m => m.id === ts.id)) merged.push(ts);
-                            });
-                            stations = merged;
-
-                            // Cache discoveries in Firestore (background)
-                            setImmediate(async () => {
-                                const batch = db.batch();
-                                stopPoints.slice(0, 15).forEach((sp: any) => {
-                                    const docRef = db.collection('stations').doc(sp.naptanId);
-                                    batch.set(docRef, {
-                                        naptanId: sp.naptanId,
-                                        commonName: sp.commonName || sp.name,
-                                        lat: sp.lat,
-                                        lon: sp.lon,
-                                        stopType: sp.stopType,
-                                        modes: sp.modes || [],
-                                        lastUpdated: new Date().toISOString()
-                                    }, { merge: true });
-                                });
-                                await batch.commit();
-                            });
-                        }
-                    } catch (err) {
-                        console.error("TfL Fallback failed:", err);
-                    }
-                }
-
-                // Final Sort: Closest first (Discovery requirement)
-                stations.sort((a, b) => {
-                    return (a.distance || 999999) - (b.distance || 999999);
-                });
-                
-                const finalOptions = stations.slice(0, 25).map(s => {
-                    const name = s.label || s.commonName || (s as any).name || s.id;
-                    
-                    // Convert meters to miles (1 mile = 1609.34 meters)
-                    const distMeters = s.distance || 0;
-                    const distMiles = distMeters / 1609.34;
-                    const formattedDist = distMiles.toFixed(1);
-                    
-                    return {
-                        id: s.id || s.naptanId,
-                        label: name,
-                        secondaryLabel: `${formattedDist} m`,
-                        iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null
-                    };
+                const grouped = DataCacheService.groupStations(stations);
+                grouped.sort((a, b) => {
+                    const d = (a.distance ?? 999999) - (b.distance ?? 999999);
+                    return d !== 0 ? d : (a.commonName || a.label || '').localeCompare(b.commonName || b.label || '');
                 });
 
-                return res.json(finalOptions);
-            } 
-            
-            // 3. Mode Fallback (All stations for a mode if no location)
-            else if (mode) {
-                console.log(`DATA: 📋 Mode fallback search for: ${mode}`);
-                stations = DataCacheService.getStationsByMode(mode as string);
-                
-                const fallbackOptions = stations.slice(0, 50).map(s => ({
+                return res.json(grouped.slice(0, 25).map(s => ({
                     id: s.id || s.naptanId,
-                    label: s.label || s.commonName || (s as any).name || s.id,
-                }));
-                return res.json(fallbackOptions);
-            } else {
-                const searchOptions = stations.slice(0, 50).map(s => ({
-                    id: s.id || s.naptanId,
-                    label: s.label || s.commonName || (s as any).name || s.id,
-                }));
-                return res.json(searchOptions);
+                    label: s.label || s.commonName || s.id,
+                    secondaryLabel: formatDistance(s.distance || 0),
+                    iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
+                })));
             }
+
+            // ── Mode-only fallback (no location) ───────────────────────────────────
+            if (modeFilter) {
+                const stations = DataCacheService.getStationsByMode(modeFilter);
+                return res.json(stations.slice(0, 50).map(s => ({
+                    id: s.id || s.naptanId,
+                    label: s.commonName || s.label || s.id,
+                })));
+            }
+
+            return res.json([]);
         } catch (error) {
-            console.error("Error searching stations:", error);
+            console.error('Error searching stations:', error);
             return res.status(500).json([]);
         }
     }
