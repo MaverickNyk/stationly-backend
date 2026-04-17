@@ -4,35 +4,9 @@ import { TflApiClient } from '../client/TflApiClient';
 import { formatDestination } from '../utils/formatters';
 import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '../models';
 
-import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
+import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
-
-// Official TfL brand colors by line ID
-const TFL_LINE_COLORS: Record<string, string> = {
-    'bakerloo':           '#B36305',
-    'central':            '#E32017',
-    'circle':             '#FFD300',
-    'district':           '#00782A',
-    'hammersmith-city':   '#F3A9BB',
-    'jubilee':            '#A0A5A9',
-    'metropolitan':       '#9B0056',
-    'northern':           '#000000',
-    'piccadilly':         '#003688',
-    'victoria':           '#0098D4',
-    'waterloo-city':      '#95CDBA',
-    'dlr':                '#00A4A7',
-    'elizabeth':          '#6950A1',
-    'london-overground':  '#EE7C0E', // legacy / fallback
-    'lioness':            '#E2A12B', // Watford - Euston
-    'mildmay':            '#1A6DB4', // Stratford - Richmond/Clapham Jct
-    'windrush':           '#E2231A', // Clapham Jct - Highbury & Islington
-    'weaver':             '#7B2D8B', // Liverpool St - Enfield/Cheshunt/Chingford
-    'suffragette':        '#00843D', // Gospel Oak - Barking Riverside
-    'liberty':            '#6B717E', // Romford - Upminster
-    'tram':               '#84B817',
-    'cable-car':          '#E21836',
-};
 
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {

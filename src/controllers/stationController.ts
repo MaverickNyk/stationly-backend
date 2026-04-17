@@ -4,6 +4,7 @@ import { TflApiClient } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
+import { TFL_LINE_COLORS } from '../utils/tflUtils';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -12,6 +13,15 @@ function formatDistance(meters: number): string {
 
 function isBusStation(s: any): boolean {
     return s.modes && Object.keys(s.modes).includes('bus');
+}
+
+function lineTags(s: any, mode?: string): string[] | undefined {
+    const modeData = mode ? s.modes?.[mode] : null;
+    if (!modeData?.lines) return undefined;
+    const colors = Object.keys(modeData.lines)
+        .map((id: string) => TFL_LINE_COLORS[id])
+        .filter((c): c is string => Boolean(c));
+    return colors.length > 0 ? colors : undefined;
 }
 
 export class StationController {
@@ -246,6 +256,7 @@ export class StationController {
                     label: s.commonName || s.label || s.id,
                     iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
                     secondaryLabel: s.distance !== undefined ? formatDistance(s.distance) : undefined,
+                    tags: lineTags(s, modeFilter),
                 })));
             }
 
@@ -290,6 +301,7 @@ export class StationController {
                     label: s.label || s.commonName || s.id,
                     secondaryLabel: formatDistance(s.distance || 0),
                     iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
+                    tags: lineTags(s, modeFilter),
                 })));
             }
 
