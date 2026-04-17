@@ -303,13 +303,30 @@ export class DataCacheService {
         return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
+    /**
+     * Returns true if a station serves the given mode.
+     * Primary check: station.modes keys. Fallback: any line in searchKeys has that modeName.
+     * The fallback handles modes like elizabeth-line where stations lack modes metadata.
+     */
+    static stationServesMode(station: Station, mode: string): boolean {
+        const modeLower = mode.toLowerCase();
+        if (station.modes && Object.keys(station.modes).some(m => m.toLowerCase() === modeLower)) {
+            return true;
+        }
+        const searchKeys: string[] = (station as any).searchKeys || [];
+        return searchKeys.some(key => {
+            const line = this.lines.get(key);
+            return line?.modeName?.toLowerCase() === modeLower;
+        });
+    }
+
     /** Returns all stations with coordinates, sorted nearest-first then A-Z. Optionally filtered by mode. */
     static getNearbyStations(lat: number, lon: number, mode?: string): any[] {
         const results: any[] = [];
 
         this.stations.forEach((data) => {
             if (!data.lat || !data.lon) return;
-            if (mode && !(data.modes && Object.keys(data.modes).some(m => m.toLowerCase() === mode.toLowerCase()))) return;
+            if (mode && !this.stationServesMode(data, mode)) return;
 
             const stopType = data.stopType || '';
             results.push({

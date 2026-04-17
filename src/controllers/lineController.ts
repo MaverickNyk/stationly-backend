@@ -150,6 +150,7 @@ export class LineController {
     static async getLineRoute(req: Request, res: Response) {
         try {
             const lineId = req.params.lineId;
+            const { station, mode } = req.query as Record<string, string>;
             
             // 1. Try Memory Cache first (SQLite populated)
             let routeData = DataCacheService.getRoute(lineId);
@@ -202,8 +203,30 @@ export class LineController {
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
+            // If station is provided, collect which directions it actually serves for this line
+            let stationDirections: Set<string> | null = null;
+            if (station && mode) {
+                const repr = DataCacheService.getAllStations().find(
+                    (s: any) => s.naptanId === station || s.id === station
+                );
+                if (repr) {
+                    const groupKey = DataCacheService.getGroupKey(repr);
+                    const siblings = DataCacheService.getAllStations().filter(
+                        (s: any) => DataCacheService.getGroupKey(s) === groupKey
+                    );
+                    const dirs = new Set<string>();
+                    for (const sib of siblings) {
+                        const lineData = (sib.modes as any)?.[mode]?.lines?.[lineId];
+                        (lineData?.directions || []).forEach((d: string) => dirs.add(d.toLowerCase()));
+                    }
+                    if (dirs.size > 0) stationDirections = dirs;
+                }
+            }
+
             // Map the routeData for SDUI so it receives a flat array of formatted directions
-            const sduiMappedDirections = (routeData.directions || []).map((dir: any) => {
+            const sduiMappedDirections = (routeData.directions || [])
+                .filter((dir: any) => !stationDirections || stationDirections.has((dir.direction || '').toLowerCase()))
+                .map((dir: any) => {
                 const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
                 let label = `${dirName} towards`;
                 if (dir.destinations && dir.destinations.length > 0) {

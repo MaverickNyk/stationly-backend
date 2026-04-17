@@ -227,6 +227,11 @@ export class StationController {
             if (searchKey && !String(searchKey).includes('{')) {
                 let stations: any[] = DataCacheService.searchStationsByQuery(String(searchKey));
 
+                // Apply mode filter so e.g. bus mode doesn't return tube stations
+                if (modeFilter) {
+                    stations = stations.filter(s => DataCacheService.stationServesMode(s, modeFilter));
+                }
+
                 // Cold-start: cache not ready yet — fall back to Firestore
                 if (stations.length === 0 && !DataCacheService.getIsReady()) {
                     console.log(`CACHE: ⚪ Cache not ready for '${searchKey}', querying Firestore`);
@@ -234,6 +239,9 @@ export class StationController {
                         .where('searchKeys', 'array-contains', String(searchKey))
                         .get();
                     stations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    if (modeFilter) {
+                        stations = stations.filter(s => DataCacheService.stationServesMode(s, modeFilter));
+                    }
                 }
 
                 // Attach distances if caller supplied a location, then sort nearest-first
@@ -276,13 +284,13 @@ export class StationController {
                     const snapshot = await db.collection('stations').get();
                     snapshot.forEach(doc => {
                         const data = doc.data() as Station;
-                        if (data.lat && data.lon) {
-                            stations.push({
-                                ...data,
-                                id: doc.id,
-                                distance: DataCacheService.haversineMeters(startLat, startLon, data.lat, data.lon),
-                            });
-                        }
+                        if (!data.lat || !data.lon) return;
+                        if (modeFilter && !DataCacheService.stationServesMode(data, modeFilter)) return;
+                        stations.push({
+                            ...data,
+                            id: doc.id,
+                            distance: DataCacheService.haversineMeters(startLat, startLon, data.lat, data.lon),
+                        });
                     });
                     stations.sort((a, b) => {
                         const d = a.distance - b.distance;
@@ -307,10 +315,11 @@ export class StationController {
 
             // ── Mode-only fallback (no location) ───────────────────────────────────
             if (modeFilter) {
-                const stations = DataCacheService.getStationsByMode(modeFilter);
+                const stations = DataCacheService.getAllStations()
+                    .filter(s => DataCacheService.stationServesMode(s, modeFilter));
                 return res.json(stations.slice(0, 50).map(s => ({
-                    id: s.id || s.naptanId,
-                    label: s.commonName || s.label || s.id,
+                    id: (s as any).id || s.naptanId,
+                    label: s.commonName || (s as any).label || (s as any).id,
                 })));
             }
 
