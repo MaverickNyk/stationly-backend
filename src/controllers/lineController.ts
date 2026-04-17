@@ -8,6 +8,61 @@ import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
 
+/** Fetch ordered stop-ID sequences for each direction of a line from TfL. */
+async function fetchSequences(
+    lineId: string,
+    directions: { direction: string }[]
+): Promise<{ sequences: Record<string, string[][]>; stationNames: Record<string, string> }> {
+    const sequences: Record<string, string[][]> = {};
+    const stationNames: Record<string, string> = {};
+    for (const dir of directions) {
+        try {
+            const data = await TflApiClient.getLineRouteSequence(lineId, dir.direction);
+            sequences[dir.direction] = (data.orderedLineRoutes || []).map((r: any) => r.naptanIds || []);
+            // Populate names from stations array
+            (data.stations || []).forEach((s: any) => {
+                const id = s.stationId || s.id;
+                if (id && s.name) stationNames[id] = s.name;
+            });
+            // Also populate from stopPointSequences (more reliable ID↔name mapping)
+            (data.stopPointSequences || []).forEach((seq: any) => {
+                (seq.stopPoint || []).forEach((sp: any) => {
+                    const id = sp.id || sp.naptanId;
+                    if (id && sp.name && !stationNames[id]) stationNames[id] = sp.name;
+                });
+            });
+        } catch {
+            console.warn(`DATA: ⚠️ Could not fetch sequence for ${lineId}/${dir.direction}`);
+        }
+    }
+    return { sequences, stationNames };
+}
+
+/** Given ordered branch sequences and a station ID, return the next N stop names after it. */
+function getNextStops(
+    branches: string[][],
+    stationNames: Record<string, string>,
+    stationId: string,
+    count = 4
+): string | undefined {
+    for (const branch of branches) {
+        const idx = branch.indexOf(stationId);
+        if (idx >= 0 && idx < branch.length - 1) {
+            const names = branch.slice(idx + 1, idx + 1 + count)
+                .map(id => {
+                    if (stationNames[id]) return stationNames[id];
+                    // Fallback: look up in in-memory station cache
+                    const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
+                    return cached?.commonName;
+                })
+                .filter((n): n is string => Boolean(n))
+                .map(n => n.replace(/\s+(Underground\s+)?Station$/i, '').replace(/\s+Rail\s+Station$/i, ''));
+            if (names.length > 0) return names.join(' · ');
+        }
+    }
+    return undefined;
+}
+
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
         const index = Math.floor(Math.random() * GOOD_SERVICE_MESSAGES.length);
@@ -170,14 +225,13 @@ export class LineController {
                 }
             }
 
-            // 3. TfL API fallback — fetch, parse, and save
+            // 3. TfL API fallback — fetch route + sequences inline
             if (!routeData) {
                 console.log(`DATA: ⚪ Fetching route from TfL API for ${lineId}...`);
                 try {
                     const raw = await TflApiClient.getLineRoute(lineId);
                     const sectionsArray: any[] = Array.isArray(raw) ? raw : (raw?.routeSections || []);
 
-                    // Group routeSections by direction, collect unique destinations
                     const dirMap: Record<string, { id: string; name: string }[]> = {};
                     sectionsArray.forEach((section: any) => {
                         const dir: string = (section.direction || 'outbound').toLowerCase();
@@ -188,11 +242,14 @@ export class LineController {
                     });
 
                     const directions = Object.entries(dirMap).map(([direction, destinations]) => ({ direction, destinations }));
-                    routeData = { directions, lastUpdatedTime: new Date().toISOString() };
+                    const { sequences, stationNames } = await fetchSequences(lineId, directions);
+                    routeData = { directions, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
 
-                    // Save to Firestore
+                    // Persist to all three layers immediately
+                    DataCacheService.setRoute(lineId, routeData);
+                    await LocalDbService.upsertRoute(lineId, routeData);
                     await db.collection('routes').doc(lineId).set(routeData);
-                    console.log(`DATA: ✅ Saved route for ${lineId} to Firestore (${directions.length} directions)`);
+                    console.log(`DATA: ✅ Saved route + sequences for ${lineId} (${directions.length} directions)`);
                 } catch (tflErr) {
                     console.warn(`DATA: ⚠️ TfL route fetch failed for ${lineId}:`, tflErr);
                 }
@@ -203,41 +260,71 @@ export class LineController {
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
-            // If station is provided, collect which directions it actually serves for this line
-            let stationDirections: Set<string> | null = null;
-            if (station && mode) {
+            // Background-enrich cached routes missing sequences or sparse stationNames
+            const nameCount = Object.keys(routeData.stationNames || {}).length;
+            if ((!routeData.sequences || nameCount < 10) && routeData.directions?.length > 0) {
+                setImmediate(async () => {
+                    try {
+                        const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
+                        const enriched = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
+                        // Update all three layers: memory, SQLite, Firestore
+                        DataCacheService.setRoute(lineId, enriched);
+                        await LocalDbService.upsertRoute(lineId, enriched);
+                        await db.collection('routes').doc(lineId).set(enriched);
+                        console.log(`DATA: ✅ Background-enriched sequences for ${lineId}`);
+                    } catch { /* non-critical */ }
+                });
+            }
+
+            // Resolve the station's individual stop IDs (grouped station → sibling naptanIds)
+            const stationIds = new Set<string>();
+            if (station) {
                 const repr = DataCacheService.getAllStations().find(
                     (s: any) => s.naptanId === station || s.id === station
                 );
                 if (repr) {
                     const groupKey = DataCacheService.getGroupKey(repr);
-                    const siblings = DataCacheService.getAllStations().filter(
-                        (s: any) => DataCacheService.getGroupKey(s) === groupKey
-                    );
-                    const dirs = new Set<string>();
-                    for (const sib of siblings) {
-                        const lineData = (sib.modes as any)?.[mode]?.lines?.[lineId];
-                        (lineData?.directions || []).forEach((d: string) => dirs.add(d.toLowerCase()));
-                    }
-                    if (dirs.size > 0) stationDirections = dirs;
+                    DataCacheService.getAllStations()
+                        .filter((s: any) => DataCacheService.getGroupKey(s) === groupKey)
+                        .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
                 }
+                stationIds.add(station); // always include the representative itself
             }
 
-            // Map the routeData for SDUI so it receives a flat array of formatted directions
+            // Filter directions to those the station actually serves (mode metadata)
+            let stationDirections: Set<string> | null = null;
+            if (station && mode) {
+                const dirs = new Set<string>();
+                for (const sid of stationIds) {
+                    const stn = DataCacheService.getAllStations().find((s: any) => s.naptanId === sid);
+                    const lineData = (stn?.modes as any)?.[mode]?.lines?.[lineId];
+                    (lineData?.directions || []).forEach((d: string) => dirs.add(d.toLowerCase()));
+                }
+                if (dirs.size > 0) stationDirections = dirs;
+            }
+
             const sduiMappedDirections = (routeData.directions || [])
                 .filter((dir: any) => !stationDirections || stationDirections.has((dir.direction || '').toLowerCase()))
                 .map((dir: any) => {
-                const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
-                let label = `${dirName} towards`;
-                if (dir.destinations && dir.destinations.length > 0) {
-                    const destNames = dir.destinations.map((d: any) => formatDestination(d.name)).join('\n');
-                    label = `${dirName} towards\n${destNames}`;
-                }
-                return {
-                    id: dir.direction,
-                    label: label
-                };
-            });
+                    const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
+                    let label = `${dirName} towards`;
+                    if (dir.destinations?.length > 0) {
+                        label = `${dirName} towards\n${dir.destinations.map((d: any) => formatDestination(d.name)).join('\n')}`;
+                    }
+
+                    // Build next-stops secondary label from sequence data
+                    let secondaryLabel: string | undefined;
+                    const branches: string[][] = routeData.sequences?.[dir.direction] || [];
+                    const names: Record<string, string> = routeData.stationNames || {};
+                    if (branches.length > 0 && stationIds.size > 0) {
+                        for (const sid of stationIds) {
+                            secondaryLabel = getNextStops(branches, names, sid);
+                            if (secondaryLabel) break;
+                        }
+                    }
+
+                    return { id: dir.direction, label, secondaryLabel };
+                });
 
             return res.json(sduiMappedDirections);
         } catch (error) {

@@ -429,6 +429,10 @@ export class DataCacheService {
         return this.routes.get(lineId) || null;
     }
 
+    static setRoute(lineId: string, data: any): void {
+        this.routes.set(lineId, data);
+    }
+
     static getStationsByMode(mode: string): Station[] {
         return Array.from(this.stations.values())
             .filter(s => s.modes && Object.keys(s.modes).includes(mode));
