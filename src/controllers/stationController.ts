@@ -90,19 +90,55 @@ export class StationController {
         }
     }
 
+    private static formatDisplayName(arrival: any): string {
+        const raw = (arrival.towards && arrival.towards.trim())
+            ? arrival.towards.trim()
+            : (arrival.destinationName || '');
+        return raw
+            .replace(/ Underground Station/g, '')
+            .replace(/ Station/g, '')
+            .replace(/ DLR/g, '')
+            .trim();
+    }
+
+    private static getPresentablePlatform(mode: string, rawPlatform: string): string {
+        const isBus = (mode || '').toLowerCase() === 'bus';
+        if (!rawPlatform || rawPlatform.toLowerCase() === 'null' || rawPlatform.trim() === '' || rawPlatform.toLowerCase() === 'unknown') {
+            return isBus ? 'Stop not assigned' : 'Platform not assigned';
+        }
+        const p = rawPlatform.trim();
+        if (isBus) {
+            const stripped = p.toLowerCase().startsWith('stop ') ? p.substring(5).trim() : p;
+            return 'Stop ' + stripped.toUpperCase();
+        }
+        if (p.includes(' - ')) {
+            const parts = p.split(' - ');
+            if (parts.length >= 2) {
+                const desc = parts[0].trim();
+                const plat = parts[1].trim();
+                const platLabel = plat.toLowerCase().startsWith('platform') ? plat : 'Platform ' + plat;
+                return platLabel + ' (' + desc + ')';
+            }
+        }
+        if (/^\d+$/.test(p)) return 'Platform ' + p;
+        if (/^plat \d+$/i.test(p)) return p.replace(/^plat /i, 'Platform ');
+        return p;
+    }
+
     private static async fetchPredictions(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
-        
+
         // 1. Fetch raw arrivals from TfL
         const arrivals = await TflApiClient.getArrivalsForStation(naptanId);
-        
+
         // 2. Group by Line and Direction
         const lines: Record<string, LinePredictions> = {};
-        
+
         arrivals.forEach(arrival => {
             const lineId = arrival.lineId.toLowerCase();
-            const direction = arrival.direction || (arrival.platformName.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
-            
+            const rawPlatform = arrival.platformName || '';
+            const direction = arrival.direction || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
+
             if (!lines[lineId]) {
                 lines[lineId] = {
                     id: arrival.lineId,
@@ -110,16 +146,16 @@ export class StationController {
                     dirs: {}
                 };
             }
-            
+
             if (!lines[lineId].dirs[direction]) {
                 lines[lineId].dirs[direction] = { preds: [] };
             }
-            
+
             lines[lineId].dirs[direction].preds.push({
                 destId: arrival.destinationNaptanId || 'unknown',
-                platform: arrival.platformName,
-                eta: arrival.expectedArrival,
-                displayName: arrival.destinationName
+                platform: StationController.getPresentablePlatform(arrival.modeName || '', rawPlatform),
+                eta: arrival.expectedArrival || '',
+                displayName: StationController.formatDisplayName(arrival)
             });
         });
 
