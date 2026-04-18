@@ -42,16 +42,14 @@ async function fetchSequences(
 function getNextStops(
     branches: string[][],
     stationNames: Record<string, string>,
-    stationId: string,
-    count = 4
+    stationId: string
 ): string | undefined {
     for (const branch of branches) {
         const idx = branch.indexOf(stationId);
         if (idx >= 0 && idx < branch.length - 1) {
-            const names = branch.slice(idx + 1, idx + 1 + count)
+            const names = branch.slice(idx + 1)
                 .map(id => {
                     if (stationNames[id]) return stationNames[id];
-                    // Fallback: look up in in-memory station cache
                     const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
                     return cached?.commonName;
                 })
@@ -260,20 +258,26 @@ export class LineController {
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
-            // Background-enrich cached routes missing sequences or sparse stationNames
+            // Inline-enrich cached routes missing sequences or sparse stationNames
+            // (must be synchronous so the first request already has next-stop data)
             const nameCount = Object.keys(routeData.stationNames || {}).length;
             if ((!routeData.sequences || nameCount < 10) && routeData.directions?.length > 0) {
-                setImmediate(async () => {
-                    try {
-                        const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
-                        const enriched = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
-                        // Update all three layers: memory, SQLite, Firestore
-                        DataCacheService.setRoute(lineId, enriched);
-                        await LocalDbService.upsertRoute(lineId, enriched);
-                        await db.collection('routes').doc(lineId).set(enriched);
-                        console.log(`DATA: ✅ Background-enriched sequences for ${lineId}`);
-                    } catch { /* non-critical */ }
-                });
+                try {
+                    console.log(`DATA: 🔄 Enriching sequences inline for ${lineId} (nameCount=${nameCount})`);
+                    const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
+                    routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
+                    DataCacheService.setRoute(lineId, routeData);
+                    // Persist in background — don't block the response
+                    setImmediate(async () => {
+                        try {
+                            await LocalDbService.upsertRoute(lineId, routeData);
+                            await db.collection('routes').doc(lineId).set(routeData);
+                        } catch { /* non-critical */ }
+                    });
+                    console.log(`DATA: ✅ Inline-enriched sequences for ${lineId}`);
+                } catch {
+                    console.warn(`DATA: ⚠️ Could not enrich sequences inline for ${lineId}`);
+                }
             }
 
             // Resolve the station's individual stop IDs (grouped station → sibling naptanIds)
