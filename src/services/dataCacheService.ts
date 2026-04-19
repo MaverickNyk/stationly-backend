@@ -240,71 +240,179 @@ export class DataCacheService {
         return Array.from(this.stations.values());
     }
 
+    private static levenshtein(a: string, b: string): number {
+        const m = a.length, n = b.length;
+        const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i);
+        for (let i = 1; i <= m; i++) {
+            let prev = dp[0];
+            dp[0] = i;
+            for (let j = 1; j <= n; j++) {
+                const tmp = dp[j];
+                dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+                prev = tmp;
+            }
+        }
+        return dp[n];
+    }
+
     /**
      * Search stations by text (commonName / naptanId) OR by exact searchKey match (e.g. line ID "39").
-     * Exact searchKey match takes priority so bus route lookups work correctly.
+     * Falls back to fuzzy (Levenshtein) matching so single-character typos still resolve.
      */
     static searchStationsByQuery(query: string): Station[] {
-        const q = query.toLowerCase();
+        const q = query.toLowerCase().trim();
         const all = this.getAllStations();
 
-        // First try exact match against the searchKeys array (e.g. line id "39")
+        // Exact searchKey match takes priority (bus route IDs like "39")
         const bySearchKey = all.filter(s =>
             Array.isArray((s as any).searchKeys) &&
             (s as any).searchKeys.some((k: string) => k.toLowerCase() === q)
         );
         if (bySearchKey.length > 0) return bySearchKey;
 
-        // Fall back to text search on commonName / naptanId
-        return all.filter(s =>
+        // Substring match on commonName / naptanId
+        const exact = all.filter(s =>
             (s.commonName || "").toLowerCase().includes(q) ||
             (s.naptanId || "").toLowerCase().includes(q)
-        ).slice(0, 50);
+        );
+        if (exact.length > 0) return exact.slice(0, 50);
+
+        // Fuzzy fallback: match individual words with small edit distance
+        const qWords = q.split(/\s+/).filter(w => w.length > 2);
+        if (qWords.length === 0) return [];
+        return all.filter(s => {
+            const nameWords = (s.commonName || "").toLowerCase().split(/[\s,\-\/]+/);
+            return qWords.some(qw =>
+                nameWords.some(nw => {
+                    if (nw.includes(qw) || qw.includes(nw)) return true;
+                    const maxDist = qw.length > 5 ? 2 : 1;
+                    return this.levenshtein(qw, nw) <= maxDist;
+                })
+            );
+        }).slice(0, 50);
+    }
+
+    /** Haversine distance in metres between two WGS-84 coordinates. */
+    static haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * (Math.PI / 180);
+        const dLon = (lon2 - lon1) * (Math.PI / 180);
+        const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+            Math.sin(dLon / 2) ** 2;
+        return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
     }
 
     /**
-     * Search stations by proximity
+     * Returns true if a station serves the given mode.
+     * Primary check: station.modes keys. Fallback: any line in searchKeys has that modeName.
+     * The fallback handles modes like elizabeth-line where stations lack modes metadata.
      */
-    static getNearbyStations(lat: number, lon: number, radiusKm: number, mode?: string): any[] {
+    static stationServesMode(station: Station, mode: string): boolean {
+        const modeLower = mode.toLowerCase();
+        if (station.modes && Object.keys(station.modes).some(m => m.toLowerCase() === modeLower)) {
+            return true;
+        }
+        const searchKeys: string[] = (station as any).searchKeys || [];
+        return searchKeys.some(key => {
+            const line = this.lines.get(key);
+            return line?.modeName?.toLowerCase() === modeLower;
+        });
+    }
+
+    /** Returns all stations with coordinates, sorted nearest-first then A-Z. Optionally filtered by mode. */
+    static getNearbyStations(lat: number, lon: number, mode?: string): any[] {
         const results: any[] = [];
-        const startLat = lat;
-        const startLon = lon;
 
         this.stations.forEach((data) => {
-            if (data.lat && data.lon) {
-                // Quick bounding box check for performance
-                const diffLat = Math.abs(data.lat - startLat);
-                if (diffLat > radiusKm / 111) return; // ~111km per degree lat
+            if (!data.lat || !data.lon) return;
+            if (mode && !this.stationServesMode(data, mode)) return;
 
-                const dLat = (data.lat - startLat) * (Math.PI / 180);
-                const dLon = (data.lon - startLon) * (Math.PI / 180);
-                const a =
-                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos(startLat * (Math.PI / 180)) * Math.cos(data.lat * (Math.PI / 180)) *
-                    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                const distance = 6371 * c; // KM
+            const stopType = data.stopType || '';
+            results.push({
+                ...data,
+                label: data.commonName,
+                isMajor: stopType.includes('MetroStation') || stopType.includes('RailStation'),
+                distance: this.haversineMeters(lat, lon, data.lat, data.lon),
+            });
+        });
 
-                if (distance <= radiusKm) {
-                    const stopType = data.stopType || 'N/A';
-                    const isMajor = stopType.includes('MetroStation') || stopType.includes('RailStation');
-
-                    if (mode) {
-                        const hasMode = data.modes && Object.keys(data.modes).some(m => m.toLowerCase() === mode.toLowerCase());
-                        if (!hasMode) return;
-                    }
-
-                    results.push({
-                        ...data,
-                        label: data.commonName,
-                        isMajor,
-                        distance: Math.round(distance * 1000) // meters
-                    });
-                }
-            }
+        results.sort((a, b) => {
+            const d = a.distance - b.distance;
+            return d !== 0 ? d : (a.commonName || '').localeCompare(b.commonName || '');
         });
 
         return results;
+    }
+
+    /**
+     * Returns the grouping key for a station.
+     * Priority: icsCode → stationNaptan → commonName (for stops missing TfL group keys) → naptanId.
+     * Using commonName catches bus poles that share the same stop name but lack icsCode/stationNaptan.
+     */
+    static getGroupKey(station: Station): string {
+        return (station as any).icsCode || (station as any).stationNaptan
+            || station.commonName?.trim()
+            || station.naptanId;
+    }
+
+    /**
+     * Groups a flat list of stations by their grouping key.
+     * The representative (first / closest) is kept as the entry; member naptanIds are collected.
+     */
+    static groupStations(stations: any[]): any[] {
+        const groups = new Map<string, any>();
+        for (const s of stations) {
+            const key = (s as any).icsCode || (s as any).stationNaptan
+                || s.commonName?.trim()
+                || s.naptanId;
+            const memberId = s.naptanId || s.id;
+            if (!groups.has(key)) {
+                groups.set(key, { ...s, members: memberId ? [memberId] : [] });
+            } else {
+                const existing = groups.get(key)!;
+                if (memberId && !existing.members.includes(memberId)) {
+                    existing.members.push(memberId);
+                }
+                // Keep the closer stop as the representative for the group
+                if ((s.distance ?? Infinity) < (existing.distance ?? Infinity)) {
+                    groups.set(key, { ...s, members: existing.members });
+                }
+            }
+        }
+        return Array.from(groups.values());
+    }
+
+    /**
+     * Resolve the exact physical stop (naptanId) for a station group + mode + line + direction.
+     * Looks through all siblings sharing the same icsCode/stationNaptan and returns the one
+     * that serves the requested line in the requested direction.
+     * Falls back to the supplied representativeId if no better match is found.
+     */
+    static resolveStation(representativeId: string, mode: string, lineId: string, direction: string): string {
+        const repr = Array.from(this.stations.values()).find(
+            s => s.naptanId === representativeId || (s as any).id === representativeId
+        );
+        if (!repr) return representativeId;
+
+        const groupKey = this.getGroupKey(repr);
+        const siblings = Array.from(this.stations.values()).filter(
+            s => this.getGroupKey(s) === groupKey
+        );
+
+        const dirLower = direction.toLowerCase();
+        for (const sib of siblings) {
+            const modeData = (sib.modes as any)?.[mode];
+            if (!modeData) continue;
+            const lineData = modeData.lines?.[lineId];
+            if (!lineData) continue;
+            const dirs: string[] = lineData.directions || [];
+            if (dirs.length === 0 || dirs.some((d: string) => d.toLowerCase() === dirLower)) {
+                return sib.naptanId || (sib as any).id || representativeId;
+            }
+        }
+
+        return representativeId;
     }
 
     static getStationsByLine(lineId: string): Station[] {
@@ -319,6 +427,10 @@ export class DataCacheService {
 
     static getRoute(lineId: string): any | null {
         return this.routes.get(lineId) || null;
+    }
+
+    static setRoute(lineId: string, data: any): void {
+        this.routes.set(lineId, data);
     }
 
     static getStationsByMode(mode: string): Station[] {

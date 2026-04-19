@@ -87,9 +87,13 @@ export interface Station {
     lastUpdatedTime?: string;
     modes: Record<string, StationModeGroup>;
     searchKeys: string[];
+    // Grouping keys (bus stops share icsCode / stationNaptan across directions)
+    icsCode?: string;
+    stationNaptan?: string;
     // SDUI & Search Extras
     id?: string;
     label?: string;
     isMajor?: boolean;
     distance?: number;
+    members?: string[]; // naptanIds of all grouped stops (set at query time, not stored)
 }

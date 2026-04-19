@@ -54,6 +54,17 @@ export class TflApiClient {
     }
 
     /**
+     * Ordered stop sequence for a line + direction.
+     * Returns orderedLineRoutes (branch arrays of naptanIds) and stations (id→name map).
+     */
+    static async getLineRouteSequence(lineId: string, direction: string): Promise<any> {
+        const response = await tflClient.get(`/Line/${lineId}/Route/Sequence/${direction}`, {
+            params: { serviceTypes: 'Regular' }
+        });
+        return response.data;
+    }
+
+    /**
      * Stop Points by Line
      */
     static async getStopPointsByLine(lineId: string): Promise<any[]> {

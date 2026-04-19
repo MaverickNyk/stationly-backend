@@ -397,106 +397,59 @@ export class SduiService {
     }
 
     /**
-     * Layout for the station selection flow (Switchable based on track)
+     * Unified station selection layout.
+     * Flow: Mode → Station (nearby + search) → Line → Direction
+     * The old track / flow_picker logic has been removed; discovery and manual are now one flow.
+     * `track` param is accepted but ignored so old clients with the query-string don't break.
      */
-    static getSelectionLayout(track: string = 'manual'): SduiLayout {
-        const isDiscovery = track === 'discovery';
+    static getSelectionLayout(_track?: string): SduiLayout {
+        return {
+            id: "station_selection_screen",
+            version: "unified-2.0",
+            title: "Stationly Setup",
+            theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
+            loadingMessage: "Configuring layout...",
+            successMessage: "Your Board is now active!",
+            components: [
+                // ── Screen 0 — Mode picker ──
+                { type: "text", id: "screen_mode_title",    text: "Pick your\nchariot.",                style: "screen_title"    },
+                { type: "text", id: "screen_mode_subtitle", text: "Bus, tube, or DLR — we're not judging.", style: "screen_subtitle" },
+                { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
 
-        const commonHeader = [
-            // Screen 0 — Mode picker
-            { type: "text", id: "screen_mode_title", text: "Pick your\nchariot.", style: "screen_title" },
-            { type: "text", id: "screen_mode_subtitle", text: "Bus, tube, or DLR — we're not judging.", style: "screen_subtitle" },
-            { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
-            // Screen 1 — Flow picker
-            { type: "text", id: "screen_flow_title", text: "Where's your usual haunt?", style: "screen_title" },
-            { type: "text", id: "screen_flow_subtitle", text: "Pick how you'd like to find your stop.", style: "screen_subtitle" },
-            {
-                type: "flow_picker", id: "tracking_flow", label: "How should we locate it?", dependsOn: "mode",
-                options: [
-                    { id: "discovery", label: "Near Me", icon: "gps_fixed", description: "GPS'll sort it" },
-                    { id: "manual", label: "Browse Network", icon: "search", description: "I'll find my own way, cheers" }
-                ]
-            }
-        ];
-
-        let specificComponents: SduiComponent[] = [];
-
-        if (isDiscovery) {
-            // Discovery: FLOW -> STATION -> LINE -> DIRECTION
-            specificComponents = [
-                // Screen 2 — Nearby stations
-                { type: "text", id: "screen_station_title", text: "Nearby Stations", style: "screen_title" },
-                { type: "text", id: "screen_station_subtitle", text: "Closest escape routes first.", style: "screen_subtitle" },
+                // ── Screen 1 — Station picker (nearby shown by default, search bar always visible) ──
+                { type: "text", id: "screen_station_title",    text: "Find Your Stop",                               style: "screen_title"    },
+                { type: "text", id: "screen_station_subtitle", text: "Nearby stops shown first. Search to find others.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "station", label: "2. Select Station",
-                    dependsOn: "tracking_flow",
+                    dependsOn: "mode",
+                    // lat / lon are resolved from ViewModel selections; falls back to text search
                     dataSourceUrl: "/stations/search?mode={mode}&lat={lat}&lon={lon}"
                 },
-                // Screen 3 — Line
-                { type: "text", id: "screen_line_title", text: "Select Line", style: "screen_title" },
+
+                // ── Screen 2 — Line picker (filtered to lines at the selected station group) ──
+                { type: "text", id: "screen_line_title",    text: "Select Line",       style: "screen_title"    },
                 { type: "text", id: "screen_line_subtitle", text: "Lines stopping here.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "line", label: "3. Select Line",
                     dependsOn: "station",
                     dataSourceUrl: "/lines/mode/{mode}?station={station}"
                 },
-                // Screen 4 — Direction
-                { type: "text", id: "screen_direction_title", text: "Which direction?", style: "screen_title" },
-                { type: "text", id: "screen_direction_subtitle", text: "Which way are you fleeing today?", style: "screen_subtitle" },
+
+                // ── Screen 3 — Direction picker ──
+                { type: "text", id: "screen_direction_title",        text: "Which direction?",                  style: "screen_title"    },
+                { type: "text", id: "screen_direction_subtitle",     text: "Which way are you fleeing today?",  style: "screen_subtitle" },
                 { type: "text", id: "screen_direction_funfact_title", text: "Inbound vs Outbound — quick explainer", style: "info_card_title" },
-                { type: "text", id: "screen_direction_funfact", text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.", style: "info_card" },
+                { type: "text", id: "screen_direction_funfact",
+                  text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.",
+                  style: "info_card" },
                 {
                     type: "dropdown", id: "direction", label: "4. Select Direction",
                     dependsOn: "line",
-                    dataSourceUrl: "/lines/{line}/route"
-                }
-            ];
-        } else {
-            // Manual: FLOW -> LINE -> DIRECTION -> STATION
-            specificComponents = [
-                // Screen 2 — Line
-                { type: "text", id: "screen_line_title", text: "Which line?", style: "screen_title" },
-                { type: "text", id: "screen_line_subtitle", text: "Which line do you cling to daily?", style: "screen_subtitle" },
-                {
-                    type: "dropdown", id: "line", label: "2. Select Line",
-                    dependsOn: "tracking_flow",
-                    dataSourceUrl: "/lines/mode/{mode}"
+                    dataSourceUrl: "/lines/{line}/route?station={station}&mode={mode}"
                 },
-                // Screen 3 — Direction
-                { type: "text", id: "screen_direction_title", text: "Which direction?", style: "screen_title" },
-                { type: "text", id: "screen_direction_subtitle", text: "Which way are you fleeing today?", style: "screen_subtitle" },
-                { type: "text", id: "screen_direction_funfact_title", text: "Inbound vs Outbound — quick explainer", style: "info_card_title" },
-                { type: "text", id: "screen_direction_funfact", text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.", style: "info_card" },
-                {
-                    type: "dropdown", id: "direction", label: "3. Select Direction",
-                    dependsOn: "line",
-                    dataSourceUrl: "/lines/{line}/route"
-                },
-                // Screen 4 — Station
-                { type: "text", id: "screen_station_title", text: "Pick your stop.", style: "screen_title" },
-                { type: "text", id: "screen_station_subtitle", text: "Your daily departure point awaits.", style: "screen_subtitle" },
-                {
-                    type: "dropdown", id: "station", label: "4. Select Station",
-                    dependsOn: "direction",
-                    dataSourceUrl: "/stations/search?searchKey={line}_{direction}"
-                }
-            ];
-        }
 
-        return {
-            id: "station_selection_screen",
-            version: isDiscovery ? "discovery-1.5" : "manual-1.5",
-            title: "Stationly Setup",
-            theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
-            loadingMessage: "Configuring layout...",
-            successMessage: "Your Board is now active!",
-            components: [
-                ...commonHeader,
-                ...specificComponents,
-                {
-                    type: "button", id: "save_button", label: "Set Up My Board",
-                    action: "SAVE_SELECTION_ACTION", color: "#FFB81C"
-                }
+                // ── Save ──
+                { type: "button", id: "save_button", label: "Set Up My Board", action: "SAVE_SELECTION_ACTION", color: "#FFB81C" }
             ]
         };
     }

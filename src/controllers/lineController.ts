@@ -4,35 +4,62 @@ import { TflApiClient } from '../client/TflApiClient';
 import { formatDestination } from '../utils/formatters';
 import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '../models';
 
-import { GOOD_SERVICE_MESSAGES } from '../utils/tflUtils';
+import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
 
-// Official TfL brand colors by line ID
-const TFL_LINE_COLORS: Record<string, string> = {
-    'bakerloo':           '#B36305',
-    'central':            '#E32017',
-    'circle':             '#FFD300',
-    'district':           '#00782A',
-    'hammersmith-city':   '#F3A9BB',
-    'jubilee':            '#A0A5A9',
-    'metropolitan':       '#9B0056',
-    'northern':           '#000000',
-    'piccadilly':         '#003688',
-    'victoria':           '#0098D4',
-    'waterloo-city':      '#95CDBA',
-    'dlr':                '#00A4A7',
-    'elizabeth':          '#6950A1',
-    'london-overground':  '#EE7C0E', // legacy / fallback
-    'lioness':            '#E2A12B', // Watford - Euston
-    'mildmay':            '#1A6DB4', // Stratford - Richmond/Clapham Jct
-    'windrush':           '#E2231A', // Clapham Jct - Highbury & Islington
-    'weaver':             '#7B2D8B', // Liverpool St - Enfield/Cheshunt/Chingford
-    'suffragette':        '#00843D', // Gospel Oak - Barking Riverside
-    'liberty':            '#6B717E', // Romford - Upminster
-    'tram':               '#84B817',
-    'cable-car':          '#E21836',
-};
+/** Fetch ordered stop-ID sequences for each direction of a line from TfL. */
+async function fetchSequences(
+    lineId: string,
+    directions: { direction: string }[]
+): Promise<{ sequences: Record<string, string[][]>; stationNames: Record<string, string> }> {
+    const sequences: Record<string, string[][]> = {};
+    const stationNames: Record<string, string> = {};
+    for (const dir of directions) {
+        try {
+            const data = await TflApiClient.getLineRouteSequence(lineId, dir.direction);
+            sequences[dir.direction] = (data.orderedLineRoutes || []).map((r: any) => r.naptanIds || []);
+            // Populate names from stations array
+            (data.stations || []).forEach((s: any) => {
+                const id = s.stationId || s.id;
+                if (id && s.name) stationNames[id] = s.name;
+            });
+            // Also populate from stopPointSequences (more reliable ID↔name mapping)
+            (data.stopPointSequences || []).forEach((seq: any) => {
+                (seq.stopPoint || []).forEach((sp: any) => {
+                    const id = sp.id || sp.naptanId;
+                    if (id && sp.name && !stationNames[id]) stationNames[id] = sp.name;
+                });
+            });
+        } catch {
+            console.warn(`DATA: ⚠️ Could not fetch sequence for ${lineId}/${dir.direction}`);
+        }
+    }
+    return { sequences, stationNames };
+}
+
+/** Given ordered branch sequences and a station ID, return the next N stop names after it. */
+function getNextStops(
+    branches: string[][],
+    stationNames: Record<string, string>,
+    stationId: string
+): string | undefined {
+    for (const branch of branches) {
+        const idx = branch.indexOf(stationId);
+        if (idx >= 0 && idx < branch.length - 1) {
+            const names = branch.slice(idx + 1)
+                .map(id => {
+                    if (stationNames[id]) return stationNames[id];
+                    const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
+                    return cached?.commonName;
+                })
+                .filter((n): n is string => Boolean(n))
+                .map(n => n.replace(/\s+(Underground\s+)?Station$/i, '').replace(/\s+Rail\s+Station$/i, ''));
+            if (names.length > 0) return names.join(' · ');
+        }
+    }
+    return undefined;
+}
 
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
@@ -71,19 +98,34 @@ export class LineController {
             const mode = req.params.mode;
             const station = req.query.station as string;
             
-            // --- NEW: Filter by specific Station if provided (Discovery Mode) ---
+            // --- Filter by specific Station if provided (Discovery Mode) ---
+            // Aggregates lines from ALL stops in the same group (icsCode / stationNaptan),
+            // so that grouped bus stops show the full set of routes at that location.
             if (station && !station.includes('{station}')) {
                 console.log(`DATA: 🔍 Filtering lines for station ${station} (Discovery Mode) using Cache`);
-                const stationData = DataCacheService.getAllStations().find(s => s.naptanId === station || s.id === station);
-                
-                if (stationData && stationData.modes && stationData.modes[mode]) {
-                    const lineIdsAtStation = Object.keys(stationData.modes[mode].lines);
-                    const allLines = DataCacheService.getLinesByMode(mode);
-                    const filteredLines = allLines.filter(l => lineIdsAtStation.includes(l.id))
-                        .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
-                    
-                    if (filteredLines.length > 0) {
-                        return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
+                const repr = DataCacheService.getAllStations().find(s => s.naptanId === station || (s as any).id === station);
+
+                if (repr) {
+                    const groupKey = DataCacheService.getGroupKey(repr);
+                    const siblings = DataCacheService.getAllStations().filter(
+                        s => DataCacheService.getGroupKey(s) === groupKey
+                    );
+
+                    const lineIdsAtStation = new Set<string>();
+                    siblings.forEach(sib => {
+                        const modeData = sib.modes?.[mode];
+                        if (modeData) Object.keys(modeData.lines).forEach(id => lineIdsAtStation.add(id));
+                    });
+
+                    if (lineIdsAtStation.size > 0) {
+                        const allLines = DataCacheService.getLinesByMode(mode);
+                        const filteredLines = allLines
+                            .filter(l => lineIdsAtStation.has(l.id))
+                            .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
+
+                        if (filteredLines.length > 0) {
+                            return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
+                        }
                     }
                 }
                 console.warn(`DATA: ⚠️ No cached lines found for station ${station} matching mode ${mode}.`);
@@ -161,6 +203,7 @@ export class LineController {
     static async getLineRoute(req: Request, res: Response) {
         try {
             const lineId = req.params.lineId;
+            const { station, mode } = req.query as Record<string, string>;
             
             // 1. Try Memory Cache first (SQLite populated)
             let routeData = DataCacheService.getRoute(lineId);
@@ -180,14 +223,13 @@ export class LineController {
                 }
             }
 
-            // 3. TfL API fallback — fetch, parse, and save
+            // 3. TfL API fallback — fetch route + sequences inline
             if (!routeData) {
                 console.log(`DATA: ⚪ Fetching route from TfL API for ${lineId}...`);
                 try {
                     const raw = await TflApiClient.getLineRoute(lineId);
                     const sectionsArray: any[] = Array.isArray(raw) ? raw : (raw?.routeSections || []);
 
-                    // Group routeSections by direction, collect unique destinations
                     const dirMap: Record<string, { id: string; name: string }[]> = {};
                     sectionsArray.forEach((section: any) => {
                         const dir: string = (section.direction || 'outbound').toLowerCase();
@@ -198,11 +240,14 @@ export class LineController {
                     });
 
                     const directions = Object.entries(dirMap).map(([direction, destinations]) => ({ direction, destinations }));
-                    routeData = { directions, lastUpdatedTime: new Date().toISOString() };
+                    const { sequences, stationNames } = await fetchSequences(lineId, directions);
+                    routeData = { directions, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
 
-                    // Save to Firestore
+                    // Persist to all three layers immediately
+                    DataCacheService.setRoute(lineId, routeData);
+                    await LocalDbService.upsertRoute(lineId, routeData);
                     await db.collection('routes').doc(lineId).set(routeData);
-                    console.log(`DATA: ✅ Saved route for ${lineId} to Firestore (${directions.length} directions)`);
+                    console.log(`DATA: ✅ Saved route + sequences for ${lineId} (${directions.length} directions)`);
                 } catch (tflErr) {
                     console.warn(`DATA: ⚠️ TfL route fetch failed for ${lineId}:`, tflErr);
                 }
@@ -213,19 +258,77 @@ export class LineController {
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
-            // Map the routeData for SDUI so it receives a flat array of formatted directions
-            const sduiMappedDirections = (routeData.directions || []).map((dir: any) => {
-                const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
-                let label = `${dirName} towards`;
-                if (dir.destinations && dir.destinations.length > 0) {
-                    const destNames = dir.destinations.map((d: any) => formatDestination(d.name)).join('\n');
-                    label = `${dirName} towards\n${destNames}`;
+            // Inline-enrich cached routes missing sequences or sparse stationNames
+            // (must be synchronous so the first request already has next-stop data)
+            const nameCount = Object.keys(routeData.stationNames || {}).length;
+            if ((!routeData.sequences || nameCount < 10) && routeData.directions?.length > 0) {
+                try {
+                    console.log(`DATA: 🔄 Enriching sequences inline for ${lineId} (nameCount=${nameCount})`);
+                    const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
+                    routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
+                    DataCacheService.setRoute(lineId, routeData);
+                    // Persist in background — don't block the response
+                    setImmediate(async () => {
+                        try {
+                            await LocalDbService.upsertRoute(lineId, routeData);
+                            await db.collection('routes').doc(lineId).set(routeData);
+                        } catch { /* non-critical */ }
+                    });
+                    console.log(`DATA: ✅ Inline-enriched sequences for ${lineId}`);
+                } catch {
+                    console.warn(`DATA: ⚠️ Could not enrich sequences inline for ${lineId}`);
                 }
-                return {
-                    id: dir.direction,
-                    label: label
-                };
-            });
+            }
+
+            // Resolve the station's individual stop IDs (grouped station → sibling naptanIds)
+            const stationIds = new Set<string>();
+            if (station) {
+                const repr = DataCacheService.getAllStations().find(
+                    (s: any) => s.naptanId === station || s.id === station
+                );
+                if (repr) {
+                    const groupKey = DataCacheService.getGroupKey(repr);
+                    DataCacheService.getAllStations()
+                        .filter((s: any) => DataCacheService.getGroupKey(s) === groupKey)
+                        .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
+                }
+                stationIds.add(station); // always include the representative itself
+            }
+
+            // Filter directions to those the station actually serves (mode metadata)
+            let stationDirections: Set<string> | null = null;
+            if (station && mode) {
+                const dirs = new Set<string>();
+                for (const sid of stationIds) {
+                    const stn = DataCacheService.getAllStations().find((s: any) => s.naptanId === sid);
+                    const lineData = (stn?.modes as any)?.[mode]?.lines?.[lineId];
+                    (lineData?.directions || []).forEach((d: string) => dirs.add(d.toLowerCase()));
+                }
+                if (dirs.size > 0) stationDirections = dirs;
+            }
+
+            const sduiMappedDirections = (routeData.directions || [])
+                .filter((dir: any) => !stationDirections || stationDirections.has((dir.direction || '').toLowerCase()))
+                .map((dir: any) => {
+                    const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
+                    let label = `${dirName} towards`;
+                    if (dir.destinations?.length > 0) {
+                        label = `${dirName} towards\n${dir.destinations.map((d: any) => formatDestination(d.name)).join('\n')}`;
+                    }
+
+                    // Build next-stops secondary label from sequence data
+                    let secondaryLabel: string | undefined;
+                    const branches: string[][] = routeData.sequences?.[dir.direction] || [];
+                    const names: Record<string, string> = routeData.stationNames || {};
+                    if (branches.length > 0 && stationIds.size > 0) {
+                        for (const sid of stationIds) {
+                            secondaryLabel = getNextStops(branches, names, sid);
+                            if (secondaryLabel) break;
+                        }
+                    }
+
+                    return { id: dir.direction, label, secondaryLabel };
+                });
 
             return res.json(sduiMappedDirections);
         } catch (error) {
