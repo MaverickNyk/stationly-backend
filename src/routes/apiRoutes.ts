@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { SduiController } from '../controllers/sduiController';
 import { UserController } from '../controllers/userController';
+import { AuthController } from '../controllers/authController';
 import { ModeController } from '../controllers/modeController';
 import { LineController } from '../controllers/lineController';
 import { StationController } from '../controllers/stationController';
@@ -12,6 +13,9 @@ const router = Router();
 // --- GLOBAL SECURITY ---
 // Every single request to Stationly API now requires a valid X-Stationly-Key
 router.use(AuthMiddleware.validateApiKey);
+
+// --- AUTH ROUTES (public — no Firebase token required) ---
+router.post('/auth/forgot-password', RateLimitMiddleware.strict, AuthController.sendPasswordReset);
 
 // --- PUBLIC DATA ROUTES (Per-client rate limits after API Key check) ---
 router.use('/modes', RateLimitMiddleware.modes);

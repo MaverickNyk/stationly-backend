@@ -1,5 +1,6 @@
 import { db, auth } from '../config/firebase';
 import { SubscriptionService } from './subscriptionService';
+import { EmailService } from './emailService';
 
 export interface UserProfile {
     uid: string;
@@ -50,6 +51,8 @@ export class UserService {
                 stations: []
             };
             await userRef.set(newUser);
+            // Fire-and-forget — never block signup on email delivery
+            EmailService.sendWelcomeEmail(email, newUser.displayName);
             return newUser;
         } else {
             // Strip undefined values from data so Firestore doesn't crash
