@@ -6,7 +6,6 @@ import path from 'path';
 import * as dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import apiRoutes from './routes/apiRoutes';
-import { SubscriptionService } from './services/subscriptionService';
 import { AuthMiddleware } from './middleware/authMiddleware';
 import { DataCacheService } from './services/dataCacheService';
 
@@ -28,6 +27,43 @@ app.use(express.json());
 
 // Serving icons from the public directory
 app.use('/icons', express.static(path.join(process.cwd(), 'public', 'icons')));
+app.use('/assets', express.static(path.join(process.cwd(), 'public', 'assets')));
+
+// Smart deep link redirect — used in email CTAs
+// ?deep=stationly%3A%2F%2Fauth  &web=https%3A%2F%2Fstationly.co.uk
+// Tries to open the app; falls back to web URL after 1.5s if app isn't installed
+app.get('/open', (req, res) => {
+    const deep = typeof req.query.deep === 'string' ? decodeURIComponent(req.query.deep) : 'stationly://';
+    const web  = typeof req.query.web  === 'string' ? decodeURIComponent(req.query.web)  : 'https://stationly.co.uk';
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Opening Stationly…</title>
+<style>
+  body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,sans-serif;}
+  .card{text-align:center;padding:40px 32px;}
+  .logo{font-size:32px;font-weight:900;color:#FFB81C;letter-spacing:-1px;margin-bottom:12px;}
+  p{color:#666;font-size:14px;margin:0 0 24px;}
+  a{color:#FFB81C;font-size:13px;}
+</style>
+</head><body>
+<div class="card">
+  <div class="logo">STATIONLY</div>
+  <p>Opening the app…</p>
+  <a href="${web}">Open in browser instead</a>
+</div>
+<script>
+  var tried = false;
+  function tryOpen() {
+    if (tried) return;
+    tried = true;
+    window.location = ${JSON.stringify(deep)};
+    setTimeout(function() { window.location = ${JSON.stringify(web)}; }, 1500);
+  }
+  tryOpen();
+</script>
+</body></html>`);
+});
 
 // OpenAPI Configuration
 const swaggerOptions = {
