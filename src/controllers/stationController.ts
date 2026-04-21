@@ -103,7 +103,8 @@ export class StationController {
 
     private static getPresentablePlatform(mode: string, rawPlatform: string): string {
         const isBus = (mode || '').toLowerCase() === 'bus';
-        if (!rawPlatform || rawPlatform.toLowerCase() === 'null' || rawPlatform.trim() === '' || rawPlatform.toLowerCase() === 'unknown') {
+        const rp = (rawPlatform || '').trim().toLowerCase();
+        if (!rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform') {
             return isBus ? 'Stop not assigned' : 'Platform not assigned';
         }
         const p = rawPlatform.trim();
@@ -125,6 +126,17 @@ export class StationController {
         return p;
     }
 
+    // TfL only assigns platforms ~5–15 min before departure for these modes;
+    // far-future unplatformed predictions from them are noise, not real board data.
+    private static readonly LATE_PLATFORM_MODES = new Set(['overground', 'dlr', 'elizabeth-line']);
+
+    private static isFarFutureUnassigned(modeName: string, platform: string, eta: string): boolean {
+        if (!StationController.LATE_PLATFORM_MODES.has(modeName.toLowerCase())) return false;
+        if (platform !== 'Platform not assigned') return false;
+        const etaMin = (new Date(eta).getTime() - Date.now()) / 60_000;
+        return etaMin > 20;
+    }
+
     private static async fetchPredictions(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
 
@@ -136,8 +148,15 @@ export class StationController {
 
         arrivals.forEach(arrival => {
             const lineId = arrival.lineId.toLowerCase();
+            const modeName = (arrival.modeName || '').toLowerCase();
             const rawPlatform = arrival.platformName || '';
             const direction = arrival.direction || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
+            const platform = StationController.getPresentablePlatform(modeName, rawPlatform);
+            const eta = arrival.expectedArrival || '';
+
+            // Overground/DLR/Elizabeth line: TfL doesn't assign platforms until ~5–15 min before
+            // departure — skip far-future unplatformed arrivals before they enter the response.
+            if (StationController.isFarFutureUnassigned(modeName, platform, eta)) return;
 
             if (!lines[lineId]) {
                 lines[lineId] = {
@@ -153,8 +172,8 @@ export class StationController {
 
             lines[lineId].dirs[direction].preds.push({
                 destId: arrival.destinationNaptanId || 'unknown',
-                platform: StationController.getPresentablePlatform(arrival.modeName || '', rawPlatform),
-                eta: arrival.expectedArrival || '',
+                platform,
+                eta,
                 displayName: StationController.formatDisplayName(arrival)
             });
         });
