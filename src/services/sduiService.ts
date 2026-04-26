@@ -1,27 +1,43 @@
+export interface SduiValidation {
+    required?: boolean;
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;       // regex string — client applies via platform engine
+    errorMessage?: string;  // shown to user on failure
+}
+
+export interface SduiCondition {
+    dependsOn: string;
+    operator: "not_empty" | "equals" | "empty";
+    value?: string;
+}
+
 export interface SduiComponent {
     type: string;
     id?: string;
     text?: string;
     label?: string;
     placeholder?: string;
-    style?: string; // e.g. title, subtitle, bold, error
-    dataSourceUrl?: string; // For dropdowns
-    dependsOn?: string; // For cascading dropdowns
-    action?: string; // For buttons: e.g. SIGN_IN, REGISTER, SAVE_SELECTION
-    color?: string; // hex code
-    imageUrl?: string; // For image components
-    textAlign?: string; // e.g. center
-    options?: any[]; // For FlowPicker/GridPicker
-    // New component fields (card, section, link_row, announcement)
+    helpText?: string;
+    style?: string;
+    dataSourceUrl?: string;
+    dependsOn?: string;
+    action?: string;
+    color?: string;
+    imageUrl?: string;
+    textAlign?: string;
+    options?: any[];
     title?: string;
     subtitle?: string;
     body?: string;
     url?: string;
     icon?: string;
     components?: SduiComponent[];
-    variant?: string;    // info | warning | tip
+    variant?: string;       // button: primary | secondary | ghost | danger  |  announcement: info | warning | tip
     dismissKey?: string;
     size?: number;
+    validation?: SduiValidation;
+    condition?: SduiCondition;
 }
 
 export interface SduiLayout {
@@ -72,42 +88,46 @@ export class SduiService {
                     id: "email",
                     label: "Email or username",
                     placeholder: "Email or username",
-                    style: "email"
+                    style: "email",
+                    validation: { required: true, errorMessage: "Please enter your email." }
                 },
                 {
                     type: "input",
                     id: "password",
                     label: "Password",
                     placeholder: "Password",
-                    style: "password"
+                    style: "password",
+                    validation: { required: true, minLength: 6, errorMessage: "Please enter your password." }
                 },
                 {
                     type: "button",
                     id: "login_btn",
                     label: "Log In",
                     action: "LOGIN_ACTION",
-                    color: "#FFB81C"
+                    color: "#FFB81C",
+                    variant: "primary"
                 },
                 {
                     type: "button",
                     id: "forgot_password_nav",
                     label: "Forgot your password?",
                     action: "NAVIGATE_TO_FORGOT_PASSWORD",
-                    color: "transparent"
+                    variant: "ghost"
                 },
                 {
                     type: "button",
                     id: "google_login_btn",
                     label: "Continue with Google",
                     action: "GOOGLE_LOGIN_ACTION",
-                    color: "#FFFFFF"
+                    color: "#FFFFFF",
+                    variant: "secondary"
                 },
                 {
                     type: "button",
                     id: "register_nav",
                     label: "Don't have an account? Sign up",
                     action: "NAVIGATE_TO_REGISTER",
-                    color: "transparent"
+                    variant: "ghost"
                 }
             ]
         };
@@ -144,35 +164,44 @@ export class SduiService {
                     id: "displayName",
                     label: "What's your name?",
                     placeholder: "Enter your name",
-                    style: "text"
+                    style: "text",
+                    validation: { required: true, errorMessage: "Please enter your name." }
                 },
                 {
                     type: "input",
                     id: "email",
                     label: "What's your email?",
                     placeholder: "Enter your email",
-                    style: "email"
+                    style: "email",
+                    validation: {
+                        required: true,
+                        pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+                        errorMessage: "Please enter a valid email address."
+                    }
                 },
                 {
                     type: "input",
                     id: "password",
                     label: "Create a password",
                     placeholder: "Create a password",
-                    style: "password"
+                    style: "password",
+                    helpText: "Must be at least 8 characters",
+                    validation: { required: true, minLength: 8, errorMessage: "Password must be at least 8 characters." }
                 },
                 {
                     type: "button",
                     id: "register_btn",
                     label: "Sign Up",
                     action: "REGISTER_ACTION",
-                    color: "#FFB81C"
+                    color: "#FFB81C",
+                    variant: "primary"
                 },
                 {
                     type: "button",
                     id: "login_nav",
                     label: "Already have an account? Log in",
                     action: "NAVIGATE_TO_LOGIN",
-                    color: "transparent"
+                    variant: "ghost"
                 }
             ]
         };
@@ -216,21 +245,27 @@ export class SduiService {
                     id: "email",
                     label: "Email address",
                     placeholder: "Email address",
-                    style: "email"
+                    style: "email",
+                    validation: {
+                        required: true,
+                        pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+                        errorMessage: "Please enter a valid email address."
+                    }
                 },
                 {
                     type: "button",
                     id: "reset_btn",
                     label: "Send Link",
                     action: "RESET_PASSWORD_ACTION",
-                    color: "#FFB81C"
+                    color: "#FFB81C",
+                    variant: "primary"
                 },
                 {
                     type: "button",
                     id: "login_nav",
                     label: "Remembered? Log in",
                     action: "NAVIGATE_TO_LOGIN",
-                    color: "transparent"
+                    variant: "ghost"
                 }
             ]
         };
@@ -377,6 +412,8 @@ export class SduiService {
                 "explore.good_service":       "Good Service",
                 "explore.good_service_sub":   "All lines running normally",
                 "explore.disruptions_sub":    "Delays on network",
+                "explore.disruptions_label":  "Disruption",        // client appends count + pluralises
+                // Travel period labels
                 "explore.period.morning":     "Morning rush hour",
                 "explore.period.morning_sub": "Expect busier trains",
                 "explore.period.evening":     "Evening rush hour",
@@ -387,11 +424,49 @@ export class SduiService {
                 "explore.period.night_sub":   "Reduced frequency",
                 "explore.period.offpeak":     "Off-peak",
                 "explore.period.offpeak_sub": "Normal frequency",
+                // Travel period hour boundaries (24h, inclusive start inclusive end)
+                "explore.period.morning.start":    "7",
+                "explore.period.morning.end":      "9",
+                "explore.period.evening.start":    "17",
+                "explore.period.evening.end":      "19",
+                "explore.period.late_night.start": "22",
+                "explore.period.late_night.end":   "23",
+                "explore.period.night.start":      "0",
+                "explore.period.night.end":        "5",
                 // Top bar
                 "topbar.live_label":          "Live Network",
                 // Board card status placeholders
                 "board.status_label":         "Status",
-                "board.connecting_label":     "Connecting to TfL signals..."
+                "board.connecting_label":     "Connecting to TfL signals...",
+                "board.status_failed_label":  "Status unavailable — pull down to retry",
+                // ── Force-update gate ──────────────────────────────────────────
+                // Bump app.minVersion to block older clients immediately — no release needed.
+                "app.minVersion": "1.0",
+                "app.storeUrl":   "https://play.google.com/store/apps/details?id=com.stationly.mobile",
+                "app.update.title":   "New update available",
+                "app.update.message": "Update Stationly for the latest features and improvements.",
+                "app.update.cta":     "Update Now",
+                "app.update.dismiss": "Maybe Later",
+                // ── Profile screen ─────────────────────────────────────────────
+                "profile.stations.title":            "My Stations",
+                "profile.stations.empty_title":      "No stations yet",
+                "profile.stations.empty_subtitle":   "Set up a board to start tracking departures",
+                "profile.about.title":               "About Stationly",
+                "profile.signout.label":             "Sign Out",
+                // Delete station dialog
+                "profile.delete_station.title":      "Delete This Board?",
+                "profile.delete_station.body":       "You\u2019re about to remove your {name} board.",
+                "profile.delete_station.bullets":    "Live departure tracking will stop,Departure notifications will be unsubscribed,Widget will be cleared",
+                "profile.delete_station.footer":     "You can always set up a new board from the home screen.",
+                "profile.delete_station.confirm":    "Delete Board",
+                "profile.delete_station.cancel":     "Keep It",
+                // Delete account dialog
+                "profile.delete_account.title":      "Delete Your Account?",
+                "profile.delete_account.intro":      "This action is permanent and cannot be undone. You will lose:",
+                "profile.delete_account.bullets":    "All your saved stations and boards,Your notification preferences,Your profile and account data",
+                "profile.delete_account.footer":     "You\u2019ll need to create a new account to use Stationly again.",
+                "profile.delete_account.confirm":    "Delete Permanently",
+                "profile.delete_account.cancel":     "Keep Account"
             }
         };
     }
