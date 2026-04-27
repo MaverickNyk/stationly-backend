@@ -8,6 +8,8 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import apiRoutes from './routes/apiRoutes';
 import { AuthMiddleware } from './middleware/authMiddleware';
 import { DataCacheService } from './services/dataCacheService';
+import { WaitlistController } from './controllers/waitlistController';
+import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
 
 dotenv.config();
 
@@ -296,6 +298,9 @@ app.use('/docs', async (req, res, next) => {
 app.get('/', (req, res) => {
     res.json({ status: "Stationly Unified Backend Online" });
 });
+
+// Public — no API key required (website waitlist form)
+app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController.join);
 
 app.use('/api/v1', apiRoutes);
 

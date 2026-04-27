@@ -22,6 +22,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
   .quote-pad  { padding:16px 16px!important; }
   .note-pad   { padding:22px 18px!important; }
   .mode-icon  { width:28px!important; height:28px!important; }
+  .mode-cell  { padding:0 4px!important; }
 }
 </style>
 </head>
@@ -60,7 +61,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
         </h1>
         <p style="color:#555;font-family:sans-serif;font-size:15px;line-height:1.7;margin:0;">
           You've joined a small crew of Londoners who decided that standing at a bus stop,
-          furiously refreshing three different apps in the rain, is simply not acceptable.
+          not knowing if the bus is 1 minute or 10 minutes away, is simply not acceptable.
         </p>
       </td></tr>
 
@@ -72,7 +73,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
                      border-left:3px solid #FFB81C;border-radius:0 12px 12px 0;">
             <p style="color:#666;font-family:sans-serif;font-size:14px;font-style:italic;line-height:1.75;margin:0;">
               "Do I have to run for the bus, or can I sip my morning coffee peacefully?
-              <em style="color:#333;">Opens TfL Go. Six-second load. Next bus in 1 min.</em>
+              <em style="color:#333;">Squints at the bus stop sign. No signal. Can't load anything.</em>
               Abandons coffee. Sprints. Watches the doors close. Next one: 8 minutes."
             </p>
             <p style="color:#AAAAAA;font-family:sans-serif;font-size:12px;margin:10px 0 0 0;">
@@ -192,12 +193,10 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
                 <td style="padding-right:12px;">
                   <div style="width:42px;height:42px;background:linear-gradient(135deg,#FFB81C,#CC7700);
                               border-radius:50%;text-align:center;line-height:42px;
-                              font-family:sans-serif;font-size:17px;font-weight:800;color:#000;">N</div>
+                              font-family:sans-serif;font-size:17px;font-weight:800;color:#000;">M</div>
                 </td>
                 <td>
-                  <p style="color:#111;font-family:sans-serif;font-size:14px;font-weight:700;margin:0 0 2px 0;">
-                    <a href="https://www.linkedin.com/in/nikhkuma/" style="color:#111;text-decoration:none;">Nick</a>
-                  </p>
+                  <p style="color:#111;font-family:sans-serif;font-size:14px;font-weight:700;margin:0 0 2px 0;">Mave</p>
                   <p style="color:#999;font-family:sans-serif;font-size:12px;margin:0;">Founder, Stationly &nbsp;·&nbsp; London</p>
                 </td>
               </tr>
@@ -206,11 +205,11 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
               I started Stationly out of a very personal frustration.
               <br/><br/>
               I commute the same route every single day — home to office, office to home.
-              Yet every morning I found myself opening three different apps just to answer one question:
+              Every morning I had the same question before leaving home:
               <em style="color:#111;">"Is my train coming or do I have a few minutes?"</em>
               <br/><br/>
-              TfL Go, Citymapper, Google Maps — none of them are built for the person who already knows their route.
-              They're built for navigation. I didn't need navigation. I needed a live signal board, right there when I opened my phone.
+              The answer should be visible the second you look at your phone — no searching, no loading screens.
+              I needed a live signal board, right there on my home screen.
               <br/><br/>
               So I built one.
               <br/><br/>
@@ -223,7 +222,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
               Hope Stationly earns a permanent spot on your home screen. 🚇
             </p>
             <p style="color:#999;font-family:sans-serif;font-size:13px;margin:20px 0 0 0;">
-              — Nick &nbsp;·&nbsp;
+              — Mave &nbsp;·&nbsp;
               <a href="mailto:info@stationly.co.uk" style="color:#CC8800;text-decoration:none;">info@stationly.co.uk</a>
             </p>
           </td>
@@ -233,25 +232,25 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <!-- transport mode icons -->
       <tr><td align="center" style="padding:0 36px 26px 36px;">
         <table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0"><tr>
-          <td style="padding:0 7px;">
+          <td class="mode-cell" style="padding:0 6px;">
             <img class="mode-icon" src="https://api.stationly.co.uk/icons/tube.png"
-                 alt="Tube" width="34" height="34" style="width:34px;height:34px;display:block;border:0;">
+                 alt="Tube" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
-          <td style="padding:0 7px;">
+          <td class="mode-cell" style="padding:0 6px;">
             <img class="mode-icon" src="https://api.stationly.co.uk/icons/overground.png"
-                 alt="Overground" width="34" height="34" style="width:34px;height:34px;display:block;border:0;">
+                 alt="Overground" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
-          <td style="padding:0 7px;">
+          <td class="mode-cell" style="padding:0 6px;">
             <img class="mode-icon" src="https://api.stationly.co.uk/icons/dlr.png"
-                 alt="DLR" width="34" height="34" style="width:34px;height:34px;display:block;border:0;">
+                 alt="DLR" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
-          <td style="padding:0 7px;">
+          <td class="mode-cell" style="padding:0 6px;">
             <img class="mode-icon" src="https://api.stationly.co.uk/icons/elizabeth.png"
-                 alt="Elizabeth line" width="34" height="34" style="width:34px;height:34px;display:block;border:0;">
+                 alt="Elizabeth line" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
-          <td style="padding:0 7px;">
+          <td class="mode-cell" style="padding:0 6px;">
             <img class="mode-icon" src="https://api.stationly.co.uk/icons/bus.png"
-                 alt="Bus" width="34" height="34" style="width:34px;height:34px;display:block;border:0;">
+                 alt="Bus" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
         </tr></table>
         <p style="color:#CCCCCC;font-family:sans-serif;font-size:11px;margin:10px 0 0 0;letter-spacing:1px;">
