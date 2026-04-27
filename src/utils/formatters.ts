@@ -47,22 +47,21 @@ export function formatDestination(name?: string): string {
 
 /**
  * Format TfL platform string to a clean, displayable UI text.
- * Prevents "Unknown", "Stop Stop S", or "Platform Platform 1".
+ * Handles all TfL modes: tube, Elizabeth line (A/B), DLR, Overground, bus.
  */
 export function formatPlatform(mode: string | undefined, platform: string | undefined): string {
     const isBus = mode?.toLowerCase() === 'bus';
+    const rp = (platform ?? '').trim().toLowerCase();
 
-    if (!platform || platform.toLowerCase() === 'null' || platform.trim() === '' || platform.toLowerCase() === 'unknown') {
-        return isBus ? "Stop not assigned" : "Platform not assigned";
+    if (!rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform') {
+        return isBus ? 'Stop not assigned' : 'Platform not assigned';
     }
 
-    let p = platform.trim();
+    let p = platform!.trim();
 
     if (isBus) {
-        if (p.toLowerCase().startsWith('stop ')) {
-            p = p.substring(5).trim();
-        }
-        return `Stop ${p.toUpperCase()}`;
+        const stripped = p.toLowerCase().startsWith('stop ') ? p.substring(5).trim() : p;
+        return `Stop ${stripped.toUpperCase()}`;
     }
 
     if (p.includes(' - ')) {
@@ -77,13 +76,12 @@ export function formatPlatform(mode: string | undefined, platform: string | unde
         }
     }
 
-    if (/^\d+$/.test(p)) {
-        return `Platform ${p}`;
-    }
+    if (/^\d+$/.test(p)) return `Platform ${p}`;
+    if (/^plat \d+$/i.test(p)) return p.replace(/^plat /i, 'Platform ');
 
-    if (/^plat \d+$/i.test(p)) {
-        return p.replace(/^plat /i, 'Platform ');
-    }
+    // Short platform code: single letter (Elizabeth "A"/"B", Overground "D")
+    // or digit+letter suffix (DLR "4a") — TfL returns these raw without "Platform" prefix
+    if (/^[A-Za-z]$/.test(p) || /^\d+[A-Za-z]+$/.test(p)) return `Platform ${p.toUpperCase()}`;
 
     return p;
 }

@@ -5,6 +5,7 @@ import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
 import { TFL_LINE_COLORS } from '../utils/tflUtils';
+import { formatPlatform } from '../utils/formatters';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -101,31 +102,6 @@ export class StationController {
             .trim();
     }
 
-    private static getPresentablePlatform(mode: string, rawPlatform: string): string {
-        const isBus = (mode || '').toLowerCase() === 'bus';
-        const rp = (rawPlatform || '').trim().toLowerCase();
-        if (!rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform') {
-            return isBus ? 'Stop not assigned' : 'Platform not assigned';
-        }
-        const p = rawPlatform.trim();
-        if (isBus) {
-            const stripped = p.toLowerCase().startsWith('stop ') ? p.substring(5).trim() : p;
-            return 'Stop ' + stripped.toUpperCase();
-        }
-        if (p.includes(' - ')) {
-            const parts = p.split(' - ');
-            if (parts.length >= 2) {
-                const desc = parts[0].trim();
-                const plat = parts[1].trim();
-                const platLabel = plat.toLowerCase().startsWith('platform') ? plat : 'Platform ' + plat;
-                return platLabel + ' (' + desc + ')';
-            }
-        }
-        if (/^\d+$/.test(p)) return 'Platform ' + p;
-        if (/^plat \d+$/i.test(p)) return p.replace(/^plat /i, 'Platform ');
-        return p;
-    }
-
     // TfL only assigns platforms ~5–15 min before departure for these modes;
     // far-future unplatformed predictions from them are noise, not real board data.
     private static readonly LATE_PLATFORM_MODES = new Set(['overground', 'dlr', 'elizabeth-line']);
@@ -151,7 +127,7 @@ export class StationController {
             const modeName = (arrival.modeName || '').toLowerCase();
             const rawPlatform = arrival.platformName || '';
             const direction = arrival.direction || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
-            const platform = StationController.getPresentablePlatform(modeName, rawPlatform);
+            const platform = formatPlatform(modeName, rawPlatform);
             const eta = arrival.expectedArrival || '';
 
             // Overground/DLR/Elizabeth line: TfL doesn't assign platforms until ~5–15 min before
