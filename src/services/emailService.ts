@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 import { welcomeEmailHtml } from '../templates/welcomeEmailTemplate';
 import { forgotPasswordEmailHtml } from '../templates/forgotPasswordTemplate';
+import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = 'Stationly <info@stationly.co.uk>';
@@ -31,6 +32,20 @@ export class EmailService {
         } catch (err) {
             console.error('[EmailService] Failed to send password reset email:', err);
             throw err;
+        }
+    }
+
+    static async sendWaitlistEmail(email: string): Promise<void> {
+        try {
+            await resend.emails.send({
+                from: FROM,
+                to: email,
+                subject: "You're on the list — Stationly is coming",
+                html: waitlistEmailHtml(),
+            });
+        } catch (err) {
+            // Non-fatal — Firestore entry is the source of truth
+            console.error('[EmailService] Failed to send waitlist email:', err);
         }
     }
 }
