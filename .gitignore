@@ -54,3 +54,6 @@ graphify-out/
 
 # Local server migration backups
 .backups/
+
+# Staging deploy scripts
+staging_*.sh
