@@ -10,6 +10,7 @@ import { AuthMiddleware } from './middleware/authMiddleware';
 import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
+import { getWebUrl } from './utils/formatters';
 
 dotenv.config();
 
@@ -36,7 +37,7 @@ app.use('/assets', express.static(path.join(process.cwd(), 'public', 'assets')))
 // Tries to open the app; falls back to web URL after 1.5s if app isn't installed
 app.get('/open', (req, res) => {
     const deep = typeof req.query.deep === 'string' ? decodeURIComponent(req.query.deep) : 'stationly://';
-    const web  = typeof req.query.web  === 'string' ? decodeURIComponent(req.query.web)  : 'https://stationly.co.uk';
+    const web  = typeof req.query.web  === 'string' ? decodeURIComponent(req.query.web)  : getWebUrl();
     res.setHeader('Content-Type', 'text/html');
     res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

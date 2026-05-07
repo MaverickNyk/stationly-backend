@@ -1,3 +1,5 @@
+import { getWebUrl } from '../utils/formatters';
+
 export interface SduiValidation {
     required?: boolean;
     minLength?: number;
@@ -286,7 +288,7 @@ export class SduiService {
                 {
                     type: "image",
                     id: "profile_pic",
-                    imageUrl: user.photoURL || "https://img.icons8.com/bubbles/2x/user.png",
+                    imageUrl: user.photoURL || null,
                     style: "circle"
                 },
                 {
@@ -331,6 +333,7 @@ export class SduiService {
      * About Stationly — static content for the profile About section
      */
     static getAboutLayout(): SduiLayout {
+        const webUrl = getWebUrl();
         return {
             id: "about_screen",
             title: "About",
@@ -347,9 +350,9 @@ export class SduiService {
                     type: "section",
                     id: "links_section",
                     components: [
-                        { type: "link_row", id: "website",  title: "Visit Website",    subtitle: "stationly.co.uk",            url: "https://stationly.co.uk",               icon: "public"      },
-                        { type: "link_row", id: "privacy",  title: "Privacy Policy",   subtitle: "How we handle your data",     url: "https://stationly.co.uk/privacy",        icon: "privacy_tip" },
-                        { type: "link_row", id: "terms",    title: "Terms of Service", subtitle: "Usage terms and conditions",  url: "https://stationly.co.uk/terms",          icon: "description" },
+                        { type: "link_row", id: "website",  title: "Visit Website",    subtitle: "stationly.co.uk",            url: webUrl,                                  icon: "public"      },
+                        { type: "link_row", id: "privacy",  title: "Privacy Policy",   subtitle: "How we handle your data",     url: `${webUrl}/privacy`,                     icon: "privacy_tip" },
+                        { type: "link_row", id: "terms",    title: "Terms of Service", subtitle: "Usage terms and conditions",  url: `${webUrl}/terms`,                       icon: "description" },
                         { type: "link_row", id: "contact",  title: "Contact Us",       subtitle: "Questions or feedback",       url: "mailto:hello@stationly.co.uk",           icon: "email"       },
                         { type: "link_row", id: "rate",     title: "Rate Stationly",   subtitle: "Love the app? Let us know",   url: "market://details?id=com.stationly.mobile", icon: "star"     }
                     ]

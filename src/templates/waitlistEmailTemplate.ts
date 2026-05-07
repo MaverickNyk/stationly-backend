@@ -1,4 +1,7 @@
+import { getBaseUrl } from '../utils/formatters';
+
 export function waitlistEmailHtml(): string {
+    const baseUrl = getBaseUrl();
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -40,7 +43,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
 
       <!-- logo + hero -->
       <tr><td class="col-pad" align="center" style="padding:44px 40px 30px 40px;">
-        <img src="https://api.stationly.co.uk/assets/stationly_logo_final.png" alt="Stationly" width="52"
+        <img src="${baseUrl}/assets/stationly_logo_final.png" alt="Stationly" width="52"
              style="display:block;border:0;width:52px;height:auto;margin:0 auto 24px auto;">
         <p style="color:#DD2C33;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:11px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 14px 0;">
@@ -135,11 +138,11 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <!-- transport mode icons -->
       <tr><td align="center" style="padding:0 36px 26px 36px;">
         <table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0"><tr>
-          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="https://api.stationly.co.uk/icons/tube.png" alt="Tube" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
-          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="https://api.stationly.co.uk/icons/overground.png" alt="Overground" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
-          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="https://api.stationly.co.uk/icons/dlr.png" alt="DLR" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
-          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="https://api.stationly.co.uk/icons/elizabeth.png" alt="Elizabeth line" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
-          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="https://api.stationly.co.uk/icons/bus.png" alt="Bus" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
+          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="${baseUrl}/icons/tube.png" alt="Tube" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
+          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="${baseUrl}/icons/overground.png" alt="Overground" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
+          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="${baseUrl}/icons/dlr.png" alt="DLR" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
+          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="${baseUrl}/icons/elizabeth.png" alt="Elizabeth line" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
+          <td class="mode-cell" style="padding:0 6px;"><img class="mode-icon" src="${baseUrl}/icons/bus.png" alt="Bus" width="38" height="38" style="width:38px;height:38px;display:block;border:0;"></td>
         </tr></table>
         <p style="color:#CCCCCC;font-family:sans-serif;font-size:11px;margin:10px 0 0 0;letter-spacing:1px;">
           ALL MODES &nbsp;·&nbsp; ALL LIVE

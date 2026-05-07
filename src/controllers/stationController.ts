@@ -5,7 +5,7 @@ import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
 import { TFL_LINE_COLORS } from '../utils/tflUtils';
-import { formatPlatform } from '../utils/formatters';
+import { formatPlatform, getIconUrl } from '../utils/formatters';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -209,7 +209,7 @@ export class StationController {
             const sduiOptions = stations.map(s => ({
                 id: s.id || s.naptanId,
                 label: s.commonName || s.label || (s as any).name || s.id,
-                iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? "https://img.icons8.com/color/48/bus.png" : null,
+                iconUrl: (s.modes && Object.keys(s.modes).includes('bus')) ? getIconUrl('bus') : null,
                 color: null
             }));
 
@@ -293,7 +293,7 @@ export class StationController {
                 return res.json(grouped.slice(0, 50).map(s => ({
                     id: s.id || s.naptanId,
                     label: s.commonName || s.label || s.id,
-                    iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
+                    iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
                     secondaryLabel: s.distance !== undefined ? formatDistance(s.distance) : undefined,
                     tags: lineTags(s, modeFilter),
                 })));
@@ -339,7 +339,7 @@ export class StationController {
                     id: s.id || s.naptanId,
                     label: s.label || s.commonName || s.id,
                     secondaryLabel: formatDistance(s.distance || 0),
-                    iconUrl: isBusStation(s) ? 'https://img.icons8.com/color/48/bus.png' : null,
+                    iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
                     tags: lineTags(s, modeFilter),
                 })));
             }

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { URL } from 'url';
 import { auth } from '../config/firebase';
 import { EmailService } from '../services/emailService';
+import { getBaseUrl, getWebUrl } from '../utils/formatters';
 
 export class AuthController {
     static async sendPasswordReset(req: Request, res: Response): Promise<void> {
@@ -16,7 +17,7 @@ export class AuthController {
         try {
             // Generate raw Firebase reset link — we only need the oobCode from it
             const rawLink = await auth.generatePasswordResetLink(normalised, {
-                url: 'https://stationly.co.uk', // placeholder continueUrl (overridden below)
+                url: getWebUrl(), // placeholder continueUrl (overridden below)
             });
 
             // Extract oobCode from the Firebase-generated link
@@ -24,8 +25,8 @@ export class AuthController {
 
             // Build our branded smart-redirect URLs
             const deepLink  = `stationly://reset?oobCode=${encodeURIComponent(oobCode)}`;
-            const webLink   = `https://stationly.co.uk/reset-password?oobCode=${encodeURIComponent(oobCode)}`;
-            const smartLink = `https://stationly.co.uk/open?deep=${encodeURIComponent(deepLink)}&web=${encodeURIComponent(webLink)}`;
+            const webLink   = `${getWebUrl()}/reset-password?oobCode=${encodeURIComponent(oobCode)}`;
+            const smartLink = `${getBaseUrl()}/open?deep=${encodeURIComponent(deepLink)}&web=${encodeURIComponent(webLink)}`;
 
             // Look up display name — fall back to email prefix
             let name = normalised.includes('@') ? normalised.split('@')[0] : 'there';
