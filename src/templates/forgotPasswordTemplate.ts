@@ -1,5 +1,8 @@
+import { getBaseUrl } from '../utils/formatters';
+
 export function forgotPasswordEmailHtml(name: string, resetLink: string): string {
     const displayName = name || 'there';
+    const baseUrl = getBaseUrl();
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -28,7 +31,7 @@ export function forgotPasswordEmailHtml(name: string, resetLink: string): string
 
   <!-- logo -->
   <tr><td align="center" style="padding:40px 48px 0 48px;">
-    <img src="https://api.stationly.co.uk/assets/stationly_logo_final.png" alt="Stationly" width="52"
+    <img src="${baseUrl}/assets/stationly_logo_final.png" alt="Stationly" width="52"
          style="display:block;border:0;width:52px;margin:0 auto;">
   </td></tr>
 

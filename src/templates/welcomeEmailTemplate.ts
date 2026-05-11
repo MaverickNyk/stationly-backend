@@ -1,5 +1,9 @@
+import { getBaseUrl, getWebUrl } from '../utils/formatters';
+
 export function welcomeEmailHtml(name: string): string {
     const displayName = name || 'there';
+    const baseUrl = getBaseUrl();
+    const encodedWebUrl = encodeURIComponent(getWebUrl());
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -47,7 +51,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
 
       <!-- logo + hero -->
       <tr><td class="col-pad" align="center" style="padding:40px 40px 26px 40px;">
-        <img src="https://api.stationly.co.uk/assets/stationly_logo_final.png" alt="Stationly" width="52"
+        <img src="${baseUrl}/assets/stationly_logo_final.png" alt="Stationly" width="52"
              style="display:block;border:0;width:52px;height:auto;margin:0 auto 20px auto;">
         <p style="color:#999;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:11px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 14px 0;">
@@ -85,7 +89,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
 
       <!-- app screenshot -->
       <tr><td class="col-pad" align="center" style="padding:0 24px 34px 24px;">
-        <img src="https://api.stationly.co.uk/assets/stationly-demo-widget.jpg"
+        <img src="${baseUrl}/assets/stationly-demo-widget.jpg"
              alt="Stationly live departure board" width="552"
              style="width:100%;max-width:552px;height:auto;display:block;border-radius:14px;
                     border:1px solid #E5E5E5;">
@@ -95,14 +99,14 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <tr><td align="center" style="padding:0 40px 44px 40px;">
         <!--[if mso]>
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-            href="https://api.stationly.co.uk/open?deep=stationly%3A%2F%2Fhome&web=https%3A%2F%2Fstationly.co.uk"
+            href="${baseUrl}/open?deep=stationly%3A%2F%2Fhome&web=${encodedWebUrl}"
             style="height:56px;v-text-anchor:middle;width:280px;" arcsize="28%" stroke="f" fillcolor="#FFB81C">
         <w:anchorlock/>
         <center style="color:#000000;font-family:sans-serif;font-size:16px;font-weight:900;">Open My Live Board</center>
         </v:roundrect>
         <![endif]--><!--[if !mso]><!-->
         <a class="btn-link"
-           href="https://api.stationly.co.uk/open?deep=stationly%3A%2F%2Fhome&web=https%3A%2F%2Fstationly.co.uk"
+           href="${baseUrl}/open?deep=stationly%3A%2F%2Fhome&web=${encodedWebUrl}"
            style="background-color:#FFB81C;color:#000000;padding:18px 44px;border-radius:14px;
                   text-decoration:none;font-family:sans-serif;font-weight:800;font-size:16px;
                   display:inline-block;white-space:nowrap;letter-spacing:0.2px;">
@@ -233,23 +237,23 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <tr><td align="center" style="padding:0 36px 26px 36px;">
         <table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0"><tr>
           <td class="mode-cell" style="padding:0 6px;">
-            <img class="mode-icon" src="https://api.stationly.co.uk/icons/tube.png"
+            <img class="mode-icon" src="${baseUrl}/icons/tube.png"
                  alt="Tube" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
           <td class="mode-cell" style="padding:0 6px;">
-            <img class="mode-icon" src="https://api.stationly.co.uk/icons/overground.png"
+            <img class="mode-icon" src="${baseUrl}/icons/overground.png"
                  alt="Overground" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
           <td class="mode-cell" style="padding:0 6px;">
-            <img class="mode-icon" src="https://api.stationly.co.uk/icons/dlr.png"
+            <img class="mode-icon" src="${baseUrl}/icons/dlr.png"
                  alt="DLR" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
           <td class="mode-cell" style="padding:0 6px;">
-            <img class="mode-icon" src="https://api.stationly.co.uk/icons/elizabeth.png"
+            <img class="mode-icon" src="${baseUrl}/icons/elizabeth.png"
                  alt="Elizabeth line" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
           <td class="mode-cell" style="padding:0 6px;">
-            <img class="mode-icon" src="https://api.stationly.co.uk/icons/bus.png"
+            <img class="mode-icon" src="${baseUrl}/icons/bus.png"
                  alt="Bus" width="38" height="38" style="width:38px;height:38px;display:block;border:0;">
           </td>
         </tr></table>

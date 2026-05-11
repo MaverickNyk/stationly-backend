@@ -86,14 +86,19 @@ export function formatPlatform(mode: string | undefined, platform: string | unde
     return p;
 }
 
+export function getBaseUrl(): string {
+    return process.env.APP_BASE_URL || "https://api.stationly.co.uk";
+}
+
+export function getWebUrl(): string {
+    return process.env.APP_WEB_URL || "https://stationly.co.uk";
+}
+
 /**
  * Returns the fully qualified icon URL for a mode
  */
 export function getIconUrl(modeName?: string): string | null {
     const path = getIconPath(modeName);
     if (!path) return null;
-    
-    // Use environment variable for base URL if available, else default to production domain
-    const baseUrl = process.env.APP_BASE_URL || "https://api.stationly.co.uk";
-    return `${baseUrl}${path}`;
+    return `${getBaseUrl()}${path}`;
 }
