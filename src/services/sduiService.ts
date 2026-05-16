@@ -1,4 +1,4 @@
-import { getWebUrl } from '../utils/formatters';
+import { getWebUrl, isStaging } from '../utils/formatters';
 
 export interface SduiValidation {
     required?: boolean;
@@ -377,6 +377,14 @@ export class SduiService {
             title: "Announcements",
             theme: { primaryColor: "#FFB81C", backgroundColor: "#000000" },
             components: [
+                ...(isStaging() ? [{
+                    type: "announcement",
+                    id: "staging_env_banner",
+                    title: "Staging Environment",
+                    body: "You are connected to the staging server. Data and behaviour may differ from production.",
+                    variant: "warning",
+                    dismissKey: undefined
+                }] : [])
                 // Example (uncomment to activate):
                 // {
                 //     type: "announcement",
