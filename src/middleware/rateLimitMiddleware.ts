@@ -3,11 +3,12 @@ import { Request } from 'express';
 
 // Key by X-Stationly-Key so limits are per client, not per IP.
 // Falls back to IP for unauthenticated requests (caught by auth middleware first anyway).
+// Strip IPv6 prefix (::ffff:) from mapped IPv4 addresses to normalise the key.
 const keyByClient = (req: Request): string =>
-    (req.header('X-Stationly-Key') || req.ip || 'unknown');
+    req.header('X-Stationly-Key') || (req.ip?.replace(/^::ffff:/, '') ?? 'unknown');
 
-// Suppress express-rate-limit's IPv6 validation — we key by app client token, not raw IP.
-const validate = { ip: false };
+// Suppress express-rate-limit's IPv6 validation warnings — we key by API token, not raw IP.
+const validate = { ip: false, keyGeneratorIpFallback: false };
 
 /**
  * RateLimitMiddleware
