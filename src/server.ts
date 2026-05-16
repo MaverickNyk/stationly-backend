@@ -128,7 +128,7 @@ Stationly provides a high-performance middleware for transport data, specializin
                         displayName: { type: 'string', example: 'Underground' },
                         id: { type: 'string', example: 'tube' },
                         label: { type: 'string', example: 'Underground' },
-                        iconUrl: { type: 'string', example: 'https://api.stationly.co.uk/icons/tube.png' }
+                        iconUrl: { type: 'string', example: `${getBaseUrl()}/icons/tube.png` }
                     }
                 },
                 LineInfo: {

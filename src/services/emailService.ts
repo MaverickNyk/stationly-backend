@@ -2,9 +2,11 @@ import { Resend } from 'resend';
 import { welcomeEmailHtml } from '../templates/welcomeEmailTemplate';
 import { forgotPasswordEmailHtml } from '../templates/forgotPasswordTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
+import { isStaging } from '../utils/formatters';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = 'Stationly <info@stationly.co.uk>';
+const pfx = () => isStaging() ? '[Staging] ' : '';
 
 export class EmailService {
     static async sendWelcomeEmail(email: string, name: string): Promise<void> {
@@ -12,7 +14,7 @@ export class EmailService {
             await resend.emails.send({
                 from: FROM,
                 to: email,
-                subject: `Hey ${name || 'there'}, Welcome to Stationly 🎉`,
+                subject: `${pfx()}Hey ${name || 'there'}, Welcome to Stationly 🎉`,
                 html: welcomeEmailHtml(name),
             });
         } catch (err) {
@@ -26,7 +28,7 @@ export class EmailService {
             await resend.emails.send({
                 from: FROM,
                 to: email,
-                subject: 'Reset your Stationly password',
+                subject: `${pfx()}Reset your Stationly password`,
                 html: forgotPasswordEmailHtml(name, resetLink),
             });
         } catch (err) {
@@ -40,7 +42,7 @@ export class EmailService {
             await resend.emails.send({
                 from: FROM,
                 to: email,
-                subject: "You're on the list — Stationly is coming",
+                subject: `${pfx()}You're on the list — Stationly is coming`,
                 html: waitlistEmailHtml(),
             });
         } catch (err) {
