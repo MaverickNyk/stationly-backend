@@ -383,7 +383,7 @@ export class SduiService {
                     title: "Staging Environment",
                     body: "You are connected to the staging server. Data and behaviour may differ from production.",
                     variant: "warning",
-                    dismissKey: null
+                    dismissKey: undefined
                 }] : [])
                 // Example (uncomment to activate):
                 // {
