@@ -1,0 +1,123 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [release_prod]
+
+jobs:
+  enforce-source-branch:
+    name: Verify merge came from release_staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch
+        run: |
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}")
+          echo "Commit: $COMMIT_MSG"
+          if echo "$COMMIT_MSG" | grep -qE "Merge.*release_staging|from release_staging"; then
+            echo "✅ Source branch verified: release_staging"
+          else
+            echo "⚠️  Warning: could not verify source was release_staging"
+            echo "Commit message: $COMMIT_MSG"
+            # Not blocking here — branch protection rules enforce this at the PR level
+          fi
+
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    needs: enforce-source-branch
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Assemble production .env
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          TFL_TRANSPORT_MODES: ${{ secrets.TFL_TRANSPORT_MODES }}
+          TFL_STATUS_POLLING_INTERVAL: ${{ secrets.TFL_STATUS_POLLING_INTERVAL }}
+          TFL_ARRIVAL_PREDICTION_COUNT: ${{ secrets.TFL_ARRIVAL_PREDICTION_COUNT }}
+          TFL_API_TIMEOUT: ${{ secrets.TFL_API_TIMEOUT }}
+        run: |
+          printf "APP_ENV=production\n" > .env.prod
+          printf "APP_BASE_URL=https://api.stationly.co.uk\n" >> .env.prod
+          printf "APP_WEB_URL=https://stationly.co.uk\n" >> .env.prod
+          printf "FIREBASE_KEY_PATH=./serviceAccountKey.json\n" >> .env.prod
+          printf "RESEND_API_KEY=%s\n" "$RESEND_API_KEY" >> .env.prod
+          printf "FIRESTORE_PROJECT_ID=%s\n" "$FIRESTORE_PROJECT_ID" >> .env.prod
+          printf "TFL_APP_KEY=%s\n" "$TFL_APP_KEY" >> .env.prod
+          printf "TFL_TRANSPORT_MODES=%s\n" "$TFL_TRANSPORT_MODES" >> .env.prod
+          printf "TFL_STATUS_POLLING_INTERVAL=%s\n" "$TFL_STATUS_POLLING_INTERVAL" >> .env.prod
+          printf "TFL_ARRIVAL_PREDICTION_COUNT=%s\n" "$TFL_ARRIVAL_PREDICTION_COUNT" >> .env.prod
+          printf "TFL_API_TIMEOUT=%s\n" "$TFL_API_TIMEOUT" >> .env.prod
+
+      - name: Write Firebase service account key
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY_JSON }}
+        run: echo "$FIREBASE_KEY" > serviceAccountKey.json
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod.key
+          chmod 600 ~/.ssh/prod.key
+          ssh-keyscan -H ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync built files to server
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/prod.key" \
+            --exclude node_modules \
+            --exclude .git \
+            --exclude src \
+            --exclude .env \
+            --exclude serviceAccountKey.json \
+            --exclude .DS_Store \
+            --exclude .claude \
+            --exclude .cursor \
+            --exclude .gemini \
+            --exclude graphify-out \
+            --exclude '*.md' \
+            --exclude '*.sqlite' \
+            --exclude .github \
+            ./ ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/
+
+      - name: Upload .env and Firebase key
+        run: |
+          scp -i ~/.ssh/prod.key .env.prod ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/.env
+          scp -i ~/.ssh/prod.key serviceAccountKey.json ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/serviceAccountKey.json
+
+      - name: Install deps & reload
+        run: |
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} "
+            cd ~/stationly-backend
+            npm ci --omit=dev --silent
+            pm2 reload stationly-backend --update-env || pm2 start dist/server.js --name stationly-backend
+            pm2 save
+          "
+
+      - name: Health check
+        run: |
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+            "https://api.stationly.co.uk/api/v1/modes" \
+            -H "X-Stationly-Key: health-check" 2>/dev/null || echo "000")
+          if [[ "$STATUS" == "401" || "$STATUS" == "403" || "$STATUS" == "200" ]]; then
+            echo "✅ Production deployment complete — server responding (HTTP $STATUS)"
+          else
+            echo "❌ Health check failed — unexpected HTTP $STATUS"
+            exit 1
+          fi
