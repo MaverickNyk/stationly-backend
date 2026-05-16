@@ -86,6 +86,14 @@ export function formatPlatform(mode: string | undefined, platform: string | unde
     return p;
 }
 
+export function getEnv(): 'staging' | 'production' {
+    return process.env.APP_ENV === 'staging' ? 'staging' : 'production';
+}
+
+export function isStaging(): boolean {
+    return getEnv() === 'staging';
+}
+
 export function getBaseUrl(): string {
     return process.env.APP_BASE_URL || "https://api.stationly.co.uk";
 }

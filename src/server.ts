@@ -10,7 +10,7 @@ import { AuthMiddleware } from './middleware/authMiddleware';
 import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
-import { getWebUrl } from './utils/formatters';
+import { getWebUrl, getBaseUrl } from './utils/formatters';
 
 dotenv.config();
 
@@ -97,8 +97,8 @@ Stationly provides a high-performance middleware for transport data, specializin
         },
         servers: [
             {
-                url: 'https://api.stationly.co.uk/api/v1',
-                description: 'Production Server'
+                url: `${getBaseUrl()}/api/v1`,
+                description: 'Current Server'
             },
             {
                 url: `http://localhost:${port}/api/v1`,
