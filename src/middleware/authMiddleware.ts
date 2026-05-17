@@ -122,7 +122,8 @@ export class AuthMiddleware {
             const decodedToken = await auth.verifyIdToken(idToken);
             (req as any).user = {
                 uid: decodedToken.uid,
-                email: decodedToken.email
+                email: decodedToken.email,
+                emailVerified: decodedToken.email_verified === true
             };
             
             const requestedUid = req.params.uid || req.body.uid;

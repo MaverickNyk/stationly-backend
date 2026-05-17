@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 import { welcomeEmailHtml } from '../templates/welcomeEmailTemplate';
 import { forgotPasswordEmailHtml } from '../templates/forgotPasswordTemplate';
+import { verifyEmailHtml } from '../templates/verifyEmailTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
 import { isStaging } from '../utils/formatters';
 
@@ -33,6 +34,20 @@ export class EmailService {
             });
         } catch (err) {
             console.error('[EmailService] Failed to send password reset email:', err);
+            throw err;
+        }
+    }
+
+    static async sendVerifyEmail(email: string, name: string, verifyLink: string): Promise<void> {
+        try {
+            await resend.emails.send({
+                from: FROM,
+                to: email,
+                subject: `${pfx()}Verify your Stationly email`,
+                html: verifyEmailHtml(name, verifyLink),
+            });
+        } catch (err) {
+            console.error('[EmailService] Failed to send verification email:', err);
             throw err;
         }
     }

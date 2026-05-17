@@ -68,6 +68,338 @@ app.get('/open', (req, res) => {
 </body></html>`);
 });
 
+// Branded email-verification landing page. Reached as the web fallback from the
+// /open smart redirect when the user clicks the verify link in their email and
+// the Stationly app deep-link doesn't catch (desktop, no app installed, etc).
+//
+// The page reads the oobCode + apiKey from query params, hits Firebase's REST
+// identitytoolkit endpoint to apply the action code in-browser, and shows a
+// Stationly-branded success/failure state. No domain whitelisting needed
+// because Firebase's identitytoolkit accepts oobCode validation from anywhere.
+app.get('/verified', (req, res) => {
+    const oobCode = typeof req.query.oobCode === 'string' ? req.query.oobCode : '';
+    const apiKey  = typeof req.query.apiKey  === 'string' ? req.query.apiKey  : '';
+    const baseUrl = getBaseUrl();
+    const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.stationly.mobile';
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Verifying — Stationly</title>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;padding:0;min-height:100vh;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .card{max-width:520px;width:100%;background:#fff;border:1px solid #E5E5E5;border-radius:22px;overflow:hidden;}
+  .topbar{height:4px;background:linear-gradient(90deg,#CC8800,#FFB81C 40%,#FFC819 60%,#CC8800);}
+  .body{padding:48px 40px;text-align:center;}
+  .logo{width:52px;height:52px;margin:0 auto 20px;display:block;}
+  .label{color:#999;font-size:11px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 14px;}
+  .label.ok{color:#CC8800;}
+  .label.err{color:#CC0000;}
+  h1{color:#111;font-size:34px;font-weight:800;letter-spacing:-1px;line-height:1.15;margin:0 0 16px;}
+  h1 span{color:#CC8800;}
+  p{color:#555;font-size:15px;line-height:1.7;margin:0 0 24px;}
+  .spinner{display:inline-block;width:44px;height:44px;border:3px solid #FFE8A0;border-top-color:#FFB81C;border-radius:50%;animation:spin 0.9s linear infinite;margin:0 auto 24px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .btn{background:#FFB81C;color:#000;padding:16px 32px;border-radius:14px;text-decoration:none;font-weight:800;font-size:15px;display:inline-block;letter-spacing:0.2px;margin:4px 0;}
+  .btn:hover{background:#FFC819;}
+  .btn.outline{background:transparent;color:#CC8800;border:1.5px solid #FFB81C;}
+  .secondary{display:block;margin-top:16px;color:#999;font-size:13px;text-decoration:none;}
+  .secondary:hover{color:#CC8800;}
+  .footer{padding:20px 36px 28px;background:#FAFAFA;border-top:1px solid #EEEEEE;text-align:center;color:#AAAAAA;font-size:12px;line-height:1.7;}
+  .footer a{color:#BBBBBB;text-decoration:none;}
+  .bottombar{height:4px;background:linear-gradient(90deg,#CC8800,#FFB81C 50%,#CC8800);}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="topbar"></div>
+    <div class="body">
+      <img class="logo" src="${baseUrl}/assets/stationly_logo_final.png" alt="Stationly">
+
+      <!-- Loading state -->
+      <div id="loading">
+        <div class="spinner"></div>
+        <p class="label">Verifying your email</p>
+        <h1>Just a moment…</h1>
+        <p>Confirming with Stationly's servers — this only takes a second.</p>
+      </div>
+
+      <!-- Success state -->
+      <div id="success" class="hidden">
+        <p class="label ok">Email verified</p>
+        <h1>You're all set,<br/><span>welcome to Stationly.</span></h1>
+        <p>Your email's confirmed. Open the app to finish setting up your home-screen board.</p>
+        <a class="btn" id="openApp" href="stationly://verified">Open the App &#8594;</a>
+        <a class="secondary" href="${playStoreUrl}">Don't have the app yet? Get it on Google Play</a>
+      </div>
+
+      <!-- Error state -->
+      <div id="error" class="hidden">
+        <p class="label err">Couldn't verify</p>
+        <h1>This link is no<br/><span>longer valid.</span></h1>
+        <p id="errMsg">The link may have expired or already been used. Open Stationly and tap "Resend email" to get a fresh one.</p>
+        <a class="btn outline" href="stationly://home">Open Stationly</a>
+        <a class="secondary" href="${playStoreUrl}">Get Stationly on Google Play</a>
+      </div>
+
+    </div>
+    <div class="footer">
+      &copy; 2026 Stationly Ltd · London, UK<br/>
+      <a href="https://stationly.co.uk/privacy">Privacy</a> ·
+      <a href="https://stationly.co.uk/terms">Terms</a> ·
+      <a href="mailto:info@stationly.co.uk">info@stationly.co.uk</a>
+    </div>
+    <div class="bottombar"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Embedded as JSON literals; we additionally escape "<" so a malicious
+  // query-param value can't break out via </script>.
+  var oobCode = ${JSON.stringify(oobCode).replace(/</g, '\\u003c')};
+  var apiKey  = ${JSON.stringify(apiKey).replace(/</g, '\\u003c')};
+
+  function showSuccess() {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('success').classList.remove('hidden');
+    // Try the deep link automatically on mobile — many users open the link in the
+    // email app's in-app browser and would otherwise miss the manual button.
+    setTimeout(function() {
+      try { window.location = 'stationly://verified'; } catch(_) {}
+    }, 600);
+  }
+  function showError(msg) {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('error').classList.remove('hidden');
+    if (msg) document.getElementById('errMsg').textContent = msg;
+  }
+
+  if (!oobCode || !apiKey) {
+    showError('Missing verification details. Open Stationly and tap "Resend email".');
+    return;
+  }
+
+  // Firebase's identitytoolkit REST endpoint that applies an action code
+  // (verifyEmail / resetPassword / etc). Returns the email on success.
+  fetch('https://identitytoolkit.googleapis.com/v1/accounts:update?key=' + encodeURIComponent(apiKey), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ oobCode: oobCode })
+  })
+  .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+  .then(function(res) {
+    if (res.ok) {
+      showSuccess();
+    } else {
+      var err = res.body && res.body.error && res.body.error.message;
+      if (err === 'EXPIRED_OOB_CODE')        showError('This link has expired. Request a fresh one from the app.');
+      else if (err === 'INVALID_OOB_CODE')   showError('This link has already been used or is invalid.');
+      else if (err === 'USER_DISABLED')      showError('This account has been disabled. Contact info@stationly.co.uk.');
+      else                                   showError();
+    }
+  })
+  .catch(function() { showError('Could not reach Stationly. Check your connection and try again.'); });
+})();
+</script>
+</body></html>`);
+});
+
+// Branded password-reset landing page. Reached as the web fallback from the
+// /open smart redirect when the user clicks the reset link in their email and
+// the Stationly app deep-link doesn't catch (desktop, no app installed, etc).
+//
+// The page reads oobCode + apiKey from query params, presents a new-password
+// form, and POSTs to Firebase's identitytoolkit REST endpoint in-browser to
+// apply the change. Same visual language as /verified.
+app.get('/reset-password', (req, res) => {
+    const oobCode = typeof req.query.oobCode === 'string' ? req.query.oobCode : '';
+    const apiKey  = typeof req.query.apiKey  === 'string' ? req.query.apiKey  : '';
+    const baseUrl = getBaseUrl();
+    const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.stationly.mobile';
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reset password — Stationly</title>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;padding:0;min-height:100vh;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .card{max-width:520px;width:100%;background:#fff;border:1px solid #E5E5E5;border-radius:22px;overflow:hidden;}
+  .topbar{height:4px;background:linear-gradient(90deg,#CC8800,#FFB81C 40%,#FFC819 60%,#CC8800);}
+  .body{padding:44px 40px 32px;}
+  .logo{width:52px;height:52px;margin:0 auto 18px;display:block;}
+  .label{color:#999;font-size:11px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 12px;text-align:center;}
+  .label.ok{color:#CC8800;}
+  .label.err{color:#CC0000;}
+  h1{color:#111;font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1.15;margin:0 0 14px;text-align:center;}
+  h1 span{color:#CC8800;}
+  p.lead{color:#555;font-size:15px;line-height:1.6;margin:0 0 22px;text-align:center;}
+  .field{display:block;margin-bottom:14px;}
+  .field label{display:block;color:#666;font-size:13px;font-weight:600;margin-bottom:6px;}
+  .field input{width:100%;padding:14px 16px;border:1.5px solid #E5E5E5;border-radius:12px;font-size:15px;font-family:inherit;background:#FAFAFA;}
+  .field input:focus{outline:none;border-color:#FFB81C;background:#fff;}
+  .field input[aria-invalid="true"]{border-color:#CC0000;background:#FFF5F5;}
+  .field .err{color:#CC0000;font-size:12px;margin-top:6px;min-height:16px;}
+  .btn{width:100%;background:#FFB81C;color:#000;padding:16px;border:0;border-radius:14px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:0.2px;margin-top:6px;}
+  .btn:hover{background:#FFC819;}
+  .btn:disabled{background:#FFE8A0;color:#888;cursor:not-allowed;}
+  .spinner{display:inline-block;width:44px;height:44px;border:3px solid #FFE8A0;border-top-color:#FFB81C;border-radius:50%;animation:spin 0.9s linear infinite;margin:0 auto 16px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .center{text-align:center;}
+  .secondary{display:block;text-align:center;margin-top:18px;color:#999;font-size:13px;text-decoration:none;}
+  .secondary:hover{color:#CC8800;}
+  .footer{padding:20px 36px 26px;background:#FAFAFA;border-top:1px solid #EEEEEE;text-align:center;color:#AAAAAA;font-size:12px;line-height:1.7;}
+  .footer a{color:#BBBBBB;text-decoration:none;}
+  .bottombar{height:4px;background:linear-gradient(90deg,#CC8800,#FFB81C 50%,#CC8800);}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="topbar"></div>
+    <div class="body">
+      <img class="logo" src="${baseUrl}/assets/stationly_logo_final.png" alt="Stationly">
+
+      <div id="form">
+        <p class="label">Reset your password</p>
+        <h1>Set a new<br/><span>Stationly password.</span></h1>
+        <p class="lead">Make it strong, make it memorable.</p>
+
+        <div class="field">
+          <label for="pw1">New password</label>
+          <input id="pw1" type="password" autocomplete="new-password" minlength="6"
+                 placeholder="At least 6 characters">
+          <div class="err" id="pw1err"></div>
+        </div>
+
+        <div class="field">
+          <label for="pw2">Confirm password</label>
+          <input id="pw2" type="password" autocomplete="new-password" placeholder="Type it again">
+          <div class="err" id="pw2err"></div>
+        </div>
+
+        <button id="submitBtn" class="btn">Reset Password</button>
+      </div>
+
+      <div id="working" class="hidden center">
+        <div class="spinner"></div>
+        <p class="label">Resetting</p>
+        <h1>One moment…</h1>
+        <p class="lead">Saving your new password with Stationly.</p>
+      </div>
+
+      <div id="done" class="hidden center">
+        <p class="label ok">All set</p>
+        <h1>Password<br/><span>changed.</span></h1>
+        <p class="lead">Sign in with your new password to get back to your boards.</p>
+        <a class="btn" style="text-decoration:none;display:inline-block;padding:16px 32px;width:auto;"
+           href="stationly://auth">Open the App &#8594;</a>
+        <a class="secondary" href="${playStoreUrl}">Don't have the app? Get it on Google Play</a>
+      </div>
+
+      <div id="failed" class="hidden center">
+        <p class="label err">Couldn't reset</p>
+        <h1>This link is no<br/><span>longer valid.</span></h1>
+        <p class="lead" id="failedMsg">The link may have expired or already been used. Request a fresh one from the Stationly app.</p>
+        <a class="btn" style="background:transparent;color:#CC8800;border:1.5px solid #FFB81C;text-decoration:none;display:inline-block;padding:16px 32px;width:auto;"
+           href="stationly://home">Open Stationly</a>
+      </div>
+
+    </div>
+    <div class="footer">
+      &copy; 2026 Stationly Ltd · London, UK<br/>
+      <a href="https://stationly.co.uk/privacy">Privacy</a> ·
+      <a href="https://stationly.co.uk/terms">Terms</a> ·
+      <a href="mailto:info@stationly.co.uk">info@stationly.co.uk</a>
+    </div>
+    <div class="bottombar"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Embedded as JSON literals; we additionally escape "<" so a malicious
+  // query-param value can't break out via </script>.
+  var oobCode = ${JSON.stringify(oobCode).replace(/</g, '\\u003c')};
+  var apiKey  = ${JSON.stringify(apiKey).replace(/</g, '\\u003c')};
+
+  function show(which) {
+    ['form','working','done','failed'].forEach(function(id) {
+      document.getElementById(id).classList.toggle('hidden', id !== which);
+    });
+  }
+  function showFailed(msg) {
+    if (msg) document.getElementById('failedMsg').textContent = msg;
+    show('failed');
+  }
+
+  if (!oobCode || !apiKey) {
+    showFailed('Missing reset details. Request a fresh link from the Stationly app.');
+    return;
+  }
+
+  var pw1 = document.getElementById('pw1');
+  var pw2 = document.getElementById('pw2');
+  var pw1err = document.getElementById('pw1err');
+  var pw2err = document.getElementById('pw2err');
+  var btn = document.getElementById('submitBtn');
+
+  function validate() {
+    pw1err.textContent = ''; pw2err.textContent = '';
+    pw1.setAttribute('aria-invalid', 'false'); pw2.setAttribute('aria-invalid', 'false');
+    var p1 = pw1.value, p2 = pw2.value;
+    if (p1.length < 6) { pw1err.textContent = 'At least 6 characters'; pw1.setAttribute('aria-invalid','true'); return false; }
+    if (p1 !== p2)     { pw2err.textContent = 'Passwords don\\'t match';  pw2.setAttribute('aria-invalid','true'); return false; }
+    return true;
+  }
+
+  btn.addEventListener('click', function() {
+    if (!validate()) return;
+    show('working');
+
+    fetch('https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=' + encodeURIComponent(apiKey), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oobCode: oobCode, newPassword: pw1.value })
+    })
+    .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+    .then(function(res) {
+      if (res.ok) {
+        show('done');
+        // Try deep-linking the user back into the app — many will be on mobile.
+        setTimeout(function() { try { window.location = 'stationly://auth'; } catch(_) {} }, 600);
+      } else {
+        var err = res.body && res.body.error && res.body.error.message;
+        if (err === 'EXPIRED_OOB_CODE')      showFailed('This link has expired. Request a fresh one from the app.');
+        else if (err === 'INVALID_OOB_CODE') showFailed('This link has already been used or is invalid.');
+        else if (err === 'USER_DISABLED')    showFailed('This account has been disabled. Contact info@stationly.co.uk.');
+        else if (err === 'WEAK_PASSWORD')    { show('form'); pw1err.textContent = 'Please choose a stronger password.'; pw1.setAttribute('aria-invalid','true'); }
+        else                                  showFailed();
+      }
+    })
+    .catch(function() { showFailed('Could not reach Stationly. Check your connection and try again.'); });
+  });
+
+  // Submit on Enter from the second field
+  pw2.addEventListener('keydown', function(e) { if (e.key === 'Enter') btn.click(); });
+})();
+</script>
+</body></html>`);
+});
+
 // OpenAPI Configuration
 const swaggerOptions = {
     definition: {

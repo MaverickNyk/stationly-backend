@@ -15,7 +15,10 @@ const router = Router();
 router.use(AuthMiddleware.validateApiKey);
 
 // --- AUTH ROUTES (public — no Firebase token required) ---
-router.post('/auth/forgot-password', RateLimitMiddleware.strict, AuthController.sendPasswordReset);
+// Dedicated forgot-password limiter (3/15min per email) — tighter than the generic
+// strict limiter so a single email can't be spammed even if the attacker rotates
+// API keys / IPs across calls.
+router.post('/auth/forgot-password', RateLimitMiddleware.forgotPassword, AuthController.sendPasswordReset);
 
 // --- PUBLIC DATA ROUTES (Per-client rate limits after API Key check) ---
 router.use('/modes', RateLimitMiddleware.modes);
@@ -62,5 +65,12 @@ router.post('/user/stations/add', UserController.addStation);
 router.post('/user/stations/delete', UserController.deleteStation);
 router.post('/user/logout', UserController.logOut);
 router.post('/user/delete-account', UserController.deleteAccount);
+// Send Stationly-branded verification email for the authenticated user. Lives
+// under /user/* (not /auth/*) so StationlyAuth on the client automatically
+// attaches the Bearer token — /auth/* endpoints are public-by-default.
+// Dedicated 5/15min-per-uid limiter applied AFTER the generic /user/* strict
+// limiter that the router.use() above already installs — so this endpoint is
+// effectively limited by whichever fires first.
+router.post('/user/send-verification-email', RateLimitMiddleware.verifyEmail, AuthController.sendVerification);
 
 export default router;
