@@ -36,13 +36,23 @@ export class UserController {
             return res.status(400).json({ error: "UID and Email are required for sync" });
         }
 
+        // Source of truth for emailVerified is the decoded Firebase ID token, NOT the
+        // request body — never trust the client to set its own verified flag.
+        const tokenUser = (req as any).user as { emailVerified?: boolean } | undefined;
+        const emailVerified = tokenUser?.emailVerified === true;
+
         try {
-            const profile = await UserService.createOrUpdateUser(uid, email, {
-                displayName,
-                photoURL,
-                signInProvider,
-                ...other
-            });
+            const profile = await UserService.createOrUpdateUser(
+                uid,
+                email,
+                {
+                    displayName,
+                    photoURL,
+                    signInProvider,
+                    ...other
+                },
+                emailVerified
+            );
             res.json(profile);
         } catch (error: any) {
             res.status(500).json({ error: error.message });
