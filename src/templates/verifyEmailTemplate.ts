@@ -1,11 +1,11 @@
 import { getBaseUrl } from '../utils/formatters';
 
 /**
- * Password reset email — light theme, identical visual language to welcome and
- * verify. White card on grey, amber gradient top/bottom, same sender + footer.
- * All three Stationly auth emails should feel like a set.
+ * Email verification template — light theme, identical visual language to the
+ * welcome email. White card on grey, amber accent line at top and bottom, same
+ * sender, same footer. The two emails should feel like a pair.
  */
-export function forgotPasswordEmailHtml(name: string, resetLink: string): string {
+export function verifyEmailHtml(name: string, verifyLink: string): string {
     const displayName = name || 'there';
     const baseUrl = getBaseUrl();
     return `<!DOCTYPE html>
@@ -15,7 +15,7 @@ export function forgotPasswordEmailHtml(name: string, resetLink: string): string
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="x-apple-disable-message-reformatting">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
-<title>Reset your Stationly password</title>
+<title>Verify your Stationly email</title>
 <!--[if mso]><style>table{border-collapse:collapse;}td,th,div,p,a,h1,h2,h3{font-family:sans-serif!important;}</style><![endif]-->
 <style>
 body { margin:0!important; padding:0!important; background-color:#f0f0f0!important; }
@@ -56,18 +56,17 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
              style="display:block;border:0;width:52px;height:auto;margin:0 auto 20px auto;">
         <p style="color:#999;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:11px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;margin:0 0 14px 0;">
-          Password reset
+          One more step — verify your email
         </p>
         <h1 class="hero-title"
             style="color:#111111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:34px;font-weight:800;letter-spacing:-1px;line-height:1.15;margin:0 0 16px 0;">
           Hey ${displayName},<br/>
-          <span style="color:#CC8800;">let's get you back in.</span>
+          <span style="color:#CC8800;">you're almost there.</span>
         </h1>
         <p style="color:#555;font-family:sans-serif;font-size:15px;line-height:1.7;margin:0;">
-          Someone (hopefully you) asked to reset the password on your Stationly account.
-          Tap the button below to set a new one — the link expires in
-          <strong style="color:#333;">1 hour</strong>.
+          Tap the button below to confirm this is really your email — it takes a second,
+          and then your Stationly account is fully ready to go.
         </p>
       </td></tr>
 
@@ -75,20 +74,20 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <tr><td align="center" style="padding:0 40px 44px 40px;">
         <!--[if mso]>
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-            href="${resetLink}" style="height:56px;v-text-anchor:middle;width:280px;"
+            href="${verifyLink}" style="height:56px;v-text-anchor:middle;width:280px;"
             arcsize="28%" stroke="f" fillcolor="#FFB81C">
         <w:anchorlock/>
-        <center style="color:#000000;font-family:sans-serif;font-size:16px;font-weight:900;">Reset My Password</center>
+        <center style="color:#000000;font-family:sans-serif;font-size:16px;font-weight:900;">Verify My Email</center>
         </v:roundrect>
         <![endif]--><!--[if !mso]><!-->
-        <a class="btn-link" href="${resetLink}"
+        <a class="btn-link" href="${verifyLink}"
            style="background-color:#FFB81C;color:#000000;padding:18px 44px;border-radius:14px;
                   text-decoration:none;font-family:sans-serif;font-weight:800;font-size:16px;
                   display:inline-block;white-space:nowrap;letter-spacing:0.2px;">
-          Reset My Password &#8594;
+          Verify My Email &#8594;
         </a><!--<![endif]-->
         <p style="color:#AAAAAA;font-family:sans-serif;font-size:12px;margin:12px 0 0 0;">
-          One-time link &nbsp;·&nbsp; Expires in 1 hour
+          Takes a second &nbsp;·&nbsp; One-time link &nbsp;·&nbsp; Expires in 1 hour
         </p>
       </td></tr>
 
@@ -106,12 +105,11 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
               style="padding:22px 24px;background-color:#FAFAFA;border:1px solid #EEEEEE;border-radius:14px;">
             <p style="color:#CC8800;font-family:sans-serif;font-size:11px;font-weight:700;
                        letter-spacing:2px;text-transform:uppercase;margin:0 0 10px 0;">
-              Didn't request this?
+              Didn't sign up?
             </p>
             <p style="color:#666;font-family:sans-serif;font-size:13px;line-height:1.7;margin:0;">
-              You can safely ignore this email — your password won't change unless you click
-              the button above. If you're worried someone else made this request, reply to
-              this email and we'll look into it.
+              If you didn't create a Stationly account you can safely ignore this email —
+              nothing will be activated until someone taps the button above.
             </p>
           </td>
         </tr></table>
@@ -121,7 +119,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <tr><td class="col-pad" style="padding:0 40px 32px 40px;">
         <p style="color:#999;font-family:sans-serif;font-size:12px;line-height:1.7;margin:0;">
           Button not working? Copy and paste this link into your browser:<br/>
-          <a href="${resetLink}" style="color:#AAAAAA;word-break:break-all;">${resetLink}</a>
+          <a href="${verifyLink}" style="color:#AAAAAA;word-break:break-all;">${verifyLink}</a>
         </p>
       </td></tr>
 

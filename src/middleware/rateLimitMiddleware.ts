@@ -82,4 +82,46 @@ export class RateLimitMiddleware {
         standardHeaders: true,
         legacyHeaders: false,
     });
+
+    /**
+     * Verify-send limiter — 5 requests per 15 min per Firebase UID.
+     * Caller must already be authenticated (validateUserToken populates req.user.uid).
+     * Stops a determined user from spamming the verify endpoint past the client-side
+     * 60s cooldown (e.g. by force-stopping and reopening the app).
+     */
+    static verifyEmail = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 5,
+        keyGenerator: (req: Request) =>
+            ((req as any).user?.uid as string | undefined) || keyByClient(req),
+        validate,
+        message: {
+            error: "Rate Limit Exceeded",
+            message: "Too many verification emails sent. Please wait a few minutes before trying again.",
+        },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    /**
+     * Forgot-password limiter — 3 requests per 15 min per email address (lowercased).
+     * Public endpoint, no auth header. Per-email keying prevents an attacker from
+     * spamming a single victim's inbox or burning through Firebase's daily quota.
+     * Falls back to API key + IP for malformed requests.
+     */
+    static forgotPassword = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 3,
+        keyGenerator: (req: Request) => {
+            const email = (req.body?.email as string | undefined)?.trim().toLowerCase();
+            return email || keyByClient(req);
+        },
+        validate,
+        message: {
+            error: "Rate Limit Exceeded",
+            message: "Too many reset attempts. Please wait a few minutes before trying again.",
+        },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
 }

@@ -15,6 +15,12 @@ export interface UserProfile {
     loggedIn?: boolean;
     lastLoggedInTime?: string;
     lastLogoutTime?: string;
+    // Authoritative copy of Firebase Auth's email_verified claim, mirrored on every
+    // sync so callers can gate on the user doc instead of hitting Admin SDK each time.
+    emailVerified?: boolean;
+    // True the first time we send the welcome email — prevents duplicates if the user
+    // signs in again after verifying. Set together with the welcome email send.
+    welcomeSent?: boolean;
     // Subscribed stations list
     stations: SubscribedStation[];
 }
@@ -30,16 +36,33 @@ export interface SubscribedStation {
 export class UserService {
     private static collection = db.collection('users');
 
-    static async createOrUpdateUser(uid: string, email: string, data: Partial<UserProfile>) {
+    static async createOrUpdateUser(
+        uid: string,
+        email: string,
+        data: Partial<UserProfile>,
+        emailVerified: boolean = false
+    ) {
         const userRef = this.collection.doc(uid);
         const snapshot = await userRef.get();
         const timestamp = new Date().toISOString();
 
+        // Welcome email fires once per user, the moment we observe emailVerified flip
+        // to true. For Google signups this happens at first sync (Google emails are
+        // pre-verified); for email signups it happens on the post-verify sync. Either
+        // way the welcome lands AFTER the user has proven their address.
+        const shouldSendWelcome = (snap: typeof snapshot): boolean => {
+            if (!emailVerified) return false;
+            if (!snap.exists) return true;
+            return snap.data()?.welcomeSent !== true;
+        };
+
         if (!snapshot.exists) {
+            const sendWelcome = shouldSendWelcome(snapshot);
+            const displayName = data.displayName || 'Stationly User';
             const newUser: UserProfile = {
                 uid,
                 email,
-                displayName: data.displayName || 'Stationly User',
+                displayName,
                 photoURL: data.photoURL || '',
                 address: data.address || '',
                 phoneNumber: data.phoneNumber || '',
@@ -48,25 +71,40 @@ export class UserService {
                 updatedAt: timestamp,
                 loggedIn: true,
                 lastLoggedInTime: timestamp,
+                emailVerified,
+                welcomeSent: sendWelcome,
                 stations: []
             };
             await userRef.set(newUser);
-            // Fire-and-forget — never block signup on email delivery
-            EmailService.sendWelcomeEmail(email, newUser.displayName);
+            if (sendWelcome) {
+                // Fire-and-forget — never block signup on email delivery
+                EmailService.sendWelcomeEmail(email, displayName);
+            }
             return newUser;
         } else {
+            const sendWelcome = shouldSendWelcome(snapshot);
+
             // Strip undefined values from data so Firestore doesn't crash
             const cleanedData = Object.fromEntries(
                 Object.entries(data).filter(([_, v]) => v !== undefined)
             );
 
-            const updateData = {
+            const updateData: Record<string, any> = {
                 ...cleanedData,
+                emailVerified,
                 updatedAt: timestamp,
                 loggedIn: true,
                 lastLoggedInTime: timestamp
             };
+            if (sendWelcome) updateData.welcomeSent = true;
+
             await userRef.update(updateData);
+
+            if (sendWelcome) {
+                const existing = snapshot.data();
+                const displayName = (data.displayName || existing?.displayName || 'Stationly User');
+                EmailService.sendWelcomeEmail(email, displayName);
+            }
 
             const existingData = snapshot.data();
             return {
