@@ -69,6 +69,42 @@ function assignGoodServiceReason(statusSeverityDescription: string, currentReaso
     return currentReason || '';
 }
 
+function getSeverityPriority(severity: number): number {
+    switch (severity) {
+        case 1:  // Closed
+        case 2:  // Suspended
+        case 16: // Not Running
+        case 20: // Service Closed / No Service
+            return 9;
+        case 4:  // Planned Closure
+            return 8;
+        case 3:  // Part Suspended
+        case 5:  // Part Closure
+        case 11: // Part Closed
+            return 7;
+        case 6:  // Severe Delays
+            return 6;
+        case 7:  // Reduced Service
+        case 8:  // Bus Service
+        case 15: // Diverted
+            return 5;
+        case 9:  // Minor Delays
+        case 14: // Change of frequency
+        case 17: // Issues Reported
+            return 4;
+        case 12: // Exit Only
+        case 13: // No Step Free Access
+        case 19: // Information
+            return 2;
+        case 0:  // Special Service
+            return 1;
+        case 10: // Good Service
+        case 18: // No Issues
+        default:
+            return 0;
+    }
+}
+
 export class LineController {
     /**
      * @swagger
@@ -368,66 +404,75 @@ export class LineController {
             const { lineId, mode } = req.query;
             const modeStr = mode as string || 'tube';
 
-            // 1. Check in-memory cache freshness (30s TTL)
+            // 1. Try to read from in-memory Cache (synced in real-time with Firestore)
             let cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+            
+            // 2. If Cache is empty (e.g., cold start/failed listener), load from SQLite
+            if (cachedStatuses.length === 0) {
+                console.log(`STATUS: 📁 Cache MISS for ${modeStr} statuses. Loading from local SQLite...`);
+                try {
+                    const localRows = await LocalDbService.all<{ raw_data: string }>(
+                        'SELECT raw_data FROM line_statuses WHERE mode = ?',
+                        [modeStr]
+                    );
+                    if (localRows.length > 0) {
+                        localRows.forEach(row => {
+                            const status = JSON.parse(row.raw_data);
+                            DataCacheService.setLineStatus(status.id, status);
+                        });
+                        cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+                    }
+                } catch (dbErr: any) {
+                    console.warn(`STATUS: ⚠️ SQLite query failed: ${dbErr.message}`);
+                }
+            }
+
+            // 3. If Cache and SQLite are BOTH empty, fetch from TfL as a last-resort fallback
+            if (cachedStatuses.length === 0) {
+                console.log(`STATUS: ⚪ Cold cache & SQLite miss. Fetching from TfL...`);
+                const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
+                const nowIso = new Date().toISOString();
+
+                for (const ls of rawStatuses) {
+                    let selectedStatus = ls.lineStatuses?.[0];
+                    if (ls.lineStatuses && ls.lineStatuses.length > 1) {
+                        let maxPriority = -1;
+                        for (const status of ls.lineStatuses) {
+                            const severity = status.statusSeverity;
+                            if (severity !== undefined && severity !== null) {
+                                const priority = getSeverityPriority(Number(severity));
+                                if (priority > maxPriority) {
+                                    maxPriority = priority;
+                                    selectedStatus = status;
+                                }
+                            }
+                        }
+                    }
+
+                    const status: LineStatusResponse = {
+                        id: ls.id,
+                        name: ls.name,
+                        statusSeverityDescription: selectedStatus?.statusSeverityDescription || "Unknown",
+                        reason: assignGoodServiceReason(
+                            selectedStatus?.statusSeverityDescription,
+                            selectedStatus?.reason
+                        ),
+                        mode: ls.modeName,
+                        lastUpdatedTime: nowIso
+                    };
+
+                    DataCacheService.setLineStatus(ls.id, status);
+                    await LocalDbService.upsertLineStatus(ls.id, status);
+                }
+                cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+            }
+
+            // Filter results by lineId if requested
             if (lineId && !String(lineId).includes('{')) {
                 cachedStatuses = cachedStatuses.filter((s: any) => s.id === lineId);
             }
 
-            const isFresh = cachedStatuses.length > 0 &&
-                cachedStatuses.every((s: any) => s.lastUpdatedTime && (Date.now() - new Date(s.lastUpdatedTime).getTime()) < 30000);
-
-            if (isFresh) {
-                console.log(`STATUS: 🔵 Cache HIT for ${modeStr} statuses (${cachedStatuses.length} results)`);
-                return res.json(cachedStatuses);
-            }
-
-            // 2. Fetch fresh data from TfL
-            console.log(`STATUS: ⚪ Cache MISS/OLD for ${modeStr} statuses. Fetching from TfL...`);
-            const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
-
-            const collectionRef = db.collection('lineStatuses');
-            const batch = db.batch();
-            const nowIso = new Date().toISOString();
-
-            rawStatuses.forEach(ls => {
-                const status: LineStatusResponse = {
-                    id: ls.id,
-                    name: ls.name,
-                    statusSeverityDescription: ls.lineStatuses[0]?.statusSeverityDescription || "Unknown",
-                    reason: assignGoodServiceReason(
-                        ls.lineStatuses[0]?.statusSeverityDescription,
-                        ls.lineStatuses[0]?.reason
-                    ),
-                    mode: ls.modeName,
-                    lastUpdatedTime: nowIso
-                };
-
-                // 3. Update in-memory cache immediately
-                DataCacheService.setLineStatus(ls.id, status);
-
-                // 4. Save to Firestore (batch)
-                batch.set(collectionRef.doc(ls.id), status);
-            });
-
-            await batch.commit();
-
-            // 5. Save to SQLite (background, non-blocking)
-            setImmediate(async () => {
-                for (const ls of rawStatuses) {
-                    const status = DataCacheService.getLineStatuses().find((s: any) => s.id === ls.id);
-                    if (status) await LocalDbService.upsertLineStatus(ls.id, status);
-                }
-            });
-
-            console.log(`STATUS: ✅ Saved fresh ${modeStr} statuses (${rawStatuses.length} lines)`);
-
-            // Return filtered results
-            let results = DataCacheService.getLineStatuses(modeStr);
-            if (lineId && !String(lineId).includes('{')) {
-                results = results.filter((s: any) => s.id === lineId);
-            }
-            return res.json(results);
+            return res.json(cachedStatuses);
         } catch (error) {
             console.error("Error fetching line statuses:", error);
             return res.status(500).json({ error: "Internal Server Error" });
