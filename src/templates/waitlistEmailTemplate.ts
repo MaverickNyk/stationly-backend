@@ -113,7 +113,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
                               font-family:sans-serif;font-size:17px;font-weight:800;color:#fff;">M</div>
                 </td>
                 <td>
-                  <p style="color:#111;font-family:sans-serif;font-size:14px;font-weight:700;margin:0 0 2px 0;">Mave</p>
+                  <p style="color:#111;font-family:sans-serif;font-size:14px;font-weight:700;margin:0 0 2px 0;">Nick</p>
                   <p style="color:#999;font-family:sans-serif;font-size:12px;margin:0;">Founder, Stationly &nbsp;·&nbsp; London</p>
                 </td>
               </tr>
@@ -128,7 +128,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
               If you have any questions or just want to chat, just reply to this email — I read every one.
             </p>
             <p style="color:#999;font-family:sans-serif;font-size:13px;margin:20px 0 0 0;">
-              — Mave &nbsp;·&nbsp;
+              — Nick &nbsp;·&nbsp;
               <a href="mailto:info@stationly.co.uk" style="color:#DD2C33;text-decoration:none;">info@stationly.co.uk</a>
             </p>
           </td>
