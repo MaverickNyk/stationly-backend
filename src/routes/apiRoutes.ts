@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SduiController } from '../controllers/sduiController';
+import { ThemeController } from '../controllers/themeController';
 import { UserController } from '../controllers/userController';
 import { AuthController } from '../controllers/authController';
 import { ModeController } from '../controllers/modeController';
@@ -34,6 +35,7 @@ router.get('/sdui/app/forgot-password', SduiController.getForgotPasswordLayout);
 router.get('/sdui/app/about', SduiController.getAboutLayout);
 router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
 router.get('/sdui/app/home-config', SduiController.getHomeConfig);
+router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
 
 // Metadata
 router.get('/modes', ModeController.getModes);
