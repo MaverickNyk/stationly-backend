@@ -6,6 +6,7 @@ import path from 'path';
 import * as dotenv from 'dotenv';
 import swaggerJsdoc from 'swagger-jsdoc';
 import apiRoutes from './routes/apiRoutes';
+import adminRoutes from './admin/adminRoutes';
 import { AuthMiddleware } from './middleware/authMiddleware';
 import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
@@ -29,6 +30,29 @@ app.use(morgan('dev'));
 app.use(express.json());
 
 // Serving icons from the public directory
+// Dynamic line-icon route — generates a TfL-roundel PNG for any known
+// line ID on first hit, caches to disk under public/icons/lines/.
+// Registered BEFORE express.static so the very first request triggers
+// generation; subsequent requests are served by static (the file is
+// now on disk). For unknown lines (bus, made-up names) we 404 and let
+// callers fall back to the mode icon.
+app.get('/icons/lines/:lineId.png', async (req, res) => {
+    const lineId = req.params.lineId;
+    try {
+        const buf = await import('./services/lineIconService')
+            .then(m => m.LineIconService.resolve(lineId));
+        if (!buf) {
+            res.status(404).end();
+            return;
+        }
+        res.set('Cache-Control', 'public, max-age=2592000, immutable'); // 30 days
+        res.set('Content-Type', 'image/png');
+        res.end(buf);
+    } catch (e) {
+        console.error('line-icon generate failed', e);
+        res.status(500).end();
+    }
+});
 app.use('/icons', express.static(path.join(process.cwd(), 'public', 'icons')));
 app.use('/assets', express.static(path.join(process.cwd(), 'public', 'assets')));
 
@@ -634,6 +658,19 @@ app.get('/', (req, res) => {
 
 // Public — no API key required (website waitlist form)
 app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController.join);
+
+// Admin routes — mounted BEFORE `apiRoutes` so they bypass the
+// client `X-Stationly-Key` middleware that apiRoutes installs at
+// the top of its router. Guarded instead by a separate
+// `X-Stationly-Admin-Key` header (see AdminAuthMiddleware).
+//
+// Path is `/api/v1/admin/*` (not bare `/admin`) because the staging
+// + prod nginx reverse proxy only forwards `/api/v1/*` upstream;
+// using a bare `/admin` prefix would 404 at nginx before reaching
+// Node. The admin handlers still live in `src/admin/` so the
+// swagger spec scanner (which globs `./controllers/*`) doesn't pick
+// them up — `/docs` and `/openapi.json` stay clean.
+app.use('/api/v1/admin', adminRoutes);
 
 app.use('/api/v1', apiRoutes);
 
