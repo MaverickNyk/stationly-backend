@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SduiController } from '../controllers/sduiController';
+import { ThemeController } from '../controllers/themeController';
 import { UserController } from '../controllers/userController';
 import { AuthController } from '../controllers/authController';
 import { ModeController } from '../controllers/modeController';
@@ -34,6 +35,7 @@ router.get('/sdui/app/forgot-password', SduiController.getForgotPasswordLayout);
 router.get('/sdui/app/about', SduiController.getAboutLayout);
 router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
 router.get('/sdui/app/home-config', SduiController.getHomeConfig);
+router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
 
 // Metadata
 router.get('/modes', ModeController.getModes);
@@ -65,6 +67,12 @@ router.post('/user/stations/add', UserController.addStation);
 router.post('/user/stations/delete', UserController.deleteStation);
 router.post('/user/logout', UserController.logOut);
 router.post('/user/delete-account', UserController.deleteAccount);
+// FCM token registry — used to make `uid`-targeted admin notifications
+// possible. Both routes are user-auth gated (UID comes from the bearer
+// token, never from the body) and rate-limited by the /user/* strict
+// limiter already installed above.
+router.post('/user/fcm/register',   UserController.registerFcmToken);
+router.post('/user/fcm/unregister', UserController.unregisterFcmToken);
 // Send Stationly-branded verification email for the authenticated user. Lives
 // under /user/* (not /auth/*) so StationlyAuth on the client automatically
 // attaches the Bearer token — /auth/* endpoints are public-by-default.
