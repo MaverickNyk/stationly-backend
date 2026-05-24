@@ -256,40 +256,96 @@ export class DataCacheService {
     }
 
     /**
-     * Search stations by text (commonName / naptanId) OR by exact searchKey match (e.g. line ID "39").
-     * Falls back to fuzzy (Levenshtein) matching so single-character typos still resolve.
+     * Search stations by text. Three matching strategies, results unioned:
+     *   1. **Exact searchKey** — bus route abbreviations (e.g. "39"), line
+     *      IDs, ICS codes. Highest-confidence; surfaced FIRST in the list.
+     *   2. **Case-insensitive substring** on commonName / naptanId. Most
+     *      typical user typing — "sen" matches "Arsenal", "fie" matches
+     *      "Southfields", "kings" matches "King's Cross".
+     *   3. **Fuzzy** — small Levenshtein distance against per-word name
+     *      tokens. Catches single-character typos ("sotuhfields"). Slowest
+     *      and least precise so it runs LAST and only when the first two
+     *      sieves yielded fewer than 50 results.
+     *
+     * The previous implementation early-returned after the searchKey
+     * sieve, which silently hid the substring + fuzzy matches if any
+     * station happened to use the query as its searchKey — masking valid
+     * results like Southfields Underground Station for the query "fie".
+     *
+     * Output is hard-capped at 50 — anything more isn't actionable in a
+     * picker UI. Stations appear at most once even if matched by multiple
+     * sieves; dedup is by id+naptanId composite.
      */
     static searchStationsByQuery(query: string): Station[] {
         const q = query.toLowerCase().trim();
+        if (!q) return [];
         const all = this.getAllStations();
 
-        // Exact searchKey match takes priority (bus route IDs like "39")
-        const bySearchKey = all.filter(s =>
-            Array.isArray((s as any).searchKeys) &&
-            (s as any).searchKeys.some((k: string) => k.toLowerCase() === q)
-        );
-        if (bySearchKey.length > 0) return bySearchKey;
+        // Track membership by stable id so a station that matches multiple
+        // sieves (e.g. searchKey AND substring) only appears once.
+        const seen = new Set<string>();
+        const exactKey: Station[]   = [];   // sieve 1
+        const substring: Station[]  = [];   // sieve 2
+        const fuzzy: Station[]      = [];   // sieve 3
+        const idKey = (s: Station) => (s.naptanId || (s as any).id || s.commonName || "").toLowerCase();
 
-        // Substring match on commonName / naptanId
-        const exact = all.filter(s =>
-            (s.commonName || "").toLowerCase().includes(q) ||
-            (s.naptanId || "").toLowerCase().includes(q)
-        );
-        if (exact.length > 0) return exact.slice(0, 50);
+        const tryPush = (bucket: Station[], s: Station) => {
+            const k = idKey(s);
+            if (!k || seen.has(k)) return;
+            seen.add(k);
+            bucket.push(s);
+        };
 
-        // Fuzzy fallback: match individual words with small edit distance
-        const qWords = q.split(/\s+/).filter(w => w.length > 2);
-        if (qWords.length === 0) return [];
-        return all.filter(s => {
-            const nameWords = (s.commonName || "").toLowerCase().split(/[\s,\-\/]+/);
-            return qWords.some(qw =>
-                nameWords.some(nw => {
-                    if (nw.includes(qw) || qw.includes(nw)) return true;
-                    const maxDist = qw.length > 5 ? 2 : 1;
-                    return this.levenshtein(qw, nw) <= maxDist;
-                })
-            );
-        }).slice(0, 50);
+        // ── 1. Exact searchKey ─────────────────────────────────────────
+        for (const s of all) {
+            const keys = (s as any).searchKeys;
+            if (Array.isArray(keys) && keys.some((k: string) => k.toLowerCase() === q)) {
+                tryPush(exactKey, s);
+            }
+        }
+
+        // ── 2. Substring on commonName / naptanId ──────────────────────
+        // No early-cap here. Otherwise alphabetical iteration through
+        // 20k+ stations fills the cap with low-priority bus stops before
+        // reaching e.g. Southfields Underground Station, hiding it from
+        // results for queries like "fie" or "road".
+        for (const s of all) {
+            const name = (s.commonName || "").toLowerCase();
+            const napt = (s.naptanId || "").toLowerCase();
+            if (name.includes(q) || napt.includes(q)) tryPush(substring, s);
+        }
+
+        // ── 3. Fuzzy on name tokens — last-resort when nothing else hit ─
+        // Only meaningful for typo recovery; skip if we already have
+        // direct matches so fuzzy doesn't pollute the result with
+        // tangentially-related stations.
+        if (exactKey.length === 0 && substring.length === 0) {
+            const qWords = q.split(/\s+/).filter(w => w.length > 2);
+            if (qWords.length > 0) {
+                for (const s of all) {
+                    const nameWords = (s.commonName || "").toLowerCase().split(/[\s,\-\/]+/);
+                    const ok = qWords.some(qw =>
+                        nameWords.some(nw => {
+                            if (nw.includes(qw) || qw.includes(nw)) return true;
+                            const maxDist = qw.length > 5 ? 2 : 1;
+                            return this.levenshtein(qw, nw) <= maxDist;
+                        })
+                    );
+                    if (ok) tryPush(fuzzy, s);
+                }
+            }
+        }
+
+        // Rank within each sieve by station type so tube / rail surface
+        // ABOVE bus stops with the same key — users typing "road" almost
+        // always mean "Holloway Road Underground Station", not a random
+        // bus pole on Foo Road.
+        const rankSort = (a: Station, b: Station) => stationTypeRank(b) - stationTypeRank(a);
+        exactKey.sort(rankSort);
+        substring.sort(rankSort);
+        fuzzy.sort(rankSort);
+
+        return [...exactKey, ...substring, ...fuzzy].slice(0, 50);
     }
 
     /** Haversine distance in metres between two WGS-84 coordinates. */
@@ -374,8 +430,20 @@ export class DataCacheService {
                 if (memberId && !existing.members.includes(memberId)) {
                     existing.members.push(memberId);
                 }
-                // Keep the closer stop as the representative for the group
-                if ((s.distance ?? Infinity) < (existing.distance ?? Infinity)) {
+                // Choose the more "discoverable" stop as the representative
+                // for a grouped location. Priority order:
+                //   1. Closer to the user, if both have GPS distance.
+                //   2. Higher rank station type (tube > rail > overground >
+                //      … > bus stop). A bus pole at the same TfL ICS code
+                //      as Southfields Underground would previously win
+                //      because it was added to the map first; now the tube
+                //      station always wins because the user typing "south"
+                //      almost certainly wants the named station, not its
+                //      adjacent bus pole.
+                const sCloser = (s.distance ?? Infinity) < (existing.distance ?? Infinity)
+                const tied = (s.distance ?? Infinity) === (existing.distance ?? Infinity)
+                const sBetterType = tied && stationTypeRank(s) > stationTypeRank(existing)
+                if (sCloser || sBetterType) {
                     groups.set(key, { ...s, members: existing.members });
                 }
             }
@@ -448,4 +516,41 @@ export class DataCacheService {
         this.lineStatuses.set(id, data);
     }
 }
+
+/**
+ * Rank a station by how prominent it should appear in a user's search
+ * result. Higher = preferred representative when multiple stations
+ * share a `groupStations` key (e.g. a tube station and its adjacent
+ * bus stops both keyed by the same TfL ICS code).
+ *
+ * Heuristic: TfL naptanId prefixes are stable:
+ *   - "940GZ..."  → tube (Underground)
+ *   - "910G..."   → National Rail / Overground / Elizabeth line
+ *   - "9300..."   → Tram
+ *   - "490..."    → London bus stop
+ *   - "4000..."   → outside-London bus stop
+ *
+ * Tube and rail stations beat bus stops because users typing a station
+ * name almost always mean the named station, not the bus pole outside.
+ */
+function stationTypeRank(station: any): number {
+    const id = String(station?.naptanId || station?.id || "").toUpperCase();
+    return when_(id, [
+        ["940GZ", 50],   // tube
+        ["910G",  40],   // rail / overground / elizabeth
+        ["930G",  35],   // DLR
+        ["9300",  30],   // tram
+        ["490",   10],   // London bus
+        ["4000",  8],    // out-of-London bus
+        ["1500",  7],    // bus mode misc
+    ], 0);
+}
+
+function when_<T>(value: string, table: Array<[string, T]>, fallback: T): T {
+    for (const [prefix, result] of table) {
+        if (value.startsWith(prefix)) return result;
+    }
+    return fallback;
+}
+
 

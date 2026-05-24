@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { UserService, SubscribedStation } from '../services/userService';
 import { SduiService } from '../services/sduiService';
+import { UserFcmTokenService } from '../services/userFcmTokenService';
 
 export class UserController {
 
@@ -284,6 +285,91 @@ export class UserController {
             res.json(result);
         } catch (error: any) {
             res.status(500).json({ error: error.message });
+        }
+    }
+
+    /**
+     * @swagger
+     * /user/fcm/register:
+     *   post:
+     *     summary: Register an FCM token for the authenticated user
+     *     description: |
+     *       Idempotently registers a device's FCM registration token under the
+     *       user's profile. Required for `uid`-targeted admin notifications.
+     *       The client calls this on every cold launch and whenever FCM
+     *       rotates the token (onNewToken). Same token from same user is a
+     *       cheap no-op refresh.
+     *     tags: [Users]
+     *     security:
+     *       - bearerAuth: []
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [token]
+     *             properties:
+     *               token:      { type: string, description: FCM registration token }
+     *               platform:   { type: string, enum: [android, ios, web] }
+     *               appVersion: { type: string }
+     *     responses:
+     *       200: { description: Registered }
+     *       400: { description: Missing token }
+     *       401: { description: Auth required }
+     */
+    static async registerFcmToken(req: Request, res: Response) {
+        // UID comes from the validated Firebase ID token (set by
+        // AuthMiddleware.validateUserToken), NOT the request body —
+        // never trust a self-asserted UID for a write to that user's
+        // own collection.
+        const uid = (req as any).user?.uid as string | undefined;
+        const { token, platform, appVersion } = req.body ?? {};
+
+        if (!uid) return res.status(401).json({ error: 'Unauthorized' });
+        if (!token || typeof token !== 'string') {
+            return res.status(400).json({ error: 'Missing token' });
+        }
+
+        try {
+            await UserFcmTokenService.register(uid, token, { platform, appVersion });
+            return res.json({ success: true });
+        } catch (error: any) {
+            return res.status(500).json({ error: error?.message ?? 'Register failed' });
+        }
+    }
+
+    /**
+     * @swagger
+     * /user/fcm/unregister:
+     *   post:
+     *     summary: Unregister an FCM token for the authenticated user
+     *     description: Removes the given FCM token from the user's registry. Called on logout.
+     *     tags: [Users]
+     *     security:
+     *       - bearerAuth: []
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [token]
+     *             properties:
+     *               token: { type: string }
+     *     responses:
+     *       200: { description: Unregistered (or already absent) }
+     */
+    static async unregisterFcmToken(req: Request, res: Response) {
+        const uid = (req as any).user?.uid as string | undefined;
+        const { token } = req.body ?? {};
+        if (!uid) return res.status(401).json({ error: 'Unauthorized' });
+        if (!token) return res.status(400).json({ error: 'Missing token' });
+        try {
+            await UserFcmTokenService.unregister(uid, token);
+            return res.json({ success: true });
+        } catch (error: any) {
+            return res.status(500).json({ error: error?.message ?? 'Unregister failed' });
         }
     }
 }
