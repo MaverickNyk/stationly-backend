@@ -451,10 +451,44 @@ export class SduiService {
                 ].join(","),
                 // Top bar
                 "topbar.live_label":          "Live Network",
-                // Board card status placeholders
+                // Board card status row — always visible to keep board size
+                // stable; shows real line status when available, "Good Service"
+                // as the default. The "we have no data right now" cases live
+                // in the board.fallback.* family below and render inside the
+                // dot-matrix rows themselves on home / dream / widget.
                 "board.status_label":         "Status",
-                "board.connecting_label":     "Connecting to TfL signals...",
                 "board.status_failed_label":  "Status unavailable — pull down to retry",
+                "board.good_service_label":   "Good Service",      // default when no lineStatus has arrived yet
+                // ── Board fallback panel (unified across home / dream / widget) ──
+                // Title + detail surface in the empty-board slot when there's
+                // nothing to render. Detection happens client-side; only the
+                // copy + thresholds are server-driven.
+                // Copy is kept tight (≤ ~30 chars per line) so it fits one
+                // line on a ~260dp widget cell without truncation. Anything
+                // longer would clip with "..." on widget row width.
+                "board.fallback.offline.title":          "Offline",
+                "board.fallback.offline.detail":         "Catching up when you’re back",
+                "board.fallback.signal_lost.title":      "Live updates paused",
+                "board.fallback.signal_lost.detail":     "Last refresh {age} ago",            // {age} placeholder
+                "board.fallback.late_night.title":       "Service ended for tonight",
+                "board.fallback.late_night.detail":      "Back in the morning",
+                "board.fallback.early_morning.title":    "Service starting soon",
+                "board.fallback.early_morning.detail":   "First departures incoming",
+                "board.fallback.no_upcoming.title":      "Nothing departing right now",
+                "board.fallback.no_upcoming.detail":     "Watching for the next one",
+                "board.fallback.connecting.title":       "Connecting",
+                "board.fallback.connecting.detail":      "Live data starting up",
+                // DISRUPTED: title is normally the live TfL severity (e.g.
+                // "Part Closure", "Severe Delays"); these defaults only kick
+                // in if TfL sends back blank severity text. `\n` in detail
+                // splits across two rows in the client.
+                "board.fallback.disrupted.title":        "Service disrupted",
+                "board.fallback.disrupted.detail":       "No departures expected here\nWe’ll update as things change",
+                // Tunable thresholds (string-encoded for the homeConfig flat map)
+                "board.fallback.signalLostMin":          "6",          // minutes since last FCM before "Live updates paused"
+                "board.fallback.lateNightStart":        "00:00",       // start of "ended for tonight" window (Europe/London)
+                "board.fallback.lateNightEnd":         "04:30",        // late night → early morning cutoff
+                "board.fallback.earlyMorningEnd":      "06:00",        // early morning → "no upcoming" cutoff
                 // ── Force-update gate ──────────────────────────────────────────
                 // Bump app.minVersion to block older clients immediately — no release needed.
                 "app.minVersion": "1.0",
