@@ -424,32 +424,71 @@ export class SduiService {
                 "explore.good_service_sub":   "All lines running normally",
                 "explore.disruptions_sub":    "Delays on network",
                 "explore.disruptions_label":  "Disruption",        // client appends count + pluralises
-                // Travel period labels
-                "explore.period.morning":     "Morning rush hour",
-                "explore.period.morning_sub": "Expect busier trains",
-                "explore.period.evening":     "Evening rush hour",
-                "explore.period.evening_sub": "Expect busier trains",
-                "explore.period.late_night":  "Late night service",
-                "explore.period.late_night_sub": "Reduced frequency",
-                "explore.period.night":       "Night service",
-                "explore.period.night_sub":   "Reduced frequency",
-                "explore.period.offpeak":     "Off-peak",
-                "explore.period.offpeak_sub": "Normal frequency",
-                // Travel period hour boundaries (24h, inclusive start inclusive end)
-                "explore.period.morning.start":    "7",
-                "explore.period.morning.end":      "9",
-                "explore.period.evening.start":    "17",
-                "explore.period.evening.end":      "19",
-                "explore.period.late_night.start": "22",
-                "explore.period.late_night.end":   "23",
-                "explore.period.night.start":      "0",
-                "explore.period.night.end":        "5",
+                // Fares card (Peak / Off-Peak). Times are fixed by TfL fare rules
+                // (Mon–Fri 06:30–09:30 + 16:00–19:00) and live in the Android client;
+                // these strings just control labels + copy.
+                "explore.fares.peak.title":              "Peak Hours",
+                "explore.fares.peak.subtitle_prefix":    "Pricier fares · until ",
+                "explore.fares.offpeak.title":           "Off-Peak",
+                "explore.fares.offpeak.subtitle_prefix": "Cheaper fares · until ",
+                "explore.fares.dialog.title.peak":       "Rush hour for your wallet too.",
+                "explore.fares.dialog.title.offpeak":    "You’re riding cheap.",
+                "explore.fares.dialog.body.peak":        "Tap in right now and you’ll pay TfL’s peak fare. Prices drop at 09:30 (or at 19:00 in the evening) — and weekends are always off-peak.\n\nPeak windows are Mon–Fri, 06:30–09:30 and 16:00–19:00. Same trains either side, just a few quid lighter outside the window.",
+                "explore.fares.dialog.body.offpeak":     "Right now London’s letting you off easy — every Tube tap is at the off-peak rate.\n\nPeak fares only apply Mon–Fri, 06:30–09:30 and 16:00–19:00. Weekends and bank holidays are off-peak all day. Same trains, less money. Stationly approves.",
+                "explore.fares.dialog.link":             "See TfL fares",
+                "explore.fares.dialog.dismiss":          "Got it",
+                "explore.fares.tflUrl":                  "https://tfl.gov.uk/fares/find-fares/tube-and-rail-fares",
+                // CSV of YYYY-MM-DD dates (UK bank holidays — England & Wales).
+                // On these dates the Fares card stays Off-Peak all day. The Android
+                // client carries the same list as a baked-in fallback so accuracy
+                // doesn't depend on a fresh config fetch; the remote value wins when
+                // populated. Top up roughly once a year from https://www.gov.uk/bank-holidays
+                "explore.fares.bankHolidays":            [
+                    "2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25",
+                    "2026-08-31","2026-12-25","2026-12-28",
+                    "2027-01-01","2027-03-26","2027-03-29","2027-05-03","2027-05-31",
+                    "2027-08-30","2027-12-27","2027-12-28",
+                ].join(","),
                 // Top bar
                 "topbar.live_label":          "Live Network",
-                // Board card status placeholders
+                // Board card status row — always visible to keep board size
+                // stable; shows real line status when available, "Good Service"
+                // as the default. The "we have no data right now" cases live
+                // in the board.fallback.* family below and render inside the
+                // dot-matrix rows themselves on home / dream / widget.
                 "board.status_label":         "Status",
-                "board.connecting_label":     "Connecting to TfL signals...",
                 "board.status_failed_label":  "Status unavailable — pull down to retry",
+                "board.good_service_label":   "Good Service",      // default when no lineStatus has arrived yet
+                // ── Board fallback panel (unified across home / dream / widget) ──
+                // Title + detail surface in the empty-board slot when there's
+                // nothing to render. Detection happens client-side; only the
+                // copy + thresholds are server-driven.
+                // Copy is kept tight (≤ ~30 chars per line) so it fits one
+                // line on a ~260dp widget cell without truncation. Anything
+                // longer would clip with "..." on widget row width.
+                "board.fallback.offline.title":          "Offline",
+                "board.fallback.offline.detail":         "Catching up when you’re back",
+                "board.fallback.signal_lost.title":      "Live updates paused",
+                "board.fallback.signal_lost.detail":     "Last refresh {age} ago",            // {age} placeholder
+                "board.fallback.late_night.title":       "Service ended for tonight",
+                "board.fallback.late_night.detail":      "Back in the morning",
+                "board.fallback.early_morning.title":    "Service starting soon",
+                "board.fallback.early_morning.detail":   "First departures incoming",
+                "board.fallback.no_upcoming.title":      "Nothing departing right now",
+                "board.fallback.no_upcoming.detail":     "Watching for the next one",
+                "board.fallback.connecting.title":       "Connecting",
+                "board.fallback.connecting.detail":      "Live data starting up",
+                // DISRUPTED: title is normally the live TfL severity (e.g.
+                // "Part Closure", "Severe Delays"); these defaults only kick
+                // in if TfL sends back blank severity text. `\n` in detail
+                // splits across two rows in the client.
+                "board.fallback.disrupted.title":        "Service disrupted",
+                "board.fallback.disrupted.detail":       "No departures expected here\nWe’ll update as things change",
+                // Tunable thresholds (string-encoded for the homeConfig flat map)
+                "board.fallback.signalLostMin":          "6",          // minutes since last FCM before "Live updates paused"
+                "board.fallback.lateNightStart":        "00:00",       // start of "ended for tonight" window (Europe/London)
+                "board.fallback.lateNightEnd":         "04:30",        // late night → early morning cutoff
+                "board.fallback.earlyMorningEnd":      "06:00",        // early morning → "no upcoming" cutoff
                 // ── Force-update gate ──────────────────────────────────────────
                 // Bump app.minVersion to block older clients immediately — no release needed.
                 "app.minVersion": "1.0",
