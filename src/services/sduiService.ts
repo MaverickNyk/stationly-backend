@@ -497,6 +497,61 @@ export class SduiService {
                 "app.update.message": "Update Stationly for the latest features and improvements.",
                 "app.update.cta":     "Update Now",
                 "app.update.dismiss": "Maybe Later",
+                // ── Station label templates (widget + fullscreen dream) ───────
+                // Drives the line-prefix shown on platform-header rows
+                // ("Piccadilly: Platform 1", "Bus 39: …", "DLR: …").
+                // Client substitutes {line} with the formatted line name; bus
+                // line ids get uppercased so "n30" → "N30". Mode-specific
+                // templates win over `default`.
+                "station.label.bus":             "Bus {line}",
+                "station.label.dlr":             "DLR",
+                "station.label.elizabeth":       "Elizabeth",
+                "station.label.elizabeth-line":  "Elizabeth",
+                "station.label.default":         "{line}",       // tube, overground, tram, national-rail, …
+                // Mode display names — used in the line-status dialog and
+                // anywhere we need a human-readable mode string. Add a key
+                // for any new TfL mode we start supporting.
+                "station.mode.tube":             "Tube",
+                "station.mode.overground":       "Overground",
+                "station.mode.dlr":              "DLR",
+                "station.mode.elizabeth":        "Elizabeth line",
+                "station.mode.elizabeth-line":   "Elizabeth line",
+                "station.mode.tram":             "Tram",
+                "station.mode.national-rail":    "National Rail",
+                "station.mode.bus":              "Bus",
+                "station.mode.river-bus":        "River Bus",
+                "station.mode.cable-car":        "Cable Car",
+                // ── Home promo banners (widget + screensaver) ─────────────────
+                // Each has a `show` master switch so we can kill the banner
+                // server-side if it ever feels noisy. Defaults still ship on
+                // the client for offline first-launch safety.
+                "home.promo.widget.show":        "true",
+                "home.promo.widget.title":       "Add a home screen widget",
+                "home.promo.widget.subtitle":    "Pin your live board for one-tap glances — no need to open the app",
+                "home.promo.widget.cta":         "Add",
+                "home.promo.dream.show":         "true",
+                "home.promo.dream.title":        "Set as Screensaver",
+                "home.promo.dream.subtitle":     "Live departures when docked or charging",
+                "home.promo.dream.cta":          "Set up",
+                // ── Dream settings screen ─────────────────────────────────────
+                // Labels for the Daydream configuration activity launched
+                // from system Settings → Display → Screen saver.
+                "dream.settings.title":                            "Screensaver",
+                "dream.settings.section.layout":                   "Layout",
+                "dream.settings.section.theme":                    "Theme",
+                "dream.settings.section.clock":                    "Clock style",
+                "dream.settings.section.station":                  "Station to display",
+                "dream.settings.layout.clock_and_board.name":      "Clock + Board",
+                "dream.settings.layout.clock_and_board.desc":      "Big clock with departure board alongside",
+                "dream.settings.layout.fullscreen_board.name":     "Fullscreen Board",
+                "dream.settings.layout.fullscreen_board.desc":     "Just the departure board, filling the screen",
+                "dream.settings.theme.system":                     "System",
+                "dream.settings.theme.light":                      "Light",
+                "dream.settings.theme.dark":                       "Dark",
+                "dream.settings.clock.digital":                    "Digital",
+                "dream.settings.clock.analog":                     "Analog",
+                "dream.settings.station.auto.title":               "Auto",
+                "dream.settings.station.auto.subtitle":            "Match the top board on your home screen",
                 // ── Profile screen ─────────────────────────────────────────────
                 "profile.stations.title":            "My Stations",
                 "profile.stations.empty_title":      "No stations yet",
