@@ -82,7 +82,7 @@ jobs:
 
       - name: Sync built files to server
         run: |
-          rsync -az -e "ssh -i ~/.ssh/prod.key" \
+          rsync -az --delete -e "ssh -i ~/.ssh/prod.key" \
             --exclude node_modules \
             --exclude .git \
             --exclude src \
@@ -117,7 +117,7 @@ jobs:
             pm2 set pm2-logrotate:max_size 20M
             pm2 set pm2-logrotate:retain 7
             pm2 set pm2-logrotate:compress true
-            pm2 reload stationly-backend --update-env || pm2 start dist/server.js --name stationly-backend
+            pm2 reload stationly-backend --update-env || pm2 start dist/server.js --name stationly-backend -i max
             pm2 save
           "
 
