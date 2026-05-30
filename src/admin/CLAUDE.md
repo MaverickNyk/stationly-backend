@@ -3,8 +3,7 @@
 Server-side admin tooling that's intentionally **off the public API**
 surface. Everything in this folder is:
 
-- Gated by a **separate auth key** (`X-Stationly-Admin-Key`), not the
-  client `X-Stationly-Key` rotated calendrically across user devices
+- Gated by a **separate auth key** passed via the standard `Authorization: Bearer <key>` protocol, completely isolated from client credentials
 - **Excluded from the OpenAPI schema** — no `@swagger` JSDoc on any
   handler in this folder, so the generated `/docs` spec walker
   doesn't surface these endpoints to scanners
@@ -114,13 +113,12 @@ text + severity glyph.
 
 ## Auth model
 
-`AdminAuthMiddleware.validate` checks `X-Stationly-Admin-Key` against
-`STATIONLY_ADMIN_KEY` env. Three responses:
+`AdminAuthMiddleware.validate` checks the standard `Authorization: Bearer <token>` header against `STATIONLY_ADMIN_KEY` env. Three responses:
 
 - **503 Service Unavailable** — env var unset or shorter than 16
   chars (misconfiguration; fail-shut not fail-open)
-- **401 Unauthorized** — header missing
-- **403 Forbidden** — header present but wrong key
+- **401 Unauthorized** — `Authorization` header missing or invalid Bearer format
+- **403 Forbidden** — header present but token doesn't match the expected key
 
 The compare uses `crypto.timingSafeEqual` to avoid byte-by-byte
 timing attacks. The length-mismatch branch still runs a sized compare
@@ -147,7 +145,7 @@ KEY=$(grep STATIONLY_ADMIN_KEY .env | cut -d'"' -f2)
 
 curl -X POST https://staging-api.stationly.co.uk/api/v1/admin/notifications/send \
   -H "Content-Type: application/json" \
-  -H "X-Stationly-Admin-Key: $KEY" \
+  -H "Authorization: Bearer $KEY" \
   -d '{
     "audience": { "type": "uid", "value": "FIREBASE_UID_HERE" },
     "payload": {
