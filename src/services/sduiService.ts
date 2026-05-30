@@ -533,6 +533,16 @@ export class SduiService {
                 "home.promo.dream.title":        "Set as Screensaver",
                 "home.promo.dream.subtitle":     "Live departures when docked or charging",
                 "home.promo.dream.cta":          "Set up",
+                // Notification-permission denied banner — surfaces when the
+                // user has been asked for POST_NOTIFICATIONS and denied (or
+                // toggled it off later in system Settings). Without this nudge
+                // every line-status auto-alert silently no-ops inside
+                // NotificationDispatcher. Same `show` kill-switch shape as the
+                // promo banners above so it can be suppressed server-side.
+                "home.notif_denied.show":        "true",
+                "home.notif_denied.title":       "Turn on notifications",
+                "home.notif_denied.subtitle":    "Stationly can alert you when your line has delays, closures, or recovers.",
+                "home.notif_denied.cta":         "Enable",
                 // ── Dream settings screen ─────────────────────────────────────
                 // Labels for the Daydream configuration activity launched
                 // from system Settings → Display → Screen saver.
