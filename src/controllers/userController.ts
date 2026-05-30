@@ -31,7 +31,7 @@ export class UserController {
      *         description: Missing required fields
      */
     static async syncProfile(req: Request, res: Response) {
-        const { uid, email, displayName, photoURL, signInProvider, ...other } = req.body;
+        const { uid, email, displayName, photoURL, signInProvider, deviceId, deviceInfo, ...other } = req.body;
 
         if (!uid || !email) {
             return res.status(400).json({ error: "UID and Email are required for sync" });
@@ -52,7 +52,9 @@ export class UserController {
                     signInProvider,
                     ...other
                 },
-                emailVerified
+                emailVerified,
+                typeof deviceId === 'string' && deviceId ? deviceId : undefined,
+                deviceInfo && typeof deviceInfo === 'object' ? deviceInfo : undefined
             );
             res.json(profile);
         } catch (error: any) {
@@ -276,12 +278,15 @@ export class UserController {
     }
 
     static async logOut(req: Request, res: Response) {
-        const { uid } = req.body;
+        const { uid, deviceId } = req.body;
         if (!uid) {
             return res.status(400).json({ error: "UID required" });
         }
         try {
-            const result = await UserService.logOut(uid);
+            const result = await UserService.logOut(
+                uid,
+                typeof deviceId === 'string' && deviceId ? deviceId : undefined
+            );
             res.json(result);
         } catch (error: any) {
             res.status(500).json({ error: error.message });

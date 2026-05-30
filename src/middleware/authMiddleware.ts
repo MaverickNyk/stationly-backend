@@ -126,7 +126,12 @@ export class AuthMiddleware {
                 emailVerified: decodedToken.email_verified === true
             };
             
-            const requestedUid = req.params.uid || req.body.uid;
+            // Reject any attempt to act on a DIFFERENT user's id than the one
+            // proven by the token — covers path param, body, AND query string.
+            // GET /user/sync/profile?uid=… reads the query param, which was
+            // previously unchecked → an IDOR letting any authenticated user read
+            // another user's profile. The authoritative uid is decodedToken.uid.
+            const requestedUid = req.params.uid || req.body?.uid || req.query?.uid;
             if (requestedUid && requestedUid !== decodedToken.uid) {
                 return res.status(403).json({
                     error: "Forbidden",
