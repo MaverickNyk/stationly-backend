@@ -37,7 +37,7 @@ export class AdminAuthMiddleware {
      * should refuse them entirely.
      */
     static validate(req: Request, res: Response, next: NextFunction) {
-        const provided = req.header('X-Stationly-Admin-Key');
+        const authHeader = req.header('Authorization');
         const expected = process.env.STATIONLY_ADMIN_KEY;
 
         if (!expected || expected.length < 16) {
@@ -49,18 +49,21 @@ export class AdminAuthMiddleware {
             });
         }
 
-        if (!provided) {
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({
                 error: 'Unauthorized',
-                message: "Missing 'X-Stationly-Admin-Key' header.",
+                message: "Missing or invalid 'Authorization' header. Use 'Bearer <key>'.",
             });
         }
+
+        // Extract the token after 'Bearer '
+        const provided = authHeader.substring(7).trim();
 
         if (!constantTimeEquals(provided, expected)) {
             console.warn(`ADMIN_AUTH: ❌ Invalid admin key attempt from ${req.ip}`);
             return res.status(403).json({
                 error: 'Forbidden',
-                message: "Invalid 'X-Stationly-Admin-Key'.",
+                message: "Invalid admin authorization token.",
             });
         }
 

@@ -45,30 +45,33 @@ jobs:
 
       - name: Assemble production .env
         env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          APP_ENV: production
+          APP_BASE_URL: https://api.stationly.co.uk
+          APP_WEB_URL: https://stationly.co.uk
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
-          TFL_TRANSPORT_MODES: ${{ secrets.TFL_TRANSPORT_MODES }}
-          TFL_STATUS_POLLING_INTERVAL: ${{ secrets.TFL_STATUS_POLLING_INTERVAL }}
-          TFL_ARRIVAL_PREDICTION_COUNT: ${{ secrets.TFL_ARRIVAL_PREDICTION_COUNT }}
-          TFL_API_TIMEOUT: ${{ secrets.TFL_API_TIMEOUT }}
+          FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          STATIONLY_ADMIN_KEY: ${{ secrets.STATIONLY_ADMIN_KEY }}
         run: |
-          printf "APP_ENV=production\n" > .env.prod
-          printf "APP_BASE_URL=https://api.stationly.co.uk\n" >> .env.prod
-          printf "APP_WEB_URL=https://stationly.co.uk\n" >> .env.prod
-          printf "FIREBASE_KEY_PATH=./serviceAccountKey.json\n" >> .env.prod
-          printf "RESEND_API_KEY=%s\n" "$RESEND_API_KEY" >> .env.prod
-          printf "FIRESTORE_PROJECT_ID=%s\n" "$FIRESTORE_PROJECT_ID" >> .env.prod
-          printf "TFL_APP_KEY=%s\n" "$TFL_APP_KEY" >> .env.prod
-          printf "TFL_TRANSPORT_MODES=%s\n" "$TFL_TRANSPORT_MODES" >> .env.prod
-          printf "TFL_STATUS_POLLING_INTERVAL=%s\n" "$TFL_STATUS_POLLING_INTERVAL" >> .env.prod
-          printf "TFL_ARRIVAL_PREDICTION_COUNT=%s\n" "$TFL_ARRIVAL_PREDICTION_COUNT" >> .env.prod
-          printf "TFL_API_TIMEOUT=%s\n" "$TFL_API_TIMEOUT" >> .env.prod
-
-      - name: Write Firebase service account key
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY_JSON }}
-        run: echo "$FIREBASE_KEY" > serviceAccountKey.json
+          cp .env.defaults .env.prod
+          while IFS='=' read -r key value || [[ -n "$key" ]]; do
+              [[ -z "$key" || "$key" =~ ^# ]] && continue
+              clean_key=$(echo "$key" | cut -d'=' -f1 | xargs)
+              
+              # Resolve the environment variable dynamically by its name
+              resolved_value="${!clean_key}"
+              
+              if [ -n "$resolved_value" ]; then
+                  echo "  Writing $clean_key from env block"
+                  if grep -q "^${clean_key}=" .env.prod; then
+                      sed -i "s|^${clean_key}=.*|${clean_key}=${resolved_value}|g" .env.prod
+                  else
+                      echo "${clean_key}=${resolved_value}" >> .env.prod
+                  fi
+              else
+                  echo "  ⚠️ Warning: $clean_key is empty or not provided"
+              fi
+          done < .env.remote
 
       - name: Setup SSH
         run: |
@@ -79,7 +82,7 @@ jobs:
 
       - name: Sync built files to server
         run: |
-          rsync -az -e "ssh -i ~/.ssh/prod.key" \
+          rsync -az --delete -e "ssh -i ~/.ssh/prod.key" \
             --exclude node_modules \
             --exclude .git \
             --exclude src \
@@ -95,17 +98,26 @@ jobs:
             --exclude .github \
             ./ ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/
 
-      - name: Upload .env and Firebase key
+      - name: Upload .env and secure configuration
         run: |
+          # Upload env to application directory
           scp -i ~/.ssh/prod.key .env.prod ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/.env
-          scp -i ~/.ssh/prod.key serviceAccountKey.json ubuntu@${{ secrets.PROD_HOST }}:~/stationly-backend/serviceAccountKey.json
+          
+          # Enforce strict file permissions on the server
+          ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} "
+            chmod 600 ~/stationly-backend/.env
+          "
 
       - name: Install deps & reload
         run: |
           ssh -i ~/.ssh/prod.key ubuntu@${{ secrets.PROD_HOST }} "
             cd ~/stationly-backend
             npm ci --omit=dev --silent
-            pm2 reload stationly-backend --update-env || pm2 start dist/server.js --name stationly-backend
+            pm2 install pm2-logrotate
+            pm2 set pm2-logrotate:max_size 20M
+            pm2 set pm2-logrotate:retain 7
+            pm2 set pm2-logrotate:compress true
+            pm2 reload stationly-backend --update-env || pm2 start dist/server.js --name stationly-backend -i max
             pm2 save
           "
 
