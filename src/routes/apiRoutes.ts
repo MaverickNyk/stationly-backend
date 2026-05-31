@@ -60,7 +60,10 @@ router.use('/user', AuthMiddleware.validateUserToken);
 router.use('/user', RateLimitMiddleware.strict);
 
 router.get('/user/sync/profile', UserController.getUserProfile);
-router.get('/sdui/app/profile/:uid', UserController.getSduiProfile);
+// Returns a user's profile rendered as SDUI — must be user-auth gated (and the
+// :uid is checked against the token by validateUserToken) so it can't leak one
+// user's profile to anyone holding the shared app key.
+router.get('/sdui/app/profile/:uid', AuthMiddleware.validateUserToken, UserController.getSduiProfile);
 router.post('/user/sync/profile', UserController.syncProfile);
 router.post('/user/sync/stations', UserController.syncStations);
 router.post('/user/stations/add', UserController.addStation);

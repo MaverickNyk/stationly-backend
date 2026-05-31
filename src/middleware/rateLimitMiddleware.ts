@@ -1,13 +1,22 @@
 import rateLimit from 'express-rate-limit';
 import { Request } from 'express';
 
-// Key by X-Stationly-Key so limits are per client, not per IP.
-// Falls back to IP for unauthenticated requests (caught by auth middleware first anyway).
-// Strip IPv6 prefix (::ffff:) from mapped IPv4 addresses to normalise the key.
-const keyByClient = (req: Request): string =>
-    req.header('X-Stationly-Key') || (req.ip?.replace(/^::ffff:/, '') ?? 'unknown');
+// Key by the authenticated Firebase UID when available, else by IP.
+//
+// We deliberately DO NOT key by X-Stationly-Key: every install of the app ships
+// the SAME client key, so keying by it makes ONE global bucket shared by all
+// users — a single device can then rate-limit everyone (and normal traffic trips
+// the strict /user limiter). Per-UID isolates each account; unauthenticated
+// public endpoints (no token) fall back to per-IP, which is per-device-ish rather
+// than global. Strip the IPv6 ::ffff: prefix to normalise the IP key.
+const keyByUidOrIp = (req: Request): string => {
+    const uid = (req as any).user?.uid as string | undefined;
+    if (uid) return `uid:${uid}`;
+    const ip = req.ip?.replace(/^::ffff:/, '') ?? 'unknown';
+    return `ip:${ip}`;
+};
 
-// Suppress express-rate-limit's IPv6 validation warnings — we key by API token, not raw IP.
+// Suppress express-rate-limit's IPv6 validation warnings — we normalise the key ourselves.
 const validate = { ip: false, keyGeneratorIpFallback: false };
 
 /**
@@ -20,7 +29,7 @@ export class RateLimitMiddleware {
     static modes = rateLimit({
         windowMs: 15 * 60 * 1000,
         max: 300,
-        keyGenerator: keyByClient,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
@@ -30,7 +39,7 @@ export class RateLimitMiddleware {
     static lines = rateLimit({
         windowMs: 15 * 60 * 1000,
         max: 300,
-        keyGenerator: keyByClient,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
@@ -40,7 +49,7 @@ export class RateLimitMiddleware {
     static stations = rateLimit({
         windowMs: 15 * 60 * 1000,
         max: 300,
-        keyGenerator: keyByClient,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
@@ -50,7 +59,7 @@ export class RateLimitMiddleware {
     static sdui = rateLimit({
         windowMs: 15 * 60 * 1000,
         max: 300,
-        keyGenerator: keyByClient,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "Too Many Requests", message: "You've reached the limit for public data. Please contact support for higher limits." },
         standardHeaders: true,
@@ -62,8 +71,11 @@ export class RateLimitMiddleware {
      */
     static strict = rateLimit({
         windowMs: 15 * 60 * 1000,
-        max: 20,
-        keyGenerator: keyByClient,
+        // Per-UID now (not the shared key), so this can be generous without one
+        // user starving others: covers login sync + reconcile + station edits +
+        // FCM (un)register + a few foregrounds comfortably.
+        max: 60,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "Rate Limit Exceeded", message: "To protect user data, syncing is limited. Please try again later." },
         standardHeaders: true,
@@ -76,7 +88,7 @@ export class RateLimitMiddleware {
     static developer = rateLimit({
         windowMs: 1 * 60 * 1000,
         max: 60,
-        keyGenerator: keyByClient,
+        keyGenerator: keyByUidOrIp,
         validate,
         message: { error: "API Quota Exceeded", message: "Your developer key has hit its per-minute limit." },
         standardHeaders: true,
@@ -93,7 +105,7 @@ export class RateLimitMiddleware {
         windowMs: 15 * 60 * 1000,
         max: 5,
         keyGenerator: (req: Request) =>
-            ((req as any).user?.uid as string | undefined) || keyByClient(req),
+            ((req as any).user?.uid as string | undefined) || keyByUidOrIp(req),
         validate,
         message: {
             error: "Rate Limit Exceeded",
@@ -114,7 +126,7 @@ export class RateLimitMiddleware {
         max: 3,
         keyGenerator: (req: Request) => {
             const email = (req.body?.email as string | undefined)?.trim().toLowerCase();
-            return email || keyByClient(req);
+            return email || keyByUidOrIp(req);
         },
         validate,
         message: {
