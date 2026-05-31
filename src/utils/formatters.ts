@@ -54,7 +54,9 @@ export function formatPlatform(mode: string | undefined, platform: string | unde
     const rp = (platform ?? '').trim().toLowerCase();
 
     if (!rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform') {
-        return isBus ? 'Stop not assigned' : 'Platform not assigned';
+        // Unassigned bus stop → empty (the client renders just the line, no
+        // confusing "Stop not assigned"). Rail keeps a presentable label.
+        return isBus ? '' : 'Platform not assigned';
     }
 
     let p = platform!.trim();

@@ -29,18 +29,22 @@ export class DataCacheService {
             // 3. Load Metadata from local DB for immediate response
             await this.loadFromLocal();
 
-            // 4. Perform Delta Sync with Firestore
-            try {
-                await this.syncWithFirestore();
-                console.log("CACHE: ✅ Delta Sync completed.");
-            } catch (syncErr) {
-                console.warn("CACHE: ⚠️ Firestore sync failed (quota likely), continuing with local data.");
-            }
-            
-            this.isReady = true;
+            // 4. Only the master cluster instance (Instance 0) should synchronize and listen to Firestore
+            const isMasterInstance = process.env.NODE_APP_INSTANCE === undefined || process.env.NODE_APP_INSTANCE === '0';
 
-            // 5. Set up real-time listeners for live updates while the server is running
-            this.setupRealtimeListeners();
+            if (isMasterInstance) {
+                try {
+                    await this.syncWithFirestore();
+                    console.log("CACHE: ✅ Delta Sync completed.");
+                } catch (syncErr) {
+                    console.warn("CACHE: ⚠️ Firestore sync failed (quota likely), continuing with local data.");
+                }
+                this.isReady = true;
+                this.setupRealtimeListeners();
+            } else {
+                console.log(`CACHE: 🛸 Cluster instance ${process.env.NODE_APP_INSTANCE} - Skipping Firestore sync, running in local read-only mode.`);
+                this.isReady = true;
+            }
 
         } catch (err) {
             console.error("CACHE: ❌ Initialization failed:", err);
