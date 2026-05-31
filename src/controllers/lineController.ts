@@ -17,7 +17,11 @@ async function fetchSequences(
     const stationNames: Record<string, string> = {};
     for (const dir of directions) {
         try {
-            const data = await TflApiClient.getLineRouteSequence(lineId, dir.direction);
+            const d = dir.direction.toLowerCase();
+            // Map circular/generic TfL directions to standard supported sequence parameters
+            const tflDir = (d === 'clockwise' || d === 'all') ? 'inbound' : (d === 'anticlockwise' ? 'outbound' : d);
+
+            const data = await TflApiClient.getLineRouteSequence(lineId, tflDir);
             sequences[dir.direction] = (data.orderedLineRoutes || []).map((r: any) => r.naptanIds || []);
             // Populate names from stations array
             (data.stations || []).forEach((s: any) => {
@@ -38,27 +42,68 @@ async function fetchSequences(
     return { sequences, stationNames };
 }
 
-/** Given ordered branch sequences and a station ID, return the next N stop names after it. */
-function getNextStops(
+/** Given ordered branch sequences and a station ID, return the list of upcoming stop names in order. */
+function getUpcomingStops(
     branches: string[][],
     stationNames: Record<string, string>,
     stationId: string
-): string | undefined {
+): string[] {
     for (const branch of branches) {
         const idx = branch.indexOf(stationId);
         if (idx >= 0 && idx < branch.length - 1) {
-            const names = branch.slice(idx + 1)
+            return branch.slice(idx + 1)
                 .map(id => {
                     if (stationNames[id]) return stationNames[id];
                     const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
                     return cached?.commonName;
                 })
                 .filter((n): n is string => Boolean(n))
-                .map(n => n.replace(/\s+(Underground\s+)?Station$/i, '').replace(/\s+Rail\s+Station$/i, ''));
-            if (names.length > 0) return names.join(' · ');
+                .map(n => formatDestination(n));
         }
     }
-    return undefined;
+    return [];
+}
+
+/** Maps raw TfL inbound/outbound directions to clean passenger-facing compass points for rail/tube modes. */
+function getCompassDirection(lineId: string, direction: string, modeName?: string): string {
+    const dirLower = direction.toLowerCase();
+    const modeLower = (modeName || '').toLowerCase();
+
+    // Buses: "Towards" is perfectly clear on its own, no inbound/outbound or compass direction needed
+    if (modeLower === 'bus') {
+        return 'Towards';
+    }
+
+    switch (lineId.toLowerCase()) {
+        case 'victoria':
+        case 'northern':
+        case 'bakerloo':
+        case 'piccadilly': // Piccadilly operates strictly under Northbound/Southbound platform signage
+        case 'lioness':    // Overground Euston to Watford
+        case 'weaver':     // Overground Liverpool St to Enfield/Cheshunt
+            return dirLower === 'inbound' ? 'Southbound' : 'Northbound';
+        case 'dlr':
+            return dirLower === 'inbound' ? 'Northbound' : 'Southbound';
+        case 'windrush':   // Overground Highbury to Croydon/Clapham
+        case 'liberty':    // Overground Romford to Upminster
+            return dirLower === 'inbound' ? 'Northbound' : 'Southbound';
+        case 'mildmay':    // Overground Stratford to Richmond/Clapham
+            return dirLower === 'inbound' ? 'Eastbound' : 'Westbound';
+        case 'suffragette': // Overground Gospel Oak to Barking Riverside
+            return dirLower === 'inbound' ? 'Westbound' : 'Eastbound';
+        case 'circle':      // Circle operates as a loop (Inner / Outer Rail)
+            return dirLower === 'inbound' ? 'Clockwise' : 'Anticlockwise';
+        case 'central':
+        case 'jubilee':
+        case 'district':
+        case 'hammersmith-city':
+        case 'metropolitan':
+        case 'elizabeth':
+        case 'waterloo-city':
+        default:
+            // Standard east/west mapping
+            return dirLower === 'inbound' ? 'Eastbound' : 'Westbound';
+    }
 }
 
 function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
@@ -277,12 +322,25 @@ export class LineController {
 
                     const directions = Object.entries(dirMap).map(([direction, destinations]) => ({ direction, destinations }));
                     const { sequences, stationNames } = await fetchSequences(lineId, directions);
-                    routeData = { directions, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
+
+                    const lineInfo = DataCacheService.getLinesByMode(mode || '').find(l => l.id === lineId);
+                    const lineName = lineInfo?.name || (lineId.charAt(0).toUpperCase() + lineId.slice(1));
+                    const resolvedMode = mode || lineInfo?.modeName || '';
+
+                    routeData = {
+                        id: lineId,
+                        name: lineName,
+                        modeName: resolvedMode,
+                        directions,
+                        sequences,
+                        stationNames,
+                        lastUpdatedTime: new Date().toISOString()
+                    };
 
                     // Persist to all three layers immediately
                     DataCacheService.setRoute(lineId, routeData);
                     await LocalDbService.upsertRoute(lineId, routeData);
-                    await db.collection('routes').doc(lineId).set(routeData);
+                    await db.collection('routes').doc(lineId).set(routeData, { merge: true });
                     console.log(`DATA: ✅ Saved route + sequences for ${lineId} (${directions.length} directions)`);
                 } catch (tflErr) {
                     console.warn(`DATA: ⚠️ TfL route fetch failed for ${lineId}:`, tflErr);
@@ -307,7 +365,7 @@ export class LineController {
                     setImmediate(async () => {
                         try {
                             await LocalDbService.upsertRoute(lineId, routeData);
-                            await db.collection('routes').doc(lineId).set(routeData);
+                            await db.collection('routes').doc(lineId).set(routeData, { merge: true });
                         } catch { /* non-critical */ }
                     });
                     console.log(`DATA: ✅ Inline-enriched sequences for ${lineId}`);
@@ -346,25 +404,100 @@ export class LineController {
             const sduiMappedDirections = (routeData.directions || [])
                 .filter((dir: any) => !stationDirections || stationDirections.has((dir.direction || '').toLowerCase()))
                 .map((dir: any) => {
-                    const dirName = dir.direction ? (dir.direction.charAt(0).toUpperCase() + dir.direction.slice(1)) : '';
-                    let label = `${dirName} towards`;
-                    if (dir.destinations?.length > 0) {
-                        label = `${dirName} towards\n${dir.destinations.map((d: any) => formatDestination(d.name)).join('\n')}`;
-                    }
-
-                    // Build next-stops secondary label from sequence data
-                    let secondaryLabel: string | undefined;
+                    // Filter destinations to only those downstream from the current station
+                    let reachableDestinations = dir.destinations || [];
                     const branches: string[][] = routeData.sequences?.[dir.direction] || [];
-                    const names: Record<string, string> = routeData.stationNames || {};
-                    if (branches.length > 0 && stationIds.size > 0) {
-                        for (const sid of stationIds) {
-                            secondaryLabel = getNextStops(branches, names, sid);
-                            if (secondaryLabel) break;
+                    
+                    if (station && branches.length > 0 && dir.destinations?.length > 0) {
+                        const reachableIds = new Set<string>();
+                        for (const branch of branches) {
+                            let stationIndex = -1;
+                            for (const sid of stationIds) {
+                                stationIndex = branch.indexOf(sid);
+                                if (stationIndex >= 0) break;
+                            }
+                            
+                            // If station is in the branch and is not the very last stop,
+                            // then the terminus (last stop in the branch) is reachable.
+                            if (stationIndex >= 0 && stationIndex < branch.length - 1) {
+                                const terminusId = branch[branch.length - 1];
+                                reachableIds.add(terminusId);
+                            }
+                        }
+                        
+                        // If we resolved downstream terminuses, filter the destinations list.
+                        // If none are reachable in this direction, exclude this direction completely.
+                        if (reachableIds.size > 0) {
+                            reachableDestinations = dir.destinations.filter((d: any) => reachableIds.has(d.id));
+                        } else {
+                            return null;
                         }
                     }
 
-                    return { id: dir.direction, label, secondaryLabel };
-                });
+                    // Build upcoming stops as both a dot-separated string and a structured array for timeline widgets
+                    let secondaryLabel: string | undefined;
+                    let upcomingStations: string[] = [];
+                    const names: Record<string, string> = routeData.stationNames || {};
+                    
+                    if (branches.length > 0 && stationIds.size > 0) {
+                        for (const sid of stationIds) {
+                            upcomingStations = getUpcomingStops(branches, names, sid);
+                            if (upcomingStations.length > 0) {
+                                secondaryLabel = upcomingStations.join(' · ');
+                                break;
+                            }
+                        }
+                    }
+
+                    // 1. Resolve passenger-facing 'towards' label
+                    let towardsLabel = '';
+                    if (stationIds.size > 0) {
+                        for (const sid of stationIds) {
+                            const stn = DataCacheService.getAllStations().find(s => s.naptanId === sid);
+                            if (stn && stn.towards) {
+                                const lineDetails = stn.modes?.[routeData.modeName]?.lines?.[lineId];
+                                const servesDir = lineDetails?.directions?.some((d: string) => d.toLowerCase() === dir.direction.toLowerCase());
+                                if (servesDir) {
+                                    towardsLabel = stn.towards;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback 1: Use the immediate physical next station on the line sequence
+                    if (!towardsLabel && upcomingStations.length > 0) {
+                        towardsLabel = upcomingStations[0];
+                    }
+
+                    // Fallback 2: Use the primary/first reachable branch terminus
+                    if (!towardsLabel && reachableDestinations.length > 0) {
+                        towardsLabel = formatDestination(reachableDestinations[0].name);
+                    }
+
+                    // Clean passenger-friendly direction labeling (e.g. "Westbound towards Uxbridge", or simply "Towards Putney Bridge")
+                    const compassDir = getCompassDirection(lineId, dir.direction, routeData.modeName);
+                    const label = towardsLabel 
+                        ? (routeData.modeName === 'bus' ? `Towards ${towardsLabel}` : `${compassDir} towards ${towardsLabel}`)
+                        : compassDir;
+
+                    const destChips = reachableDestinations.map((d: any) => ({
+                        id: d.id,
+                        label: formatDestination(d.name),
+                        name: formatDestination(d.name)
+                    }));
+
+                    return { 
+                        id: dir.direction, 
+                        directionName: compassDir,
+                        towards: towardsLabel,
+                        label, 
+                        secondaryLabel: upcomingStations.join(' · '),
+                        destinations: destChips,
+                        upcomingStations 
+                    };
+                })
+                .filter((d: any): d is Exclude<any, null> => d !== null);
 
             return res.json(sduiMappedDirections);
         } catch (error) {

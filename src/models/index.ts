@@ -17,6 +17,7 @@ export interface LineInfo {
 export interface Destination {
     id: string;
     name: string;
+    label?: string;
 }
 
 export interface DirectionInfo {
@@ -90,6 +91,8 @@ export interface Station {
     // Grouping keys (bus stops share icsCode / stationNaptan across directions)
     icsCode?: string;
     stationNaptan?: string;
+    towards?: string;
+    compassPoint?: string;
     // SDUI & Search Extras
     id?: string;
     label?: string;
