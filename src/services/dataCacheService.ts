@@ -175,6 +175,9 @@ export class DataCacheService {
                 } else {
                     this.modes.set(id, data);
                     await LocalDbService.upsertMode(id, data);
+                    if (data.lastUpdatedTime) {
+                        await LocalDbService.updateLastSyncTime('modes', data.lastUpdatedTime);
+                    }
                 }
             });
         });
@@ -190,6 +193,9 @@ export class DataCacheService {
                     const mappedData = { ...data, id: data.naptanId || id };
                     this.stations.set(id, mappedData);
                     await LocalDbService.upsertStation(id, mappedData);
+                    if (data.lastUpdatedTime) {
+                        await LocalDbService.updateLastSyncTime('stations', data.lastUpdatedTime);
+                    }
                 }
             });
         });
@@ -205,6 +211,9 @@ export class DataCacheService {
                 } else {
                     this.lines.set(id, { ...data, id, modeName: data.modeName });
                     await LocalDbService.upsertLine(id, data.modeName, data);
+                    if (data.lastUpdatedTime) {
+                        await LocalDbService.updateLastSyncTime('lines', data.lastUpdatedTime);
+                    }
                 }
             });
         });
@@ -220,6 +229,9 @@ export class DataCacheService {
                 } else {
                     this.routes.set(id, data);
                     await LocalDbService.upsertRoute(id, data);
+                    if (data.lastUpdatedTime) {
+                        await LocalDbService.updateLastSyncTime('routes', data.lastUpdatedTime);
+                    }
                 }
             });
         });
@@ -235,6 +247,9 @@ export class DataCacheService {
                 } else {
                     this.lineStatuses.set(id, data);
                     await LocalDbService.upsertLineStatus(id, data);
+                    if (data.lastUpdatedTime) {
+                        await LocalDbService.updateLastSyncTime('lineStatuses', data.lastUpdatedTime);
+                    }
                 }
             });
         });

@@ -6,6 +6,7 @@
 export interface TransportMode {
     modeName: string;
     displayName: string;
+    lastUpdatedTime?: string;
 }
 
 export interface LineInfo {
