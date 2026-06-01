@@ -7,6 +7,7 @@ import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '
 import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
+import { encodeRouteForFirestore, decodeRouteFromFirestore } from '../utils/routeEncoding';
 
 /** Fetch ordered stop-ID sequences for each direction of a line from TfL. */
 async function fetchSequences(
@@ -42,26 +43,30 @@ async function fetchSequences(
     return { sequences, stationNames };
 }
 
-/** Given ordered branch sequences and a station ID, return the list of upcoming stop names in order. */
-function getUpcomingStops(
-    branches: string[][],
-    stationNames: Record<string, string>,
-    stationId: string
-): string[] {
-    for (const branch of branches) {
-        const idx = branch.indexOf(stationId);
-        if (idx >= 0 && idx < branch.length - 1) {
-            return branch.slice(idx + 1)
-                .map(id => {
-                    if (stationNames[id]) return stationNames[id];
-                    const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
-                    return cached?.commonName;
-                })
-                .filter((n): n is string => Boolean(n))
-                .map(n => formatDestination(n));
-        }
+/** Map a run of naptan ids to display names (cache fallback + formatting). */
+function namesFor(ids: string[], stationNames: Record<string, string>): string[] {
+    return ids
+        .map(id => {
+            if (stationNames[id]) return stationNames[id];
+            const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
+            return cached?.commonName;
+        })
+        .filter((n): n is string => Boolean(n))
+        .map(n => formatDestination(n));
+}
+
+/** Longest common ordered prefix across several stop lists — the shared trunk
+ *  all branches travel before they diverge. Empty at a hard junction. */
+function commonPrefix(lists: string[][]): string[] {
+    if (lists.length === 0) return [];
+    if (lists.length === 1) return lists[0];
+    const out: string[] = [];
+    const first = lists[0];
+    for (let i = 0; i < first.length; i++) {
+        const v = first[i];
+        if (lists.every(l => l[i] === v)) out.push(v); else break;
     }
-    return [];
+    return out;
 }
 
 /** Maps raw TfL inbound/outbound directions to clean passenger-facing compass points for rail/tube modes. */
@@ -93,11 +98,18 @@ function getCompassDirection(lineId: string, direction: string, modeName?: strin
             return dirLower === 'inbound' ? 'Westbound' : 'Eastbound';
         case 'circle':      // Circle operates as a loop (Inner / Outer Rail)
             return dirLower === 'inbound' ? 'Clockwise' : 'Anticlockwise';
+        case 'district':
+        case 'metropolitan':
+            // Audited against live route data: TfL labels the WESTERN/outer termini
+            // as 'inbound' on these lines, so inbound = Westbound — the opposite of
+            // the default E/W rule:
+            //   District:     inbound = Wimbledon/Richmond/Ealing Broadway/Kensington Olympia (Aldgate-side is Eastbound)
+            //   Metropolitan: inbound = Amersham/Chesham/Watford/Uxbridge (Aldgate is the eastern end → Eastbound)
+            // (Northern was checked too — it's already correct: inbound→Southbound = Morden.)
+            return dirLower === 'inbound' ? 'Westbound' : 'Eastbound';
         case 'central':
         case 'jubilee':
-        case 'district':
         case 'hammersmith-city':
-        case 'metropolitan':
         case 'elizabeth':
         case 'waterloo-city':
         default:
@@ -286,21 +298,49 @@ export class LineController {
             const lineId = req.params.lineId;
             const { station, mode } = req.query as Record<string, string>;
             
-            // 1. Try Memory Cache first (SQLite populated)
-            let routeData = DataCacheService.getRoute(lineId);
-            
+            // Read cascade (see docs/DATA_CACHE_ARCHITECTURE.md):
+            //   memory → SQLite (local slave) → Firestore (master) → TfL.
+            // Each layer warms the faster ones so the next request is cheaper,
+            // and we only ever touch Firestore/TfL on a genuine miss.
+
+            // 1. In-memory serving layer.
+            let routeData: any = DataCacheService.getRoute(lineId);
             if (routeData) {
-                console.log(`DATA: 🔵 Cache HIT for route (lineId: ${lineId})`);
-            } else {
-                console.log(`DATA: ⚪ Cache MISS for route (lineId: ${lineId}). Checking Firestore...`);
-                // 2. Try Firestore if not in local cache (only if quota allows)
+                console.log(`DATA: 🔵 Route memory HIT (${lineId})`);
+            }
+
+            // 2. SQLite slave — survives redeploy/memory-clear and avoids a
+            //    Firestore read. Warm memory on hit.
+            if (!routeData) {
+                try {
+                    const row = await LocalDbService.get<{ raw_data: string }>(
+                        'SELECT raw_data FROM routes WHERE id = ?', [lineId]
+                    );
+                    if (row?.raw_data) {
+                        routeData = JSON.parse(row.raw_data) as LineRouteResponse;
+                        DataCacheService.setRoute(lineId, routeData);
+                        console.log(`DATA: 📁 Route SQLite HIT (${lineId})`);
+                    }
+                } catch {
+                    console.warn(`DATA: ⚠️ Route SQLite read failed (${lineId})`);
+                }
+            }
+
+            // 3. Firestore master — only if the local slave missed. Back-fill
+            //    memory + SQLite (the onSnapshot listener won't fire for a doc
+            //    whose lastUpdatedTime predates boot).
+            if (!routeData) {
+                console.log(`DATA: ⚪ Route local MISS (${lineId}) — checking Firestore…`);
                 try {
                     const doc = await db.collection('routes').doc(lineId).get();
                     if (doc.exists) {
                         routeData = doc.data() as LineRouteResponse;
+                        DataCacheService.setRoute(lineId, routeData);
+                        await LocalDbService.upsertRoute(lineId, routeData);
+                        console.log(`DATA: ☁️ Route Firestore HIT (${lineId})`);
                     }
                 } catch (fsErr) {
-                    console.warn(`DATA: ⚠️ Firestore Route lookup failed (likely quota).`);
+                    console.warn(`DATA: ⚠️ Firestore route lookup failed (likely quota).`);
                 }
             }
 
@@ -337,11 +377,16 @@ export class LineController {
                         lastUpdatedTime: new Date().toISOString()
                     };
 
-                    // Persist to all three layers immediately
+                    // Warm THIS instance's memory immediately so concurrent
+                    // requests don't re-hit TfL, then persist to the Firestore
+                    // MASTER asynchronously (don't block the response). The routes
+                    // onSnapshot listener fans the write out to SQLite + memory
+                    // (incl. other cluster instances) — see DATA_CACHE_ARCHITECTURE.md.
                     DataCacheService.setRoute(lineId, routeData);
-                    await LocalDbService.upsertRoute(lineId, routeData);
-                    await db.collection('routes').doc(lineId).set(routeData, { merge: true });
-                    console.log(`DATA: ✅ Saved route + sequences for ${lineId} (${directions.length} directions)`);
+                    db.collection('routes').doc(lineId)
+                        .set(encodeRouteForFirestore(routeData), { merge: true })
+                        .then(() => console.log(`DATA: ✅ Persisted route ${lineId} to Firestore (listener syncs SQLite+memory)`))
+                        .catch(e => console.warn(`DATA: ⚠️ Route Firestore persist failed for ${lineId}: ${e?.message || e}`));
                 } catch (tflErr) {
                     console.warn(`DATA: ⚠️ TfL route fetch failed for ${lineId}:`, tflErr);
                 }
@@ -352,6 +397,12 @@ export class LineController {
                 return res.json([{ id: "inbound", label: "Inbound" }, { id: "outbound", label: "Outbound" }]);
             }
 
+            // Reconstruct sequences from the Firestore-safe `sequencesJson` string
+            // (Firestore can't store the raw nested arrays). No-op for routes that
+            // already carry in-memory `sequences` (fresh TfL build); routes loaded
+            // from Firestore/cache without it fall through to the TfL re-enrich below.
+            routeData = decodeRouteFromFirestore(routeData);
+
             // Inline-enrich cached routes missing sequences or sparse stationNames
             // (must be synchronous so the first request already has next-stop data)
             const nameCount = Object.keys(routeData.stationNames || {}).length;
@@ -361,12 +412,12 @@ export class LineController {
                     const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
                     routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
                     DataCacheService.setRoute(lineId, routeData);
-                    // Persist in background — don't block the response
-                    setImmediate(async () => {
-                        try {
-                            await LocalDbService.upsertRoute(lineId, routeData);
-                            await db.collection('routes').doc(lineId).set(routeData, { merge: true });
-                        } catch { /* non-critical */ }
+                    // Persist to Firestore master only (async); the listener syncs
+                    // SQLite + memory. Don't block the response.
+                    setImmediate(() => {
+                        db.collection('routes').doc(lineId)
+                            .set(encodeRouteForFirestore(routeData), { merge: true })
+                            .catch(() => { /* non-critical */ });
                     });
                     console.log(`DATA: ✅ Inline-enriched sequences for ${lineId}`);
                 } catch {
@@ -404,29 +455,32 @@ export class LineController {
             const sduiMappedDirections = (routeData.directions || [])
                 .filter((dir: any) => !stationDirections || stationDirections.has((dir.direction || '').toLowerCase()))
                 .map((dir: any) => {
-                    // Filter destinations to only those downstream from the current station
-                    let reachableDestinations = dir.destinations || [];
                     const branches: string[][] = routeData.sequences?.[dir.direction] || [];
-                    
-                    if (station && branches.length > 0 && dir.destinations?.length > 0) {
-                        const reachableIds = new Set<string>();
+                    const names: Record<string, string> = routeData.stationNames || {};
+
+                    // Per-branch downstream RUNS from the user's station:
+                    // { terminusId, stops[] }. A junction (e.g. Earl's Court) yields
+                    // several runs — one per branch leaving the station.
+                    const runs: { terminusId: string; stops: string[] }[] = [];
+                    if (station && branches.length > 0) {
                         for (const branch of branches) {
-                            let stationIndex = -1;
-                            for (const sid of stationIds) {
-                                stationIndex = branch.indexOf(sid);
-                                if (stationIndex >= 0) break;
-                            }
-                            
-                            // If station is in the branch and is not the very last stop,
-                            // then the terminus (last stop in the branch) is reachable.
-                            if (stationIndex >= 0 && stationIndex < branch.length - 1) {
-                                const terminusId = branch[branch.length - 1];
-                                reachableIds.add(terminusId);
+                            let idx = -1;
+                            for (const sid of stationIds) { idx = branch.indexOf(sid); if (idx >= 0) break; }
+                            if (idx >= 0 && idx < branch.length - 1) {
+                                runs.push({
+                                    terminusId: branch[branch.length - 1],
+                                    stops: namesFor(branch.slice(idx + 1), names),
+                                });
                             }
                         }
-                        
-                        // If we resolved downstream terminuses, filter the destinations list.
-                        // If none are reachable in this direction, exclude this direction completely.
+                    }
+
+                    // Reachable destinations = downstream branch termini. With a
+                    // station filter and nothing reachable, this direction isn't
+                    // served from here → drop it entirely.
+                    let reachableDestinations = dir.destinations || [];
+                    if (station && branches.length > 0 && dir.destinations?.length > 0) {
+                        const reachableIds = new Set(runs.map(r => r.terminusId));
                         if (reachableIds.size > 0) {
                             reachableDestinations = dir.destinations.filter((d: any) => reachableIds.has(d.id));
                         } else {
@@ -434,22 +488,30 @@ export class LineController {
                         }
                     }
 
-                    // Build upcoming stops as both a dot-separated string and a structured array for timeline widgets
-                    let secondaryLabel: string | undefined;
-                    let upcomingStations: string[] = [];
-                    const names: Record<string, string> = routeData.stationNames || {};
-                    
-                    if (branches.length > 0 && stationIds.size > 0) {
-                        for (const sid of stationIds) {
-                            upcomingStations = getUpcomingStops(branches, names, sid);
-                            if (upcomingStations.length > 0) {
-                                secondaryLabel = upcomingStations.join(' · ');
-                                break;
-                            }
-                        }
-                    }
+                    // Each destination chip carries ITS OWN branch stops in
+                    // `upcomingStations`, so the client can swap the timeline when
+                    // the chip is tapped. If several runs share a terminus, take
+                    // the longest (most informative).
+                    const destChips = reachableDestinations.map((d: any) => {
+                        const matching = runs
+                            .filter(r => r.terminusId === d.id)
+                            .sort((a, b) => b.stops.length - a.stops.length);
+                        return {
+                            id: d.id,
+                            label: formatDestination(d.name),
+                            name: formatDestination(d.name),
+                            upcomingStations: matching[0]?.stops || [],
+                        };
+                    });
 
-                    // 1. Resolve passenger-facing 'towards' label
+                    // DEFAULT timeline = the common trunk shared by ALL reachable
+                    // branches. One branch → the whole branch; a hard junction →
+                    // empty (client prompts the user to tap a destination).
+                    const branchStopLists = destChips.map((d: any) => d.upcomingStations).filter((s: string[]) => s.length > 0);
+                    const commonStations = runs.length > 0 ? commonPrefix(branchStopLists) : [];
+
+                    // 'towards' priority (unchanged): the stop's TfL Towards →
+                    // first common stop → first reachable terminus.
                     let towardsLabel = '';
                     if (stationIds.size > 0) {
                         for (const sid of stationIds) {
@@ -457,44 +519,26 @@ export class LineController {
                             if (stn && stn.towards) {
                                 const lineDetails = stn.modes?.[routeData.modeName]?.lines?.[lineId];
                                 const servesDir = lineDetails?.directions?.some((d: string) => d.toLowerCase() === dir.direction.toLowerCase());
-                                if (servesDir) {
-                                    towardsLabel = stn.towards;
-                                    break;
-                                }
+                                if (servesDir) { towardsLabel = stn.towards; break; }
                             }
                         }
                     }
+                    if (!towardsLabel && commonStations.length > 0) towardsLabel = commonStations[0];
+                    if (!towardsLabel && reachableDestinations.length > 0) towardsLabel = formatDestination(reachableDestinations[0].name);
 
-                    // Fallback 1: Use the immediate physical next station on the line sequence
-                    if (!towardsLabel && upcomingStations.length > 0) {
-                        towardsLabel = upcomingStations[0];
-                    }
-
-                    // Fallback 2: Use the primary/first reachable branch terminus
-                    if (!towardsLabel && reachableDestinations.length > 0) {
-                        towardsLabel = formatDestination(reachableDestinations[0].name);
-                    }
-
-                    // Clean passenger-friendly direction labeling (e.g. "Westbound towards Uxbridge", or simply "Towards Putney Bridge")
                     const compassDir = getCompassDirection(lineId, dir.direction, routeData.modeName);
-                    const label = towardsLabel 
+                    const label = towardsLabel
                         ? (routeData.modeName === 'bus' ? `Towards ${towardsLabel}` : `${compassDir} towards ${towardsLabel}`)
                         : compassDir;
 
-                    const destChips = reachableDestinations.map((d: any) => ({
-                        id: d.id,
-                        label: formatDestination(d.name),
-                        name: formatDestination(d.name)
-                    }));
-
-                    return { 
-                        id: dir.direction, 
+                    return {
+                        id: dir.direction,
                         directionName: compassDir,
                         towards: towardsLabel,
-                        label, 
-                        secondaryLabel: upcomingStations.join(' · '),
-                        destinations: destChips,
-                        upcomingStations 
+                        label,
+                        secondaryLabel: commonStations.join(' · '),
+                        destinations: destChips,          // each chip has its own branch stops
+                        upcomingStations: commonStations, // default timeline = shared trunk
                     };
                 })
                 .filter((d: any): d is Exclude<any, null> => d !== null);
