@@ -602,13 +602,18 @@ export class SduiService {
             successMessage: "Your Board is now active!",
             components: [
                 // ── Screen 0 — Mode picker ──
-                { type: "text", id: "screen_mode_title",    text: "Pick your\nchariot.",                style: "screen_title"    },
-                { type: "text", id: "screen_mode_subtitle", text: "Bus, tube, or DLR — we're not judging.", style: "screen_subtitle" },
+                // Copy is interpolated on the client: {mode} → mode label,
+                // {station}/{line} → the chosen names, and the mode-correct
+                // nouns {stop} (station|stop), {lines} (Lines|Routes),
+                // {line_noun} (line|route), {vehicle} (Trains|Buses). Change
+                // any wording here — no app release needed.
+                { type: "text", id: "screen_mode_title",    text: "How are you travelling?",        style: "screen_title"    },
+                { type: "text", id: "screen_mode_subtitle", text: "Pick a transport mode to track.", style: "screen_subtitle" },
                 { type: "dropdown", id: "mode", label: "1. Select Mode", style: "grid_picker", dataSourceUrl: "/modes" },
 
                 // ── Screen 1 — Station picker (nearby shown by default, search bar always visible) ──
-                { type: "text", id: "screen_station_title",    text: "Find Your Stop",                               style: "screen_title"    },
-                { type: "text", id: "screen_station_subtitle", text: "Nearby stops shown first. Search to find others.", style: "screen_subtitle" },
+                { type: "text", id: "screen_station_title",    text: "Find a {mode} {stop}",                 style: "screen_title"    },
+                { type: "text", id: "screen_station_subtitle", text: "Nearby {stop}s first, or search for another.", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "station", label: "2. Select Station",
                     dependsOn: "mode",
@@ -617,8 +622,8 @@ export class SduiService {
                 },
 
                 // ── Screen 2 — Line picker (filtered to lines at the selected station group) ──
-                { type: "text", id: "screen_line_title",    text: "Select Line",       style: "screen_title"    },
-                { type: "text", id: "screen_line_subtitle", text: "Lines stopping here.", style: "screen_subtitle" },
+                { type: "text", id: "screen_line_title",    text: "{lines} from {station}",         style: "screen_title"    },
+                { type: "text", id: "screen_line_subtitle", text: "Which {line_noun} are you taking?", style: "screen_subtitle" },
                 {
                     type: "dropdown", id: "line", label: "3. Select Line",
                     dependsOn: "station",
@@ -626,12 +631,15 @@ export class SduiService {
                 },
 
                 // ── Screen 3 — Direction picker ──
-                { type: "text", id: "screen_direction_title",        text: "Which direction?",                  style: "screen_title"    },
-                { type: "text", id: "screen_direction_subtitle",     text: "Which way are you fleeing today?",  style: "screen_subtitle" },
-                { type: "text", id: "screen_direction_funfact_title", text: "Inbound vs Outbound — quick explainer", style: "info_card_title" },
-                { type: "text", id: "screen_direction_funfact",
-                  text: "Inbound = heading towards central London (Zone 1). Outbound = escaping the centre. TfL invented the terminology so you'd have something to debate at the bus stop.",
-                  style: "info_card" },
+                { type: "text", id: "screen_direction_title",        text: "Which direction?",       style: "screen_title"    },
+                { type: "text", id: "screen_direction_subtitle",     text: "{vehicle} from {station}", style: "screen_subtitle" },
+                // Direction-card chrome labels (client renders the route response;
+                // these let the wording be tuned from the backend). {dest} is
+                // interpolated with the tapped destination's name.
+                { type: "text", id: "dir_towards_label",     text: "towards",            style: "label" },
+                { type: "text", id: "dir_stations_label",    text: "STATIONS THIS WAY",  style: "label" },
+                { type: "text", id: "dir_stations_to_label", text: "STATIONS TO {dest}", style: "label" },
+                { type: "text", id: "dir_split_hint",        text: "This direction splits — tap a destination above to see its full line of stops.", style: "label" },
                 {
                     type: "dropdown", id: "direction", label: "4. Select Direction",
                     dependsOn: "line",
