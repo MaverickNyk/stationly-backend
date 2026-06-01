@@ -29,10 +29,11 @@ export class DataCacheService {
             // 3. Load Metadata from local DB for immediate response
             await this.loadFromLocal();
 
-            // 4. Only the master cluster instance (Instance 0) should synchronize and listen to Firestore
+            const isProductionOrStaging = process.env.APP_ENV === 'production' || process.env.APP_ENV === 'staging';
             const isMasterInstance = process.env.NODE_APP_INSTANCE === undefined || process.env.NODE_APP_INSTANCE === '0';
+            const shouldSync = isMasterInstance && isProductionOrStaging;
 
-            if (isMasterInstance) {
+            if (shouldSync) {
                 try {
                     await this.syncWithFirestore();
                     console.log("CACHE: ✅ Delta Sync completed.");
@@ -42,7 +43,8 @@ export class DataCacheService {
                 this.isReady = true;
                 this.setupRealtimeListeners();
             } else {
-                console.log(`CACHE: 🛸 Cluster instance ${process.env.NODE_APP_INSTANCE} - Skipping Firestore sync, running in local read-only mode.`);
+                const reason = !isProductionOrStaging ? "Running in local development mode" : `Cluster instance ${process.env.NODE_APP_INSTANCE}`;
+                console.log(`CACHE: 🛸 ${reason} - Skipping Firestore sync, running in local read-only mode.`);
                 this.isReady = true;
             }
 
@@ -145,6 +147,12 @@ export class DataCacheService {
             } else {
                 this.stations.set(id, { ...data, id: (data as any).naptanId || id } as Station);
             }
+        }
+
+        // Fallback: If the fetched documents do not have a lastUpdatedTime field,
+        // use the current timestamp as checkpoint to avoid reading the entire collection on the next reboot.
+        if (!newestTime && snapshot.size > 0) {
+            newestTime = new Date().toISOString();
         }
 
         if (newestTime) {
