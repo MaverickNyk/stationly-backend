@@ -1,5 +1,6 @@
 import { db } from '../config/firebase';
 import { LocalDbService } from '../services/localDbService';
+import { nowMs } from '../utils/timestamps';
 
 /**
  * SubscriptionService handles the global tracking of stations that users are subscribed to.
@@ -109,9 +110,9 @@ export class SubscriptionService {
                     counts[naptanId] = newCount;
                 }
                 
-                transaction.set(this.registryRef, { 
-                    stationCounts: counts, 
-                    lastUpdated: new Date().toISOString() 
+                transaction.set(this.registryRef, {
+                    stationCounts: counts,
+                    lastUpdatedTime: nowMs()
                 }, { merge: true });
             });
         } catch (e) {
