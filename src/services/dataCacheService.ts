@@ -3,6 +3,7 @@ import { Station, TransportMode } from '../models';
 import { LocalDbService } from './localDbService';
 import { AuthMiddleware } from '../middleware/authMiddleware';
 import { SubscriptionService } from './subscriptionService';
+import { nowMs, toEpochMs } from '../utils/timestamps';
 
 export class DataCacheService {
     private static stations: Map<string, Station> = new Map();
@@ -29,10 +30,11 @@ export class DataCacheService {
             // 3. Load Metadata from local DB for immediate response
             await this.loadFromLocal();
 
-            // 4. Only the master cluster instance (Instance 0) should synchronize and listen to Firestore
+            const isProductionOrStaging = process.env.APP_ENV === 'production' || process.env.APP_ENV === 'staging';
             const isMasterInstance = process.env.NODE_APP_INSTANCE === undefined || process.env.NODE_APP_INSTANCE === '0';
+            const shouldSync = isMasterInstance && isProductionOrStaging;
 
-            if (isMasterInstance) {
+            if (shouldSync) {
                 try {
                     await this.syncWithFirestore();
                     console.log("CACHE: ✅ Delta Sync completed.");
@@ -42,7 +44,8 @@ export class DataCacheService {
                 this.isReady = true;
                 this.setupRealtimeListeners();
             } else {
-                console.log(`CACHE: 🛸 Cluster instance ${process.env.NODE_APP_INSTANCE} - Skipping Firestore sync, running in local read-only mode.`);
+                const reason = !isProductionOrStaging ? "Running in local development mode" : `Cluster instance ${process.env.NODE_APP_INSTANCE}`;
+                console.log(`CACHE: 🛸 ${reason} - Skipping Firestore sync, running in local read-only mode.`);
                 this.isReady = true;
             }
 
@@ -85,151 +88,122 @@ export class DataCacheService {
         console.log(`CACHE: 📁 Load from SQLite success. Modes: ${this.modes.size}, Stations: ${this.stations.size}, Lines: ${this.lines.size}, Routes: ${this.routes.size}, Statuses: ${this.lineStatuses.size}`);
     }
 
-    private static async syncWithFirestore() {
-        // Sync Modes
-        await this.syncCollection('modes', (id, data) => LocalDbService.upsertMode(id, data));
-
-        // Sync Lines
-        await this.syncCollection('lines', (id, data) => LocalDbService.upsertLine(id, data.modeName, data));
-
-        // Sync Routes
-        await this.syncCollection('routes', (id, data) => LocalDbService.upsertRoute(id, data));
-
-        // Sync Stations (The 20k rows part)
-        await this.syncCollection('stations', (id, data) => LocalDbService.upsertStation(id, data));
-
-        // Sync Line Statuses
-        await this.syncCollection('lineStatuses', (id, data) => LocalDbService.upsertLineStatus(id, data));
+    /**
+     * Collections replicated Firestore (master) → SQLite + memory (slave).
+     * Each target owns its `apply` (memory + SQLite upsert) and `remove`
+     * (memory + SQLite delete) so the delta + listener code stays generic.
+     * `stationPredictions` is deliberately ABSENT — it's ephemeral, local-only.
+     */
+    private static replicationTargets(): Array<{
+        name: string;
+        apply: (id: string, data: any) => Promise<void>;
+        remove: (id: string) => Promise<void>;
+    }> {
+        return [
+            {
+                name: 'modes',
+                apply: async (id, data) => { this.modes.set(id, data as TransportMode); await LocalDbService.upsertMode(id, data); },
+                remove: async (id) => { this.modes.delete(id); await LocalDbService.run('DELETE FROM modes WHERE id = ?', [id]); },
+            },
+            {
+                name: 'lines',
+                apply: async (id, data) => { this.lines.set(id, { ...data, id, modeName: data.modeName }); await LocalDbService.upsertLine(id, data.modeName, data); },
+                remove: async (id) => { this.lines.delete(id); await LocalDbService.run('DELETE FROM lines WHERE id = ?', [id]); },
+            },
+            {
+                name: 'routes',
+                apply: async (id, data) => { this.routes.set(id, data); await LocalDbService.upsertRoute(id, data); },
+                remove: async (id) => { this.routes.delete(id); await LocalDbService.run('DELETE FROM routes WHERE id = ?', [id]); },
+            },
+            {
+                name: 'stations',
+                apply: async (id, data) => { const m = { ...data, id: data.naptanId || id }; this.stations.set(id, m as Station); await LocalDbService.upsertStation(id, m); },
+                remove: async (id) => { this.stations.delete(id); await LocalDbService.run('DELETE FROM stations WHERE id = ?', [id]); },
+            },
+            {
+                name: 'lineStatuses',
+                apply: async (id, data) => { this.lineStatuses.set(id, data); await LocalDbService.upsertLineStatus(id, data); },
+                remove: async (id) => { this.lineStatuses.delete(id); await LocalDbService.run('DELETE FROM line_statuses WHERE id = ?', [id]); },
+            },
+        ];
     }
 
-    private static async syncCollection(collectionName: string, upsertFunc: (id: string, data: any) => Promise<void>) {
-        const lastSync = await LocalDbService.getLastSyncTime(collectionName);
-        console.log(`CACHE: 🔄 Delta sync [${collectionName}]. Last sync: ${lastSync || 'Never'}`);
-
-        let query = db.collection(collectionName) as any;
-        if (lastSync) {
-            // Only fetch what changed
-            query = query.where('lastUpdatedTime', '>', lastSync);
+    private static async syncWithFirestore() {
+        for (const t of this.replicationTargets()) {
+            await this.deltaSync(t.name, t.apply, t.remove);
         }
+    }
+
+    /**
+     * Boot delta: fetch everything changed since our integer checkpoint, apply
+     * each change (soft-delete aware: `deleted === true` → remove), then advance
+     * the checkpoint to the batch MAX in a single atomic write. A null checkpoint
+     * means first boot → full load.
+     */
+    private static async deltaSync(
+        name: string,
+        apply: (id: string, data: any) => Promise<void>,
+        remove: (id: string) => Promise<void>,
+    ) {
+        const checkpoint = await LocalDbService.getLastSyncTime(name);
+        let query: any = db.collection(name);
+        if (checkpoint != null) query = query.where('lastUpdatedTime', '>', checkpoint);
 
         const snapshot = await query.get();
         if (snapshot.empty) {
-            console.log(`CACHE: 🏷️  Collection [${collectionName}] is already up to date.`);
+            console.log(`CACHE: 🏷️  [${name}] already up to date (checkpoint ${checkpoint ?? 'Never'}).`);
             return;
         }
+        console.log(`CACHE: 📥 [${name}] ${snapshot.size} changed docs since ${checkpoint ?? 'Never'}.`);
 
-        console.log(`CACHE: 📥 Found ${snapshot.size} new/modified documents in [${collectionName}]. Applying deltas...`);
-
-        let newestTime = lastSync || '';
+        let maxTs: number | null = checkpoint;
         for (const doc of snapshot.docs) {
             const data = doc.data();
-            const id = doc.id;
-            
-            // Keep track of the newest timestamp for next sync
-            if (data.lastUpdatedTime && data.lastUpdatedTime > newestTime) {
-                newestTime = data.lastUpdatedTime;
-            }
-
-            // Update SQLite
-            await upsertFunc(id, data);
-
-            // Update In-Memory Map
-            if (collectionName === 'modes') {
-                this.modes.set(id, data as TransportMode);
-            } else if (collectionName === 'lines') {
-                this.lines.set(id, { ...data, id, modeName: data.modeName });
-            } else if (collectionName === 'routes') {
-                this.routes.set(id, data);
-            } else if (collectionName === 'lineStatuses') {
-                this.lineStatuses.set(id, data);
-            } else {
-                this.stations.set(id, { ...data, id: (data as any).naptanId || id } as Station);
-            }
+            if (data.deleted === true) await remove(doc.id);
+            else await apply(doc.id, data);
+            const ts = toEpochMs(data.lastUpdatedTime);
+            if (ts != null && (maxTs == null || ts > maxTs)) maxTs = ts;
         }
-
-        if (newestTime) {
-            await LocalDbService.updateLastSyncTime(collectionName, newestTime);
-        }
+        // Collections whose docs carry no timestamp: stamp "now" so we don't
+        // re-download them on every boot.
+        if (maxTs == null) maxTs = nowMs();
+        await LocalDbService.updateLastSyncTime(name, maxTs);
     }
 
     private static setupRealtimeListeners() {
-        // Only listen for updates that happen *after* we boot.
-        // Without this timestamp filter, onSnapshot fetches the ENTIRE collection (20K rows) on first load!
-        const bootTime = new Date().toISOString();
+        for (const t of this.replicationTargets()) {
+            this.listen(t.name, t.apply, t.remove);
+        }
+    }
 
-        db.collection('modes').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(async change => {
-                const data = change.doc.data() as TransportMode;
-                const id = change.doc.id;
-                if (change.type === 'removed') {
-                    this.modes.delete(id);
-                    await LocalDbService.run('DELETE FROM modes WHERE id = ?', [id]);
-                } else {
-                    this.modes.set(id, data);
-                    await LocalDbService.upsertMode(id, data);
+    /**
+     * Live listener. Processes each snapshot's changes SEQUENTIALLY (ordered,
+     * no race) and advances the checkpoint to the batch MAX in one atomic write
+     * — never per-document. Both Firestore `removed` and a soft-delete
+     * (`deleted: true`) remove the row locally.
+     */
+    private static async listen(
+        name: string,
+        apply: (id: string, data: any) => Promise<void>,
+        remove: (id: string) => Promise<void>,
+    ) {
+        // Baseline = the checkpoint the boot delta just advanced; falls back to
+        // "now" so a never-synced collection doesn't full-download on listen.
+        const baseline = (await LocalDbService.getLastSyncTime(name)) ?? nowMs();
+        db.collection(name)
+            .where('lastUpdatedTime', '>', baseline)
+            .onSnapshot(async (snapshot) => {
+                let maxTs: number | null = null;
+                for (const change of snapshot.docChanges()) {
+                    const data = change.doc.data();
+                    const id = change.doc.id;
+                    if (change.type === 'removed' || data.deleted === true) await remove(id);
+                    else await apply(id, data);
+                    const ts = toEpochMs(data.lastUpdatedTime);
+                    if (ts != null && (maxTs == null || ts > maxTs)) maxTs = ts;
                 }
-            });
-        });
-
-        db.collection('stations').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(async change => {
-                const data = change.doc.data() as Station;
-                const id = change.doc.id;
-                if (change.type === 'removed') {
-                    this.stations.delete(id);
-                    await LocalDbService.run('DELETE FROM stations WHERE id = ?', [id]);
-                } else {
-                    const mappedData = { ...data, id: data.naptanId || id };
-                    this.stations.set(id, mappedData);
-                    await LocalDbService.upsertStation(id, mappedData);
-                }
-            });
-        });
-
-        // Sync Lines
-        db.collection('lines').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(async change => {
-                const data = change.doc.data();
-                const id = change.doc.id;
-                if (change.type === 'removed') {
-                    this.lines.delete(id);
-                    await LocalDbService.run('DELETE FROM lines WHERE id = ?', [id]);
-                } else {
-                    this.lines.set(id, { ...data, id, modeName: data.modeName });
-                    await LocalDbService.upsertLine(id, data.modeName, data);
-                }
-            });
-        });
-
-        // Sync Routes
-        db.collection('routes').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(async change => {
-                const data = change.doc.data();
-                const id = change.doc.id;
-                if (change.type === 'removed') {
-                    this.routes.delete(id);
-                    await LocalDbService.run('DELETE FROM routes WHERE id = ?', [id]);
-                } else {
-                    this.routes.set(id, data);
-                    await LocalDbService.upsertRoute(id, data);
-                }
-            });
-        });
-
-        // Sync Line Statuses
-        db.collection('lineStatuses').where('lastUpdatedTime', '>', bootTime).onSnapshot(snapshot => {
-            snapshot.docChanges().forEach(async change => {
-                const data = change.doc.data();
-                const id = change.doc.id;
-                if (change.type === 'removed') {
-                    this.lineStatuses.delete(id);
-                    await LocalDbService.run('DELETE FROM line_statuses WHERE id = ?', [id]);
-                } else {
-                    this.lineStatuses.set(id, data);
-                    await LocalDbService.upsertLineStatus(id, data);
-                }
-            });
-        });
+                if (maxTs != null) await LocalDbService.updateLastSyncTime(name, maxTs);
+            }, (err) => console.error(`CACHE: ❌ Listen failed on ${name}`, err));
     }
 
     static getIsReady(): boolean {
