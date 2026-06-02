@@ -6,6 +6,8 @@
 export interface TransportMode {
     modeName: string;
     displayName: string;
+    /** Epoch millis (integer) — replication watermark. */
+    lastUpdatedTime?: number;
 }
 
 export interface LineInfo {
@@ -62,7 +64,9 @@ export interface LineStatusResponse {
     statusSeverityDescription: string;
     reason?: string;
     mode: string;
-    lastUpdatedTime: string;
+    /** Epoch millis (integer) internally — the replication watermark. Formatted
+     *  to an ISO-8601 string only at the API boundary (see `toIso`). */
+    lastUpdatedTime: number;
 }
 
 export interface StationLineDetails {
@@ -85,7 +89,8 @@ export interface Station {
     stopType: string;
     indicator?: string;
     stopLetter?: string;
-    lastUpdatedTime?: string;
+    /** Epoch millis (integer) — replication watermark. */
+    lastUpdatedTime?: number;
     modes: Record<string, StationModeGroup>;
     searchKeys: string[];
     // Grouping keys (bus stops share icsCode / stationNaptan across directions)

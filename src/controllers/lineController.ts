@@ -7,6 +7,7 @@ import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '
 import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
+import { nowMs, toIso, toEpochMs } from '../utils/timestamps';
 import { encodeRouteForFirestore, decodeRouteFromFirestore } from '../utils/routeEncoding';
 
 /** Fetch ordered stop-ID sequences for each direction of a line from TfL. */
@@ -163,6 +164,89 @@ function getSeverityPriority(severity: number): number {
 }
 
 export class LineController {
+    // ── Line-status tier-4 (TfL) freshness control ──
+    private static readonly LINE_STATUS_TTL_MS = 10 * 60 * 1000; // 10 min — matches the syncer's poll cadence
+    /** Last time we hit TfL for a mode — gates re-fetching even when the data
+     *  watermark is old but unchanged, so we don't TfL-poll on every request. */
+    private static lastTflRefreshByMode: Map<string, number> = new Map();
+    /** In-flight refresh per mode, so a burst of requests collapses to one TfL call. */
+    private static inFlightStatusRefresh: Map<string, Promise<LineStatusResponse[]>> = new Map();
+
+    /**
+     * Tier-4 line-status refresh: fetch live from TfL, change-detect against the
+     * current cache, persist + write ONLY changed statuses to Firestore (master)
+     * so they replicate to the syncer + other instances, and return the mode's
+     * statuses. Single-flighted per mode.
+     */
+    private static async refreshLineStatusesFromTfl(modeStr: string): Promise<LineStatusResponse[]> {
+        const inFlight = LineController.inFlightStatusRefresh.get(modeStr);
+        if (inFlight) return inFlight;
+
+        const run = (async (): Promise<LineStatusResponse[]> => {
+            const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
+            const nowTs = nowMs();
+            const existing = new Map(
+                DataCacheService.getLineStatuses(modeStr).map((s: any) => [s.id, s])
+            );
+            const changed: LineStatusResponse[] = [];
+
+            for (const ls of rawStatuses) {
+                let selectedStatus = ls.lineStatuses?.[0];
+                if (ls.lineStatuses && ls.lineStatuses.length > 1) {
+                    let maxPriority = -1;
+                    for (const s of ls.lineStatuses) {
+                        const severity = s.statusSeverity;
+                        if (severity !== undefined && severity !== null) {
+                            const priority = getSeverityPriority(Number(severity));
+                            if (priority > maxPriority) { maxPriority = priority; selectedStatus = s; }
+                        }
+                    }
+                }
+
+                const newSeverity = selectedStatus?.statusSeverityDescription || "Unknown";
+                const newReason = assignGoodServiceReason(selectedStatus?.statusSeverityDescription, selectedStatus?.reason);
+                const prev = existing.get(ls.id);
+
+                // Change-detection: skip unchanged statuses so we don't churn the
+                // cache, bump the watermark, or write to Firestore (which would
+                // needlessly wake the syncer + every replica).
+                if (prev
+                    && prev.statusSeverityDescription === newSeverity
+                    && (prev.reason || '') === (newReason || '')) {
+                    continue;
+                }
+
+                const status: LineStatusResponse = {
+                    id: ls.id,
+                    name: ls.name,
+                    statusSeverityDescription: newSeverity,
+                    reason: newReason,
+                    mode: ls.modeName,
+                    lastUpdatedTime: nowTs,
+                };
+                DataCacheService.setLineStatus(ls.id, status);
+                await LocalDbService.upsertLineStatus(ls.id, status);
+                changed.push(status);
+            }
+
+            if (changed.length > 0) {
+                const batch = db.batch();
+                for (const s of changed) {
+                    batch.set(db.collection('lineStatuses').doc(s.id), s, { merge: true });
+                }
+                await batch.commit();
+                console.log(`STATUS: ✅ ${modeStr}: ${changed.length} changed status(es) refreshed from TfL → Firestore.`);
+            }
+
+            LineController.lastTflRefreshByMode.set(modeStr, nowTs);
+            return DataCacheService.getLineStatuses(modeStr);
+        })();
+
+        LineController.inFlightStatusRefresh.set(modeStr, run);
+        try { return await run; }
+        finally { LineController.inFlightStatusRefresh.delete(modeStr); }
+    }
+
     /**
      * @swagger
      * /lines/mode/{mode}:
@@ -242,11 +326,11 @@ export class LineController {
 
             if (lines.length === 0) {
                 const rawLines = await TflApiClient.getLinesByMode(mode);
-                const nowIso = new Date().toISOString();
+                const nowTs = nowMs();
                 const batch = db.batch();
                 rawLines.forEach(l => {
                     const docRef = db.collection('lines').doc(l.id);
-                    batch.set(docRef, { id: l.id, name: l.name, modeName: l.modeName, lastUpdatedTime: nowIso }, { merge: true });
+                    batch.set(docRef, { id: l.id, name: l.name, modeName: l.modeName, lastUpdatedTime: nowTs }, { merge: true });
                 });
                 await batch.commit();
                 lines = rawLines.map(l => ({
@@ -374,7 +458,7 @@ export class LineController {
                         directions,
                         sequences,
                         stationNames,
-                        lastUpdatedTime: new Date().toISOString()
+                        lastUpdatedTime: nowMs()
                     };
 
                     // Warm THIS instance's memory immediately so concurrent
@@ -410,7 +494,7 @@ export class LineController {
                 try {
                     console.log(`DATA: 🔄 Enriching sequences inline for ${lineId} (nameCount=${nameCount})`);
                     const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
-                    routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: new Date().toISOString() };
+                    routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: nowMs() };
                     DataCacheService.setRoute(lineId, routeData);
                     // Persist to Firestore master only (async); the listener syncs
                     // SQLite + memory. Don't block the response.
@@ -604,44 +688,22 @@ export class LineController {
                 }
             }
 
-            // 3. If Cache and SQLite are BOTH empty, fetch from TfL as a last-resort fallback
-            if (cachedStatuses.length === 0) {
-                console.log(`STATUS: ⚪ Cold cache & SQLite miss. Fetching from TfL...`);
-                const rawStatuses = await TflApiClient.getLineStatuses(modeStr);
-                const nowIso = new Date().toISOString();
-
-                for (const ls of rawStatuses) {
-                    let selectedStatus = ls.lineStatuses?.[0];
-                    if (ls.lineStatuses && ls.lineStatuses.length > 1) {
-                        let maxPriority = -1;
-                        for (const status of ls.lineStatuses) {
-                            const severity = status.statusSeverity;
-                            if (severity !== undefined && severity !== null) {
-                                const priority = getSeverityPriority(Number(severity));
-                                if (priority > maxPriority) {
-                                    maxPriority = priority;
-                                    selectedStatus = status;
-                                }
-                            }
-                        }
-                    }
-
-                    const status: LineStatusResponse = {
-                        id: ls.id,
-                        name: ls.name,
-                        statusSeverityDescription: selectedStatus?.statusSeverityDescription || "Unknown",
-                        reason: assignGoodServiceReason(
-                            selectedStatus?.statusSeverityDescription,
-                            selectedStatus?.reason
-                        ),
-                        mode: ls.modeName,
-                        lastUpdatedTime: nowIso
-                    };
-
-                    DataCacheService.setLineStatus(ls.id, status);
-                    await LocalDbService.upsertLineStatus(ls.id, status);
+            // 3. Refresh from TfL when the cache is EMPTY or STALE (>10 min) —
+            //    the safety net for a delayed/down syncer. Single-flighted per
+            //    mode, change-detected, and written back to Firestore (master)
+            //    so the refresh propagates to the syncer + other instances.
+            const newestData = cachedStatuses.length
+                ? Math.max(...cachedStatuses.map((s: any) => toEpochMs(s.lastUpdatedTime) ?? 0))
+                : 0;
+            const lastCheck = LineController.lastTflRefreshByMode.get(modeStr) ?? 0;
+            const stale = (Date.now() - Math.max(newestData, lastCheck)) > LineController.LINE_STATUS_TTL_MS;
+            if (cachedStatuses.length === 0 || stale) {
+                console.log(`STATUS: ⏳ ${modeStr} statuses ${cachedStatuses.length === 0 ? 'cold' : 'stale (>10m)'} — refreshing from TfL...`);
+                try {
+                    cachedStatuses = await LineController.refreshLineStatusesFromTfl(modeStr);
+                } catch (tflErr: any) {
+                    console.warn(`STATUS: ⚠️ TfL refresh failed for ${modeStr}: ${tflErr.message}`);
                 }
-                cachedStatuses = DataCacheService.getLineStatuses(modeStr);
             }
 
             // Filter results by lineId if requested
@@ -649,7 +711,14 @@ export class LineController {
                 cachedStatuses = cachedStatuses.filter((s: any) => s.id === lineId);
             }
 
-            return res.json(cachedStatuses);
+            // API boundary: the watermark is an integer internally; clients
+            // (e.g. the mobile LineStatus.lastUpdatedTime: String) expect ISO.
+            // `toEpochMs` first makes this robust during the cutover window when
+            // a replicated doc might still carry a legacy ISO string.
+            return res.json(cachedStatuses.map((s: any) => ({
+                ...s,
+                lastUpdatedTime: toIso(toEpochMs(s.lastUpdatedTime)),
+            })));
         } catch (error) {
             console.error("Error fetching line statuses:", error);
             return res.status(500).json({ error: "Internal Server Error" });
