@@ -127,7 +127,7 @@ async function buildRoute(line: { id: string; name?: string; modeName?: string }
         directions,
         sequences,
         stationNames,
-        lastUpdatedTime: new Date().toISOString(),
+        lastUpdatedTime: Date.now(), // epoch millis (integer watermark)
     };
 }
 

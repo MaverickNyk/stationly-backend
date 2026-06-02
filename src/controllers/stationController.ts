@@ -4,8 +4,10 @@ import { TflApiClient } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
+import { LocalDbService } from '../services/localDbService';
 import { TFL_LINE_COLORS } from '../utils/tflUtils';
 import { formatPlatform, getIconUrl } from '../utils/formatters';
+import { nowMs } from '../utils/timestamps';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -114,6 +116,22 @@ export class StationController {
     }
 
     private static async fetchPredictions(naptanId: string): Promise<StationPredictionResponse> {
+        // Tier 1/2 — serve from the local ephemeral cache while still fresh
+        // (<60s), so repeated calls within the window don't re-hit TfL. The
+        // freshness window is enforced at read time, so a stale row is never
+        // served even before the async purge runs.
+        const cached = await LocalDbService.getFreshStationPreds(naptanId);
+        if (cached) return cached as StationPredictionResponse;
+
+        // Tier 4 — cache miss/stale → fetch live from TfL, then cache it.
+        const fresh = await StationController.fetchPredictionsFromTfl(naptanId);
+        await LocalDbService.upsertStationPreds(naptanId, fresh, nowMs());
+        // Fire-and-forget housekeeping — drop rows older than 60s. Never blocks.
+        void LocalDbService.purgeStaleStationPreds().catch(() => {});
+        return fresh;
+    }
+
+    private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
 
         // 1. Fetch raw arrivals from TfL
