@@ -197,7 +197,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
                 <td style="padding-right:12px;">
                   <div style="width:42px;height:42px;background:linear-gradient(135deg,#FFB81C,#CC7700);
                               border-radius:50%;text-align:center;line-height:42px;
-                              font-family:sans-serif;font-size:17px;font-weight:800;color:#000;">M</div>
+                              font-family:sans-serif;font-size:17px;font-weight:800;color:#000;">N</div>
                 </td>
                 <td>
                   <p style="color:#111;font-family:sans-serif;font-size:14px;font-weight:700;margin:0 0 2px 0;">Nick</p>
