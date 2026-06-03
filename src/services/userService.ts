@@ -110,9 +110,23 @@ export class UserService {
             const data = doc.data() || {};
             const ts = new Date().toISOString();
             const prevLoggedIn = data.loggedIn === true;
-            const sessions = this.pruneStaleSessions({ ...(data.sessions || {}) });
+            const before = { ...(data.sessions || {}) };
+            const sessions = this.pruneStaleSessions({ ...before });
+            const hadDevice = !!sessions[deviceId];
+            const prunedStale = Object.keys(sessions).length !== Object.keys(before).length;
             sessions[deviceId] = this.buildSessionEntry(sessions[deviceId], deviceInfo, ts);
-            tx.update(ref, { sessions, loggedIn: true, lastLoggedInTime: ts, updatedAt: ts });
+
+            // Write ONLY on a real session change — logged-out→in, a NEW device,
+            // or pruned stale sessions. A plain re-open on an already-active
+            // device writes NOTHING (kills the per-open heartbeat). Cross-device
+            // state (new device / logout) still propagates immediately.
+            // lastLoggedInTime/updatedAt are write-only metadata nothing reads,
+            // so we never write them for their own sake — they just piggyback on
+            // these real-change writes.
+            const needWrite = !prevLoggedIn || !hadDevice || prunedStale;
+            if (needWrite) {
+                tx.update(ref, { sessions, loggedIn: true, lastLoggedInTime: ts, updatedAt: ts });
+            }
             if (!prevLoggedIn) { didActivate = true; stations = data.stations || []; }
         });
         if (didActivate && stations.length > 0) {
@@ -213,15 +227,16 @@ export class UserService {
 
             const existingData = snapshot.data();
 
-            // Profile fields only — last-write-wins is fine here. Session state
-            // (sessions/loggedIn/lastLoggedInTime) and the subscription ref-count
-            // are handled atomically by startSession() below so concurrent
-            // multi-device logins can't race.
-            const updateData: Record<string, any> = {
-                ...cleanedData,
-                emailVerified,
-                updatedAt: timestamp
-            };
+            // Profile fields only — DIFF-GATED: include just the fields that
+            // actually changed, so a plain re-open (identical profile) skips the
+            // write entirely and never re-stamps `updatedAt`. Session state
+            // (sessions/loggedIn) + subscription ref-count are handled atomically
+            // by startSession() below.
+            const updateData: Record<string, any> = {};
+            for (const [k, v] of Object.entries(cleanedData)) {
+                if (existingData?.[k] !== v) updateData[k] = v;
+            }
+            if (existingData?.emailVerified !== emailVerified) updateData.emailVerified = emailVerified;
             if (sendWelcome) updateData.welcomeSent = true;
 
             // Notify the user's other devices if the display name actually changed.
@@ -233,12 +248,27 @@ export class UserService {
                 setImmediate(() => UserSyncNotifier.notify(uid, 'profile'));
             }
 
-            await userRef.update(updateData);
+            // Only write when something genuinely changed — `updatedAt` rides
+            // along only then (never as a standalone per-open heartbeat).
+            if (Object.keys(updateData).length > 0) {
+                updateData.updatedAt = timestamp;
+                await userRef.update(updateData);
+            }
 
             // Register this device's session (atomic; increments saved-station
             // subscriptions only on this user's first active device).
+            // LEVEL-1 read saving: we already fetched the user above, so skip the
+            // startSession transaction (a second Firestore read) entirely when
+            // this device is ALREADY an active session and the user is logged in
+            // — nothing would change. Only a NEW device or a logged-out→in
+            // transition needs the atomic path. (Stale-session pruning is
+            // deferred to the next real write; harmless at the 90-day TTL.)
             if (deviceId) {
-                await this.startSession(uid, deviceId, deviceInfo);
+                const deviceAlreadyActive =
+                    existingData?.loggedIn === true && !!existingData?.sessions?.[deviceId];
+                if (!deviceAlreadyActive) {
+                    await this.startSession(uid, deviceId, deviceInfo);
+                }
             }
 
             if (sendWelcome) {
