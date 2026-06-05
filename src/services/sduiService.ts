@@ -353,7 +353,7 @@ export class SduiService {
                         { type: "link_row", id: "website",  title: "Visit Website",    subtitle: "stationly.co.uk",            url: webUrl,                                  icon: "public"      },
                         { type: "link_row", id: "privacy",  title: "Privacy Policy",   subtitle: "How we handle your data",     url: `${webUrl}/privacy`,                     icon: "privacy_tip" },
                         { type: "link_row", id: "terms",    title: "Terms of Service", subtitle: "Usage terms and conditions",  url: `${webUrl}/terms`,                       icon: "description" },
-                        { type: "link_row", id: "contact",  title: "Contact Us",       subtitle: "Questions or feedback",       url: "mailto:hello@stationly.co.uk",           icon: "email"       },
+                        { type: "link_row", id: "contact",  title: "Contact Us",       subtitle: "Questions or feedback",       url: "mailto:info@stationly.co.uk",            icon: "email"       },
                         { type: "link_row", id: "rate",     title: "Rate Stationly",   subtitle: "Love the app? Let us know",   url: "market://details?id=com.stationly.mobile", icon: "star"     }
                     ]
                 },
