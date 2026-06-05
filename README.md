@@ -55,13 +55,18 @@ The Stationly ecosystem is split into a **Two-Tier Backend Architecture**:
 
 ## 📍 API Overview
 
-Interactive documentation is available at **`/docs`** once the server is running. Key routes include:
+Interactive documentation is available at **`/docs`** once the server is running. The
+published reference is the **transport-data product only**:
 
-*   **SDUI Layouts**: `/api/v1/sdui/app/*` (Layouts for Login, Profile, etc.)
 *   **Transport Modes**: `/api/v1/modes`
-*   **Lines & Routes**: `/api/v1/lines/mode/:mode`, `/api/v1/lines/:lineId/route`
-*   **Stations**: `/api/v1/stations/search`, `/api/v1/stations/line/:lineId`
-*   **Users**: `/api/v1/user/sync/*`
+*   **Lines & Routes**: `/api/v1/lines/mode/:mode`, `/api/v1/lines/status`, `/api/v1/lines/:lineId/route`
+*   **Stations**: `/api/v1/stations/search`, `/api/v1/stations/line/:lineId`, `/api/v1/stations/resolve`, `/api/v1/stations/predictions/:naptanId`
+
+> The `/docs` reference is a **filtered, dark-themed** view of the spec.
+> App/website-internal endpoints — `/user/*` (Firebase-auth), the SDUI/Auth/Theme
+> layouts, the waitlist form, and admin — are **stripped before publishing**
+> without touching the live API (they all still work). See
+> [`docs/API_DOCUMENTATION.md`](docs/API_DOCUMENTATION.md).
 
 ---
 

@@ -631,9 +631,89 @@ Stationly provides a high-performance middleware for transport data, specializin
 };
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
-// Serve OpenAPI JSON
+// --- PUBLIC DOC FILTER ---------------------------------------------------
+// Strips internal / app-only operations out of the spec we *publish*.
+// This is a documentation-only transform: it operates on a deep copy of the
+// generated spec and is used solely for `/openapi.json` + `/docs`. The live
+// API (routes, controllers, middleware, auth) is completely untouched — those
+// endpoints still exist and work, they're just not advertised to third-party
+// developers browsing the public reference.
+//
+// Published surface = the transport-data product only (Modes, Lines, Stations).
+// Everything else is hidden via INTERNAL_TAGS / INTERNAL_PREFIXES below.
+// See docs/API_DOCUMENTATION.md for the full rationale.
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'trace'] as const;
+function buildPublicSpec(fullSpec: any): any {
+    const spec = JSON.parse(JSON.stringify(fullSpec));
+    // The public reference is the transport-data product only (Modes, Lines,
+    // Stations). Everything else is app/website-internal plumbing with no value
+    // to a third-party developer holding an `X-Stationly-Key`:
+    //   - Users  : Firebase-auth user-private endpoints
+    //   - SDUI   : Server-Driven UI layouts for the Stationly app's renderer
+    //   - Auth   : the auth-flow subset of those SDUI layouts
+    //   - Theme  : app theming tokens
+    //   - Waitlist: the marketing site's launch-waitlist form
+    const INTERNAL_TAGS = new Set(['Users', 'SDUI', 'Auth', 'Theme', 'Waitlist']);
+    // `/stations/subscribed-ids` is a dev-tier endpoint tagged `Stations`, so
+    // it's matched here by path rather than tag.
+    const INTERNAL_PREFIXES = ['/user/', '/auth/', '/stations/subscribed-ids'];
+
+    // 1. Drop internal operations; drop the path entirely if nothing's left.
+    for (const [route, item] of Object.entries<any>(spec.paths ?? {})) {
+        const isInternalPath = INTERNAL_PREFIXES.some((p) => route.startsWith(p));
+        for (const method of HTTP_METHODS) {
+            const op = item[method];
+            if (!op) continue;
+            const hasInternalTag = (op.tags ?? []).some((t: string) => INTERNAL_TAGS.has(t));
+            if (isInternalPath || hasInternalTag) delete item[method];
+        }
+        if (!HTTP_METHODS.some((m) => item[m])) delete spec.paths[route];
+    }
+
+    // 2. Prune component schemas nothing in the public spec still references
+    //    (follows $refs transitively so shared schemas survive).
+    const allSchemas: Record<string, any> = spec.components?.schemas ?? {};
+    const reachable = new Set<string>();
+    const collectRefs = (node: any): void => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) { node.forEach(collectRefs); return; }
+        for (const [key, value] of Object.entries<any>(node)) {
+            const match = key === '$ref' && typeof value === 'string'
+                ? value.match(/^#\/components\/schemas\/(.+)$/)
+                : null;
+            if (match && !reachable.has(match[1])) {
+                reachable.add(match[1]);
+                collectRefs(allSchemas[match[1]]);
+            } else {
+                collectRefs(value);
+            }
+        }
+    };
+    collectRefs(spec.paths);
+    if (spec.components?.schemas) {
+        spec.components.schemas = Object.fromEntries(
+            Object.entries(allSchemas).filter(([name]) => reachable.has(name)),
+        );
+    }
+
+    // 3. Keep only tags still used by a visible operation (drops empty `Users`).
+    const usedTags = new Set<string>();
+    for (const item of Object.values<any>(spec.paths ?? {})) {
+        for (const method of HTTP_METHODS) {
+            (item[method]?.tags ?? []).forEach((t: string) => usedTags.add(t));
+        }
+    }
+    if (Array.isArray(spec.tags)) {
+        spec.tags = spec.tags.filter((t: any) => usedTags.has(t.name));
+    }
+
+    return spec;
+}
+const publicSpec = buildPublicSpec(swaggerSpec);
+
+// Serve OpenAPI JSON (public-filtered)
 app.get('/openapi.json', (req, res) => {
-    res.json(swaggerSpec);
+    res.json(publicSpec);
 });
 
 // Scalar API Reference (ESM Dynamic Import Wrapper)
@@ -642,9 +722,16 @@ app.use('/docs', async (req, res, next) => {
         const { apiReference } = await (eval('import("@scalar/express-api-reference")') as Promise<any>);
         apiReference({
             spec: {
-                content: swaggerSpec,
+                content: publicSpec,
             },
             theme: 'default',
+            // Force dark mode always so /docs matches the stationly.co.uk
+            // site theme. `forceDarkModeState` pins the scheme regardless of
+            // the visitor's OS/browser preference; hiding the toggle stops
+            // anyone flipping it back to light.
+            darkMode: true,
+            forceDarkModeState: 'dark',
+            hideDarkModeToggle: true,
         })(req, res, next);
     } catch (error) {
         next(error);
