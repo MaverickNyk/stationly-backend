@@ -187,7 +187,7 @@ app.get('/verified', (req, res) => {
 <script>
 (function() {
   // Embedded as JSON literals; we additionally escape "<" so a malicious
-  // query-param value can't break out via </script>.
+  // query-param value can't break out via the script closing tag.
   var oobCode = ${JSON.stringify(oobCode).replace(/</g, '\\u003c')};
   var apiKey  = ${JSON.stringify(apiKey).replace(/</g, '\\u003c')};
 
@@ -356,7 +356,7 @@ app.get('/reset-password', (req, res) => {
 <script>
 (function() {
   // Embedded as JSON literals; we additionally escape "<" so a malicious
-  // query-param value can't break out via </script>.
+  // query-param value can't break out via the script closing tag.
   var oobCode = ${JSON.stringify(oobCode).replace(/</g, '\\u003c')};
   var apiKey  = ${JSON.stringify(apiKey).replace(/</g, '\\u003c')};
 
