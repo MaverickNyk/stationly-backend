@@ -114,11 +114,16 @@ export class LocalDbService {
                 uid TEXT PRIMARY KEY,
                 email TEXT,
                 displayName TEXT,
+                photoURL TEXT,
+                signInProvider TEXT,
                 createdAt INTEGER,
+                updatedAt INTEGER,
                 lastLoggedInTime INTEGER,
                 loggedIn INTEGER,
                 emailVerified INTEGER,
-                stationCount INTEGER
+                stationCount INTEGER,
+                sessions TEXT,
+                stations TEXT
             )`,
             `CREATE TABLE IF NOT EXISTS user_waitlist (
                 id TEXT PRIMARY KEY,
@@ -136,6 +141,27 @@ export class LocalDbService {
 
         for (const query of queries) {
             await this.run(query);
+        }
+        await this.migrate();
+    }
+
+    /**
+     * Idempotent column additions for tables that already exist on a deployed
+     * box (CREATE TABLE IF NOT EXISTS won't add new columns to an old table).
+     * Each ALTER throws "duplicate column" on a fresh DB that already has it —
+     * harmless, so we swallow it. The `users` slave is re-populated from the
+     * master on refresh, so no data backfill is needed.
+     */
+    private static async migrate(): Promise<void> {
+        const adds = [
+            'ALTER TABLE users ADD COLUMN photoURL TEXT',
+            'ALTER TABLE users ADD COLUMN signInProvider TEXT',
+            'ALTER TABLE users ADD COLUMN updatedAt INTEGER',
+            'ALTER TABLE users ADD COLUMN sessions TEXT',
+            'ALTER TABLE users ADD COLUMN stations TEXT',
+        ];
+        for (const a of adds) {
+            try { await this.run(a); } catch { /* column already exists */ }
         }
     }
 
@@ -375,18 +401,22 @@ export class LocalDbService {
     /** Wholesale replace the local `users` slave from a master snapshot (atomic). */
     static async replaceUsers(rows: Array<{
         uid: string; email: string; displayName: string;
-        createdAt: number; lastLoggedInTime: number;
+        photoURL: string; signInProvider: string;
+        createdAt: number; updatedAt: number; lastLoggedInTime: number;
         loggedIn: boolean; emailVerified: boolean; stationCount: number;
+        sessions: string; stations: string;
     }>): Promise<void> {
         await this.inTransaction(async () => {
             await this.run('DELETE FROM users');
             for (const r of rows) {
                 await this.run(
                     `INSERT OR REPLACE INTO users
-                     (uid, email, displayName, createdAt, lastLoggedInTime, loggedIn, emailVerified, stationCount)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [r.uid, r.email, r.displayName, r.createdAt, r.lastLoggedInTime,
-                     r.loggedIn ? 1 : 0, r.emailVerified ? 1 : 0, r.stationCount]
+                     (uid, email, displayName, photoURL, signInProvider, createdAt, updatedAt,
+                      lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [r.uid, r.email, r.displayName, r.photoURL, r.signInProvider, r.createdAt, r.updatedAt,
+                     r.lastLoggedInTime, r.loggedIn ? 1 : 0, r.emailVerified ? 1 : 0, r.stationCount,
+                     r.sessions, r.stations]
                 );
             }
         });
@@ -394,7 +424,8 @@ export class LocalDbService {
 
     static async allUsers(): Promise<any[]> {
         return this.all(
-            `SELECT uid, email, displayName, createdAt, lastLoggedInTime, loggedIn, emailVerified, stationCount
+            `SELECT uid, email, displayName, photoURL, signInProvider, createdAt, updatedAt,
+                    lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations
              FROM users ORDER BY createdAt DESC`
         );
     }

@@ -45,6 +45,10 @@ adminRouter.get('/notifications/history', NotificationController.history);
 //   forces a live Firestore read.
 adminRouter.get('/users/:uid/tokens', AdminUserController.getTokenStats);
 
+// GET /admin/users/:uid — full user detail (profile, sessions/devices,
+// subscribed stations). Cache-first (0 reads); see AdminDataController.
+adminRouter.get('/users/:uid', AdminDataController.userDetail);
+
 // --- Read-only data views (dashboard, users, waitlist, subscribed) -------
 // All serve from in-memory caches + SQLite. The only ones that can touch
 // Firestore are /users and /waitlist with `?refresh=1` (one read, on demand).

@@ -53,6 +53,24 @@ export class AdminDataController {
         }
     }
 
+    /**
+     * GET /admin/users/:uid — full detail for one user (profile + device
+     * sessions + subscribed stations). Served from cache (0 reads); falls back
+     * to a single doc read only if the uid isn't cached.
+     */
+    static async userDetail(req: Request, res: Response) {
+        const uid = (req.params.uid || '').trim();
+        if (!uid) return res.status(400).json({ error: 'Bad Request', message: 'uid is required' });
+        try {
+            const user = await AdminDataService.getUserDetail(uid);
+            if (!user) return res.status(404).json({ error: 'Not Found', message: 'No such user' });
+            return res.json(user);
+        } catch (e: any) {
+            console.warn('ADMIN_DATA: userDetail failed', e?.message);
+            return res.status(500).json({ error: 'Internal Server Error', message: e?.message });
+        }
+    }
+
     /** GET /admin/users — cached users; `?refresh=1` does one live read. */
     static async users(req: Request, res: Response) {
         const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
