@@ -85,12 +85,53 @@ export class LocalDbService {
                 lastUpdatedTime INTEGER,
                 raw_data TEXT
             )`,
+            // Admin notification send-log — LOCAL ONLY, deliberately NOT in
+            // Firestore. An audit trail of admin pushes costs zero Firestore
+            // reads/writes by living here on disk alongside the replication
+            // cache. `createdAt` is epoch millis (integer). Raw FCM tokens are
+            // NEVER stored — `audienceSummary` is redacted/aggregated.
+            `CREATE TABLE IF NOT EXISTS admin_notifications (
+                id TEXT PRIMARY KEY,
+                createdAt INTEGER,
+                audienceType TEXT,
+                audienceSummary TEXT,
+                payloadType TEXT,
+                title TEXT,
+                body TEXT,
+                severity TEXT,
+                successCount INTEGER,
+                failureCount INTEGER,
+                messageId TEXT,
+                ok INTEGER
+            )`,
+            // Master→slave replicas of the `users` and `waitlist` Firestore
+            // collections (Firestore = master, these SQLite tables = slave, the
+            // in-memory copies in AdminDataService = cache). Persisted locally so
+            // the admin portal serves them with ZERO per-request Firestore reads;
+            // refreshed from master only on explicit demand. Only the fields the
+            // portal displays are mirrored (minimal PII).
+            `CREATE TABLE IF NOT EXISTS users (
+                uid TEXT PRIMARY KEY,
+                email TEXT,
+                displayName TEXT,
+                createdAt INTEGER,
+                lastLoggedInTime INTEGER,
+                loggedIn INTEGER,
+                emailVerified INTEGER,
+                stationCount INTEGER
+            )`,
+            `CREATE TABLE IF NOT EXISTS user_waitlist (
+                id TEXT PRIMARY KEY,
+                email TEXT,
+                joinedAt INTEGER
+            )`,
             // Indexes for speed
             `CREATE INDEX IF NOT EXISTS idx_stations_naptan ON stations(naptanId)`,
             `CREATE INDEX IF NOT EXISTS idx_stations_name ON stations(commonName)`,
             `CREATE INDEX IF NOT EXISTS idx_stations_coords ON stations(lat, lon)`,
             `CREATE INDEX IF NOT EXISTS idx_keys_status ON api_keys(status)`,
-            `CREATE INDEX IF NOT EXISTS idx_lines_mode ON lines(modeName)`
+            `CREATE INDEX IF NOT EXISTS idx_lines_mode ON lines(modeName)`,
+            `CREATE INDEX IF NOT EXISTS idx_admin_notif_created ON admin_notifications(createdAt DESC)`
         ];
 
         for (const query of queries) {
@@ -259,5 +300,121 @@ export class LocalDbService {
     static async purgeStaleStationPreds(maxAgeMs: number = 60_000): Promise<void> {
         const cutoff = Date.now() - maxAgeMs;
         await this.run('DELETE FROM station_preds WHERE lastUpdatedTime <= ?', [cutoff]);
+    }
+
+    // --- Admin notification send-log (local-only audit trail) ---
+
+    /** Append one send to the local audit log. `createdAt` is epoch millis. */
+    static async insertAdminNotification(entry: {
+        id: string;
+        createdAt: number;
+        audienceType: string;
+        audienceSummary: string;
+        payloadType: string;
+        title: string;
+        body: string;
+        severity: string;
+        successCount: number;
+        failureCount: number;
+        messageId: string;
+        ok: boolean;
+    }): Promise<void> {
+        await this.run(
+            `INSERT OR REPLACE INTO admin_notifications
+             (id, createdAt, audienceType, audienceSummary, payloadType, title, body, severity, successCount, failureCount, messageId, ok)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                entry.id, entry.createdAt, entry.audienceType, entry.audienceSummary,
+                entry.payloadType, entry.title, entry.body, entry.severity,
+                entry.successCount, entry.failureCount, entry.messageId, entry.ok ? 1 : 0,
+            ]
+        );
+    }
+
+    /** Most-recent sends first. Limit is clamped to a sane range. */
+    static async listAdminNotifications(limit: number = 50): Promise<any[]> {
+        const lim = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
+        return this.all(
+            `SELECT id, createdAt, audienceType, audienceSummary, payloadType, title, body, severity, successCount, failureCount, messageId, ok
+             FROM admin_notifications ORDER BY createdAt DESC LIMIT ?`,
+            [lim]
+        );
+    }
+
+    /**
+     * Keep only the most-recent `keep` rows. Fire-and-forget housekeeping so
+     * the audit log can't grow unbounded on a long-lived instance.
+     */
+    static async purgeAdminNotifications(keep: number = 500): Promise<void> {
+        await this.run(
+            `DELETE FROM admin_notifications WHERE id NOT IN (
+                SELECT id FROM admin_notifications ORDER BY createdAt DESC LIMIT ?
+            )`,
+            [Math.max(keep, 1)]
+        );
+    }
+
+    // --- users / waitlist slave replicas (master = Firestore) ---
+
+    /**
+     * Run `fn`'s writes inside a single SQLite transaction — atomic (a failed
+     * bulk replace never leaves the table half-written) and much faster than
+     * autocommit-per-row for large snapshots.
+     */
+    private static async inTransaction(fn: () => Promise<void>): Promise<void> {
+        await this.run('BEGIN');
+        try {
+            await fn();
+            await this.run('COMMIT');
+        } catch (e) {
+            await this.run('ROLLBACK').catch(() => { /* nothing to roll back */ });
+            throw e;
+        }
+    }
+
+    /** Wholesale replace the local `users` slave from a master snapshot (atomic). */
+    static async replaceUsers(rows: Array<{
+        uid: string; email: string; displayName: string;
+        createdAt: number; lastLoggedInTime: number;
+        loggedIn: boolean; emailVerified: boolean; stationCount: number;
+    }>): Promise<void> {
+        await this.inTransaction(async () => {
+            await this.run('DELETE FROM users');
+            for (const r of rows) {
+                await this.run(
+                    `INSERT OR REPLACE INTO users
+                     (uid, email, displayName, createdAt, lastLoggedInTime, loggedIn, emailVerified, stationCount)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [r.uid, r.email, r.displayName, r.createdAt, r.lastLoggedInTime,
+                     r.loggedIn ? 1 : 0, r.emailVerified ? 1 : 0, r.stationCount]
+                );
+            }
+        });
+    }
+
+    static async allUsers(): Promise<any[]> {
+        return this.all(
+            `SELECT uid, email, displayName, createdAt, lastLoggedInTime, loggedIn, emailVerified, stationCount
+             FROM users ORDER BY createdAt DESC`
+        );
+    }
+
+    /** Wholesale replace the local `user_waitlist` slave from a master snapshot (atomic). */
+    static async replaceWaitlist(rows: Array<{
+        id: string; email: string; joinedAt: number;
+    }>): Promise<void> {
+        await this.inTransaction(async () => {
+            await this.run('DELETE FROM user_waitlist');
+            for (const r of rows) {
+                await this.run(
+                    `INSERT OR REPLACE INTO user_waitlist (id, email, joinedAt) VALUES (?, ?, ?)`,
+                    [r.id, r.email, r.joinedAt]
+                );
+            }
+        });
+    }
+
+    static async allWaitlist(): Promise<any[]> {
+        return this.all(`SELECT id, email, joinedAt FROM user_waitlist ORDER BY joinedAt DESC`);
     }
 }

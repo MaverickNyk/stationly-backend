@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { AdminAuthMiddleware } from './adminAuthMiddleware';
 import { NotificationController } from './notificationController';
+import { AdminUserController } from './adminUserController';
+import { AdminDataController } from './adminDataController';
 
 /**
  * Admin-only routes — guarded by [AdminAuthMiddleware] which checks
@@ -30,5 +32,25 @@ adminRouter.use(AdminAuthMiddleware.validate);
 //   See NotificationController + NotificationService for the request
 //   shape and response semantics.
 adminRouter.post('/notifications/send', NotificationController.send);
+
+// GET /admin/notifications/history
+//   Recent admin sends from the LOCAL audit log (SQLite — zero Firestore
+//   cost). Raw tokens are never stored, so never returned.
+adminRouter.get('/notifications/history', NotificationController.history);
+
+// GET /admin/users/:uid/tokens
+//   Registered-device COUNT for a uid (never the raw tokens). Powers the
+//   console's audience-lookup screen — "does this uid resolve, and to how
+//   many devices?". Cache-first read (UserFcmTokenService); `?fresh=1`
+//   forces a live Firestore read.
+adminRouter.get('/users/:uid/tokens', AdminUserController.getTokenStats);
+
+// --- Read-only data views (dashboard, users, waitlist, subscribed) -------
+// All serve from in-memory caches + SQLite. The only ones that can touch
+// Firestore are /users and /waitlist with `?refresh=1` (one read, on demand).
+adminRouter.get('/stats', AdminDataController.stats);
+adminRouter.get('/users', AdminDataController.users);
+adminRouter.get('/waitlist', AdminDataController.waitlist);
+adminRouter.get('/subscribed-stations', AdminDataController.subscribedStations);
 
 export default adminRouter;
