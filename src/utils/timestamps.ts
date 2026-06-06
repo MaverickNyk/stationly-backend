@@ -15,15 +15,30 @@
 export const nowMs = (): number => Date.now();
 
 /**
- * Coerce a stored/incoming value to epoch millis. Accepts an existing number
- * (passed through), an ISO-8601 string (parsed), or null/garbage (→ null).
- * Used by the migration and by any boundary that might still see a legacy
- * ISO string during the cutover window.
+ * Coerce a stored/incoming value to epoch millis. Accepts:
+ *   - an existing number (passed through),
+ *   - a NUMERIC string (epoch millis, e.g. "1780780698371" or a REAL-serialised
+ *     "1780351370057.0") — this is how `updateLastSyncTime` persists the
+ *     watermark, so it MUST round-trip,
+ *   - an ISO-8601 string (legacy checkpoints / API boundary), or
+ *   - null/garbage (→ null).
+ *
+ * The numeric-string case is critical: without it, a stored watermark like
+ * "1780…" goes through `Date.parse` → NaN → null, so the delta sync treats the
+ * collection as never-synced and re-reads it WHOLE on every boot. Parsing the
+ * numeric string keeps the watermark readable so boots stay delta (minimal
+ * Firestore reads).
  */
 export function toEpochMs(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
-        const ms = Date.parse(value);
+        const trimmed = value.trim();
+        // Numeric epoch string first (possibly with a trailing ".0" from REAL).
+        if (/^\d+(\.\d+)?$/.test(trimmed)) {
+            const n = Math.trunc(Number(trimmed));
+            if (Number.isFinite(n) && n > 0) return n;
+        }
+        const ms = Date.parse(trimmed);
         if (!Number.isNaN(ms)) return ms;
     }
     return null;

@@ -218,6 +218,22 @@ export class DataCacheService {
         return Array.from(this.stations.values());
     }
 
+    /** O(1)-ish station lookup by naptanId/id, built from the in-memory map. */
+    static getStationById(id: string): Station | undefined {
+        return this.stations.get(id);
+    }
+
+    /** Counts for the admin dashboard — all from memory, zero Firestore reads. */
+    static counts(): { stations: number; lines: number; modes: number; routes: number; lineStatuses: number } {
+        return {
+            stations: this.stations.size,
+            lines: this.lines.size,
+            modes: this.modes.size,
+            routes: this.routes.size,
+            lineStatuses: this.lineStatuses.size,
+        };
+    }
+
     private static levenshtein(a: string, b: string): number {
         const m = a.length, n = b.length;
         const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i);
