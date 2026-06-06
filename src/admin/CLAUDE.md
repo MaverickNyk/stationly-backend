@@ -14,26 +14,51 @@ surface. Everything in this folder is:
 
 ```
 src/admin/
-├── adminAuthMiddleware.ts   Constant-time admin key check.
-│                            Reads STATIONLY_ADMIN_KEY env var.
-│                            Refuses 503 if env unset (fail-shut).
-├── adminRoutes.ts           Mounted router. Installs the auth
-│                            middleware once at the router level so
-│                            every route under /api/v1/admin/* is
-│                            gated.
-├── notificationController.ts  POST /api/v1/admin/notifications/send
+├── adminAuthMiddleware.ts   Constant-time admin key check + optional
+│                            Cloudflare Access JWT check. Reads
+│                            STATIONLY_ADMIN_KEY (503 if unset).
+├── cfAccess.ts              Verifies Cf-Access-Jwt-Assertion (opt-in
+│                            via CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD).
+├── adminRoutes.ts           Mounted router; installs the auth
+│                            middleware once for all /api/v1/admin/*.
+├── notificationController.ts  POST /notifications/send + GET
+│                              /notifications/history (local audit log).
 ├── notificationService.ts     Audience fan-out (token / tokens /
 │                              topic / uid / uids / all / line),
 │                              payload validation, FCM dispatch.
+├── adminUserController.ts   GET /users/:uid/tokens (device COUNT only).
+├── adminDataController.ts   GET /stats, /users, /users/:uid,
+│                            /waitlist, /subscribed-stations.
+├── adminDataService.ts      users/waitlist master→slave→cache
+│                            (Firestore master, SQLite slave, in-mem
+│                            cache); detail incl. sessions + stations.
 └── CLAUDE.md                  This file.
 ```
+
+Full reference: see the **`stationly-admin`** repo (its `docs/` — ARCHITECTURE,
+API, OPERATIONS — and `CLOUDFLARE_ACCESS.md`). That Next.js console lives in
+its own repo and drives these endpoints purely over HTTP (no code coupling).
+
+### Endpoints (all off the OpenAPI docs)
+`POST /notifications/send` · `GET /notifications/history` ·
+`GET /users` · `GET /users/:uid` · `GET /users/:uid/tokens` ·
+`GET /waitlist` · `GET /subscribed-stations` · `GET /stats`.
+
+### Firestore read/write budget (keep it minimal)
+Everything here serves from the in-memory cache + SQLite slave. The ONLY
+Firestore reads are: `/users` & `/waitlist` with `?refresh=1` (one collection
+read, then re-cached), a one-time first load, and a rare single-doc fallback in
+`/users/:uid`. There are **no Firestore writes** — the send-history audit log
+and the users/waitlist slaves are written to SQLite (`LocalDbService`).
 
 External integration points:
 - `src/server.ts` mounts `app.use('/api/v1/admin', adminRoutes)`
   **before** `app.use('/api/v1', apiRoutes)` so the admin path is
   reached before the client `X-Stationly-Key` middleware fires
-- `src/services/userFcmTokenService.ts` is the per-uid token registry
-  the `uid` / `uids` audiences resolve against
+- `src/services/userFcmTokenService.ts` — per-uid token registry (5-min
+  in-memory TTL cache) the `uid` / `uids` audiences + token-count resolve against
+- `src/services/localDbService.ts` — SQLite slaves (`users`, `user_waitlist`)
+  + the `admin_notifications` local audit log
 - `src/config/firebase.ts` provides the `messaging` instance for FCM
 
 ## The notification framework
