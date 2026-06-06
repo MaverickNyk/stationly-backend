@@ -23,6 +23,7 @@ import { Request, Response, NextFunction } from 'express';
  * the chance an automated scanner stumbles into them.
  */
 import * as crypto from 'crypto';
+import { cfAccessEnabled, verifyAccessJwt } from './cfAccess';
 
 export class AdminAuthMiddleware {
     /**
@@ -35,8 +36,15 @@ export class AdminAuthMiddleware {
      * — this is the safe failure mode: a fresh deploy without an
      * admin key set should NOT silently accept all requests; it
      * should refuse them entirely.
+     *
+     * Layer 2 (opt-in): when `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`
+     * are set, we ALSO require a valid Cloudflare Access JWT in the
+     * `Cf-Access-Jwt-Assertion` header. This means a leaked admin key
+     * alone is useless from the public internet — the caller must have
+     * passed the Cloudflare Access login wall (human) or hold a valid
+     * Service Token (the admin app's server-side proxy). See cfAccess.ts.
      */
-    static validate(req: Request, res: Response, next: NextFunction) {
+    static async validate(req: Request, res: Response, next: NextFunction) {
         const authHeader = req.header('Authorization');
         const expected = process.env.STATIONLY_ADMIN_KEY;
 
@@ -65,6 +73,29 @@ export class AdminAuthMiddleware {
                 error: 'Forbidden',
                 message: "Invalid admin authorization token.",
             });
+        }
+
+        // Layer 2: Cloudflare Access JWT (only when configured).
+        if (cfAccessEnabled()) {
+            const assertion = req.header('Cf-Access-Jwt-Assertion');
+            if (!assertion) {
+                console.warn(`ADMIN_AUTH: ❌ Missing Cf-Access-Jwt-Assertion from ${req.ip}`);
+                return res.status(403).json({
+                    error: 'Forbidden',
+                    message: 'Cloudflare Access assertion required.',
+                });
+            }
+            try {
+                const identity = await verifyAccessJwt(assertion);
+                // Surface who/what called for downstream handlers + logs.
+                (req as any).accessIdentity = identity;
+            } catch (e: any) {
+                console.warn(`ADMIN_AUTH: ❌ Invalid CF Access JWT from ${req.ip}: ${e?.message}`);
+                return res.status(403).json({
+                    error: 'Forbidden',
+                    message: 'Invalid Cloudflare Access assertion.',
+                });
+            }
         }
 
         return next();
