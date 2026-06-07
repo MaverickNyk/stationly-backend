@@ -84,8 +84,9 @@ export class StationController {
      */
     static async getStationPredictions(req: Request, res: Response) {
         const { naptanId } = req.params;
+        const { skipRefresh } = req.query;
         try {
-            const predictions = await StationController.fetchPredictions(naptanId);
+            const predictions = await StationController.fetchPredictions(naptanId, skipRefresh === 'true');
             return res.json(predictions);
         } catch (error) {
             console.error(`Error fetching predictions for ${naptanId}:`, error);
@@ -115,13 +116,21 @@ export class StationController {
         return etaMin > 20;
     }
 
-    private static async fetchPredictions(naptanId: string): Promise<StationPredictionResponse> {
+    private static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
         // Tier 1/2 — serve from the local ephemeral cache while still fresh
         // (<60s), so repeated calls within the window don't re-hit TfL. The
         // freshness window is enforced at read time, so a stale row is never
         // served even before the async purge runs.
         const cached = await LocalDbService.getFreshStationPreds(naptanId);
         if (cached) return cached as StationPredictionResponse;
+
+        if (skipRefresh) {
+            return {
+                stationId: naptanId,
+                lines: {},
+                lastUpdatedTime: nowMs()
+            } as any;
+        }
 
         // Tier 4 — cache miss/stale → fetch live from TfL, then cache it.
         const fresh = await StationController.fetchPredictionsFromTfl(naptanId);
