@@ -119,8 +119,11 @@ function getCompassDirection(lineId: string, direction: string, modeName?: strin
     }
 }
 
-function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
+function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string, prevReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
+        if (prevReason && prevReason.trim() !== '') {
+            return prevReason;
+        }
         const index = Math.floor(Math.random() * GOOD_SERVICE_MESSAGES.length);
         return GOOD_SERVICE_MESSAGES[index];
     }
@@ -204,8 +207,9 @@ export class LineController {
                 }
 
                 const newSeverity = selectedStatus?.statusSeverityDescription || "Unknown";
-                const newReason = assignGoodServiceReason(selectedStatus?.statusSeverityDescription, selectedStatus?.reason);
                 const prev = existing.get(ls.id);
+                const prevReason = prev?.statusSeverityDescription?.toLowerCase() === 'good service' ? prev.reason : undefined;
+                const newReason = assignGoodServiceReason(selectedStatus?.statusSeverityDescription, selectedStatus?.reason, prevReason);
 
                 // Change-detection: skip unchanged statuses so we don't churn the
                 // cache, bump the watermark, or write to Firestore (which would
@@ -662,8 +666,9 @@ export class LineController {
      */
     static async getLineStatuses(req: Request, res: Response) {
         try {
-            const { lineId, mode } = req.query;
+            const { lineId, mode, skipRefresh } = req.query;
             const modeStr = mode as string || 'tube';
+            const shouldSkipRefresh = skipRefresh === 'true';
 
             // 1. Try to read from in-memory Cache (synced in real-time with Firestore)
             let cachedStatuses = DataCacheService.getLineStatuses(modeStr);
@@ -697,7 +702,7 @@ export class LineController {
                 : 0;
             const lastCheck = LineController.lastTflRefreshByMode.get(modeStr) ?? 0;
             const stale = (Date.now() - Math.max(newestData, lastCheck)) > LineController.LINE_STATUS_TTL_MS;
-            if (cachedStatuses.length === 0 || stale) {
+            if (!shouldSkipRefresh && (cachedStatuses.length === 0 || stale)) {
                 console.log(`STATUS: ⏳ ${modeStr} statuses ${cachedStatuses.length === 0 ? 'cold' : 'stale (>10m)'} — refreshing from TfL...`);
                 try {
                     cachedStatuses = await LineController.refreshLineStatusesFromTfl(modeStr);
