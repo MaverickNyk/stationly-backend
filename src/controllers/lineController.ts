@@ -666,8 +666,9 @@ export class LineController {
      */
     static async getLineStatuses(req: Request, res: Response) {
         try {
-            const { lineId, mode } = req.query;
+            const { lineId, mode, skipRefresh } = req.query;
             const modeStr = mode as string || 'tube';
+            const shouldSkipRefresh = skipRefresh === 'true';
 
             // 1. Try to read from in-memory Cache (synced in real-time with Firestore)
             let cachedStatuses = DataCacheService.getLineStatuses(modeStr);
@@ -701,7 +702,7 @@ export class LineController {
                 : 0;
             const lastCheck = LineController.lastTflRefreshByMode.get(modeStr) ?? 0;
             const stale = (Date.now() - Math.max(newestData, lastCheck)) > LineController.LINE_STATUS_TTL_MS;
-            if (cachedStatuses.length === 0 || stale) {
+            if (!shouldSkipRefresh && (cachedStatuses.length === 0 || stale)) {
                 console.log(`STATUS: ⏳ ${modeStr} statuses ${cachedStatuses.length === 0 ? 'cold' : 'stale (>10m)'} — refreshing from TfL...`);
                 try {
                     cachedStatuses = await LineController.refreshLineStatusesFromTfl(modeStr);
