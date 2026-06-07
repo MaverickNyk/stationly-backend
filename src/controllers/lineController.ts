@@ -119,8 +119,11 @@ function getCompassDirection(lineId: string, direction: string, modeName?: strin
     }
 }
 
-function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string): string {
+function assignGoodServiceReason(statusSeverityDescription: string, currentReason?: string, prevReason?: string): string {
     if (statusSeverityDescription?.toLowerCase() === 'good service' && (!currentReason || currentReason.trim() === '')) {
+        if (prevReason && prevReason.trim() !== '') {
+            return prevReason;
+        }
         const index = Math.floor(Math.random() * GOOD_SERVICE_MESSAGES.length);
         return GOOD_SERVICE_MESSAGES[index];
     }
@@ -204,8 +207,9 @@ export class LineController {
                 }
 
                 const newSeverity = selectedStatus?.statusSeverityDescription || "Unknown";
-                const newReason = assignGoodServiceReason(selectedStatus?.statusSeverityDescription, selectedStatus?.reason);
                 const prev = existing.get(ls.id);
+                const prevReason = prev?.statusSeverityDescription?.toLowerCase() === 'good service' ? prev.reason : undefined;
+                const newReason = assignGoodServiceReason(selectedStatus?.statusSeverityDescription, selectedStatus?.reason, prevReason);
 
                 // Change-detection: skip unchanged statuses so we don't churn the
                 // cache, bump the watermark, or write to Firestore (which would
