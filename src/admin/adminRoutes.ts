@@ -3,6 +3,7 @@ import { AdminAuthMiddleware } from './adminAuthMiddleware';
 import { NotificationController } from './notificationController';
 import { AdminUserController } from './adminUserController';
 import { AdminDataController } from './adminDataController';
+import { AdminEmailController } from './adminEmailController';
 
 /**
  * Admin-only routes — guarded by [AdminAuthMiddleware] which checks
@@ -32,6 +33,10 @@ adminRouter.use(AdminAuthMiddleware.validate);
 //   See NotificationController + NotificationService for the request
 //   shape and response semantics.
 adminRouter.post('/notifications/send', NotificationController.send);
+
+// POST /admin/email/android-launch
+//   Send the Android launch notification email. Supports target: "test" or "all".
+adminRouter.post('/email/android-launch', AdminEmailController.sendAndroidLaunch);
 
 // GET /admin/notifications/history
 //   Recent admin sends from the LOCAL audit log (SQLite — zero Firestore
