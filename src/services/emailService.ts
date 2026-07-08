@@ -66,7 +66,7 @@ export class EmailService {
             const { error } = await resend.emails.send({
                 from: FROM,
                 to: email,
-                subject: `${pfx()}You're on the list — Stationly is coming`,
+                subject: `${pfx()}You're on the list, Stationly is coming soon on iOS`,
                 html: waitlistEmailHtml(),
             });
             if (error) {
