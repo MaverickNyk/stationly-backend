@@ -52,12 +52,13 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
         <h1 class="hero-title"
             style="color:#111111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1.2;margin:0 0 18px 0;">
-          Be the first to board.<br/>
+          Be the first on iOS.<br/>
           <span style="color:#DD2C33;">We'll hold a door for you.</span>
         </h1>
         <p style="color:#555;font-family:sans-serif;font-size:15px;line-height:1.75;margin:0;">
-          Stationly is launching in 2026. You'll be among the first to know the moment doors open —
-          before we make any wider announcement.
+          Stationly is live on Android, and the iOS version is coming soon. You're on the list to be notified the moment it launches on the App Store.
+          <br/><br/>
+          Have an Android device? <a href="${baseUrl}/mobile/app/android" style="color:#DD2C33;text-decoration:none;font-weight:700;">Download it now on Google Play</a>.
         </p>
       </td></tr>
 
@@ -124,7 +125,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
               I built Stationly because every morning I had the same question — is my train coming or do I have time?
               The answer should be visible the second you look at your phone.
               <br/><br/>
-              We're putting the finishing touches on the app and will let you know the moment it's available to download.
+              Stationly is live on Android now, and we're putting the finishing touches on the iOS version. We will let you know the moment it's available to download on the App Store.
               If you have any questions or just want to chat, just reply to this email — I read every one.
             </p>
             <p style="color:#999;font-family:sans-serif;font-size:13px;margin:20px 0 0 0;">
