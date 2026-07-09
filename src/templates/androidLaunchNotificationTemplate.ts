@@ -75,7 +75,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
 
       <!-- CTA -->
       <tr><td align="center" style="padding:0 40px 40px 40px;">
-        <a href="${webUrl}/mobile/app/android/" target="_blank" style="display:inline-block;text-decoration:none;">
+        <a href="${baseUrl}/open?deep=${encodeURIComponent('https://play.google.com/store/apps/details?id=com.stationly.mobile')}&web=${encodeURIComponent(webUrl + '/mobile/app/android/')}" target="_blank" style="display:inline-block;text-decoration:none;">
           <img src="${baseUrl}/assets/google_play_badge.png" 
                alt="Get it on Google Play" 
                height="58" 
