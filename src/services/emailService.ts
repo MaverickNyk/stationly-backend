@@ -3,6 +3,7 @@ import { welcomeEmailHtml } from '../templates/welcomeEmailTemplate';
 import { forgotPasswordEmailHtml } from '../templates/forgotPasswordTemplate';
 import { verifyEmailHtml } from '../templates/verifyEmailTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
+import { androidLaunchNotificationHtml } from '../templates/androidLaunchNotificationTemplate';
 import { isStaging } from '../utils/formatters';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -66,7 +67,7 @@ export class EmailService {
             const { error } = await resend.emails.send({
                 from: FROM,
                 to: email,
-                subject: `${pfx()}You're on the list, Stationly is coming soon on iOS`,
+                subject: `${pfx()}You're on the list — Stationly for iOS`,
                 html: waitlistEmailHtml(),
             });
             if (error) {
@@ -75,6 +76,23 @@ export class EmailService {
         } catch (err) {
             // Non-fatal — Firestore entry is the source of truth
             console.error('[EmailService] Failed to send waitlist email (exception):', err);
+        }
+    }
+
+    static async sendAndroidLaunchNotificationEmail(email: string, bcc?: string[]): Promise<void> {
+        try {
+            const { error } = await resend.emails.send({
+                from: FROM,
+                to: email,
+                bcc: bcc,
+                subject: `${pfx()}The wait is over: Stationly is live on Android!`,
+                html: androidLaunchNotificationHtml(),
+            });
+            if (error) {
+                console.error(`[EmailService] Failed to send Android launch notification email to ${email}:`, error);
+            }
+        } catch (err) {
+            console.error(`[EmailService] Failed to send Android launch notification email (exception) to ${email}:`, err);
         }
     }
 }
