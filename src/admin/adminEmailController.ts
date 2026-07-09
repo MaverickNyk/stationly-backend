@@ -25,10 +25,12 @@ export class AdminEmailController {
                     return res.status(400).json({ error: 'No valid emails provided in testEmail' });
                 }
 
-                console.log(`[AdminEmail] Sending test Android launch email to ${emails.length} recipients via BCC...`);
-                // Send to info@stationly.co.uk, and BCC all the test emails
-                await EmailService.sendAndroidLaunchNotificationEmail('info@stationly.co.uk', emails);
-                return res.json({ success: true, message: `Test email sent to ${emails.length} recipients via BCC` });
+                console.log(`[AdminEmail] Sending test Android launch email to ${emails.length} recipients individually...`);
+                // Send to each test email individually using the To field
+                await Promise.all(
+                    emails.map(email => EmailService.sendAndroidLaunchNotificationEmail(email))
+                );
+                return res.json({ success: true, message: `Test email sent to ${emails.length} recipients individually` });
             }
 
             if (target === 'all') {
