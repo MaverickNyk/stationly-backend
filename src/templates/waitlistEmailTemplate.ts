@@ -1,7 +1,8 @@
-import { getBaseUrl } from '../utils/formatters';
+import { getBaseUrl, getWebUrl } from '../utils/formatters';
 
 export function waitlistEmailHtml(): string {
     const baseUrl = getBaseUrl();
+    const webUrl = getWebUrl();
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -58,7 +59,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
         <p style="color:#555;font-family:sans-serif;font-size:15px;line-height:1.75;margin:0;">
           Stationly is live on Android, and the iOS version is coming soon. You're on the list to be notified the moment it launches on the App Store.
           <br/><br/>
-          Have an Android device? <a href="${baseUrl}/mobile/app/android" style="color:#DD2C33;text-decoration:none;font-weight:700;">Download it now on Google Play</a>.
+          Have an Android device? <a href="${baseUrl}/open?deep=${encodeURIComponent('https://play.google.com/store/apps/details?id=com.stationly.mobile')}&web=${encodeURIComponent(webUrl + '/mobile/app/android/')}" target="_blank" style="color:#DD2C33;text-decoration:none;font-weight:700;">Download it now on Google Play</a>.
         </p>
       </td></tr>
 
