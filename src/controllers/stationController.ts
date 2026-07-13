@@ -95,8 +95,11 @@ export class StationController {
     }
 
     private static formatDisplayName(arrival: any): string {
-        const raw = (arrival.towards && arrival.towards.trim())
-            ? arrival.towards.trim()
+        // iBus sends the literal string "null" in `towards` for buses while the
+        // real destination sits in destinationName — treat it as absent.
+        const towards = (arrival.towards || '').trim();
+        const raw = (towards && towards.toLowerCase() !== 'null')
+            ? towards
             : (arrival.destinationName || '');
         return raw
             .replace(/ Underground Station/g, '')
@@ -140,6 +143,20 @@ export class StationController {
         return fresh;
     }
 
+    /**
+     * At a terminus, the direction a train DEPARTS in is the one whose route
+     * destinations do NOT include this station (trains leave towards the other
+     * end of the line). Returns null when ambiguous (e.g. mid-line short
+     * workings, loops, or no cached route) so callers can fall back.
+     */
+    private static resolveDepartingDirection(naptanId: string, lineId: string): string | null {
+        const route = DataCacheService.getRoute(lineId);
+        const dirs: any[] = route?.directions || [];
+        const away = dirs.filter(d =>
+            !(d.destinations || []).some((dest: any) => dest.id === naptanId));
+        return away.length === 1 ? (away[0].direction || null) : null;
+    }
+
     private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
 
@@ -149,17 +166,38 @@ export class StationController {
         // 2. Group by Line and Direction
         const lines: Record<string, LinePredictions> = {};
 
+        // Departing direction is identical for every self-terminating arrival
+        // on the same line — resolve once per line, not per arrival.
+        const departingDirByLine = new Map<string, string | null>();
+
         arrivals.forEach(arrival => {
             const lineId = arrival.lineId.toLowerCase();
             const modeName = (arrival.modeName || '').toLowerCase();
             const rawPlatform = arrival.platformName || '';
-            const direction = arrival.direction || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
             const platform = formatPlatform(modeName, rawPlatform);
             const eta = arrival.expectedArrival || '';
 
             // Overground/DLR/Elizabeth line: TfL doesn't assign platforms until ~5–15 min before
             // departure — skip far-future unplatformed arrivals before they enter the response.
             if (StationController.isFarFutureUnassigned(modeName, platform, eta)) return;
+
+            // Terminus rule (mirrors tfl.gov.uk): a train whose destination is
+            // this very station is arriving to turn around. It IS a future
+            // departure, but its outbound destination is unknown until TfL
+            // assigns the return working at the platform — so show it as
+            // "Check Front of Train" (never drop it; keyed on the naptanId, not
+            // the name). Its direction is re-bucketed to the line's single
+            // departing direction here, since the raw entry carries none.
+            const isSelfTerminating = !!arrival.destinationNaptanId && arrival.destinationNaptanId === naptanId;
+
+            let direction = arrival.direction
+                || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
+            if (isSelfTerminating && !arrival.direction) {
+                if (!departingDirByLine.has(lineId)) {
+                    departingDirByLine.set(lineId, StationController.resolveDepartingDirection(naptanId, lineId));
+                }
+                direction = departingDirByLine.get(lineId) || direction;
+            }
 
             if (!lines[lineId]) {
                 lines[lineId] = {
@@ -174,10 +212,10 @@ export class StationController {
             }
 
             lines[lineId].dirs[direction].preds.push({
-                destId: arrival.destinationNaptanId || 'unknown',
+                destId: isSelfTerminating ? 'unknown' : (arrival.destinationNaptanId || 'unknown'),
                 platform,
                 eta,
-                displayName: StationController.formatDisplayName(arrival)
+                displayName: isSelfTerminating ? 'Check Front of Train' : StationController.formatDisplayName(arrival)
             });
         });
 
