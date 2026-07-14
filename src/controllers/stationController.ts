@@ -157,6 +157,20 @@ export class StationController {
         return away.length === 1 ? (away[0].direction || null) : null;
     }
 
+    // TfL's expectedArrival is computed from a prediction snapshot that can lag
+    // ~40-60s behind real time, so an approaching train routinely shows an
+    // expectedArrival slightly in the past while its timeToStation is still
+    // positive. 2 minutes is safely beyond that skew: anything older is a
+    // genuinely departed train TfL hasn't expired yet, not a live one.
+    // Must stay in lockstep with StationlySyncer's DataTransformationService.
+    private static readonly DEPARTED_CUTOFF_MS = 2 * 60_000;
+
+    private static isLongDeparted(eta: string): boolean {
+        if (!eta) return false;
+        const etaMs = new Date(eta).getTime();
+        return Number.isFinite(etaMs) && etaMs < Date.now() - StationController.DEPARTED_CUTOFF_MS;
+    }
+
     private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
 
@@ -180,6 +194,9 @@ export class StationController {
             // Overground/DLR/Elizabeth line: TfL doesn't assign platforms until ~5–15 min before
             // departure — skip far-future unplatformed arrivals before they enter the response.
             if (StationController.isFarFutureUnassigned(modeName, platform, eta)) return;
+
+            // Drop trains TfL should have expired: >2 min past expectedArrival.
+            if (StationController.isLongDeparted(eta)) return;
 
             // Terminus rule (mirrors tfl.gov.uk): a train whose destination is
             // this very station is arriving to turn around. It IS a future
