@@ -95,6 +95,25 @@ export class TflApiClient {
     }
 
     /**
+     * Get Live Arrival/Departure board for a Station (Elizabeth line and
+     * London Overground only — TfL exposes no such feed for other modes).
+     * Rail-style entries with scheduled/estimated departure times and the
+     * true outbound destination, matching what tfl.gov.uk renders.
+     */
+    static async getArrivalDepartures(naptanId: string, lineIds: string[]): Promise<any[]> {
+        try {
+            const response = await tflClient.get(`/StopPoint/${naptanId}/ArrivalDepartures`, {
+                params: { lineIds: lineIds.join(',') }
+            });
+            return response.data || [];
+        } catch (error: any) {
+            // Non-fatal: callers fall back to the countdown arrivals feed.
+            console.warn(`[TflApi] Failed to fetch ArrivalDepartures for ${naptanId}: ${error.message}`);
+            return [];
+        }
+    }
+
+    /**
      * Get Nearby Stop Points (Stations and Bus Stops)
      */
     static async getNearbyStopPoints(lat: number, lon: number, radius: number): Promise<any[]> {

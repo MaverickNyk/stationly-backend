@@ -487,6 +487,10 @@ export class DataCacheService {
             .filter(l => l.modeName === mode);
     }
 
+    static getLineById(id: string): any | undefined {
+        return this.lines.get(id);
+    }
+
     static getRoute(lineId: string): any | null {
         return this.routes.get(lineId) || null;
     }
