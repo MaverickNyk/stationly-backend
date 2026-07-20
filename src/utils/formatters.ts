@@ -45,18 +45,27 @@ export function formatDestination(name?: string): string {
         .trim();
 }
 
+/** TfL placeholder strings meaning "no platform assigned yet". */
+export function isUnassignedPlatform(platform: string | undefined): boolean {
+    const rp = (platform ?? '').trim().toLowerCase();
+    return !rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform';
+}
+
+/** The label formatPlatform emits for unassigned rail platforms — shared so
+ *  filters matching on it can never drift from the display copy. */
+export const UNASSIGNED_PLATFORM_LABEL = 'Platform not assigned';
+
 /**
  * Format TfL platform string to a clean, displayable UI text.
  * Handles all TfL modes: tube, Elizabeth line (A/B), DLR, Overground, bus.
  */
 export function formatPlatform(mode: string | undefined, platform: string | undefined): string {
     const isBus = mode?.toLowerCase() === 'bus';
-    const rp = (platform ?? '').trim().toLowerCase();
 
-    if (!rp || rp === 'null' || rp === 'unknown' || rp === 'platform unknown' || rp === 'no platform') {
+    if (isUnassignedPlatform(platform)) {
         // Unassigned bus stop → empty (the client renders just the line, no
         // confusing "Stop not assigned"). Rail keeps a presentable label.
-        return isBus ? '' : 'Platform not assigned';
+        return isBus ? '' : UNASSIGNED_PLATFORM_LABEL;
     }
 
     let p = platform!.trim();

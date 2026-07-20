@@ -6,8 +6,9 @@ import { Station, StationPredictionResponse, LinePredictions, DirectionPredictio
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
 import { TFL_LINE_COLORS } from '../utils/tflUtils';
-import { formatPlatform, getIconUrl } from '../utils/formatters';
+import { getIconUrl } from '../utils/formatters';
 import { nowMs } from '../utils/timestamps';
+import { PredictionSourceFactory } from '../services/predictionSources/PredictionSourceFactory';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -94,31 +95,6 @@ export class StationController {
         }
     }
 
-    private static formatDisplayName(arrival: any): string {
-        // iBus sends the literal string "null" in `towards` for buses while the
-        // real destination sits in destinationName — treat it as absent.
-        const towards = (arrival.towards || '').trim();
-        const raw = (towards && towards.toLowerCase() !== 'null')
-            ? towards
-            : (arrival.destinationName || '');
-        return raw
-            .replace(/ Underground Station/g, '')
-            .replace(/ Station/g, '')
-            .replace(/ DLR/g, '')
-            .trim();
-    }
-
-    // TfL only assigns platforms ~5–15 min before departure for these modes;
-    // far-future unplatformed predictions from them are noise, not real board data.
-    private static readonly LATE_PLATFORM_MODES = new Set(['overground', 'dlr', 'elizabeth-line']);
-
-    private static isFarFutureUnassigned(modeName: string, platform: string, eta: string): boolean {
-        if (!StationController.LATE_PLATFORM_MODES.has(modeName.toLowerCase())) return false;
-        if (platform !== 'Platform not assigned') return false;
-        const etaMin = (new Date(eta).getTime() - Date.now()) / 60_000;
-        return etaMin > 20;
-    }
-
     private static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
         // Tier 1/2 — serve from the local ephemeral cache while still fresh
         // (<60s), so repeated calls within the window don't re-hit TfL. The
@@ -143,98 +119,22 @@ export class StationController {
         return fresh;
     }
 
-    /**
-     * At a terminus, the direction a train DEPARTS in is the one whose route
-     * destinations do NOT include this station (trains leave towards the other
-     * end of the line). Returns null when ambiguous (e.g. mid-line short
-     * workings, loops, or no cached route) so callers can fall back.
-     */
-    private static resolveDepartingDirection(naptanId: string, lineId: string): string | null {
-        const route = DataCacheService.getRoute(lineId);
-        const dirs: any[] = route?.directions || [];
-        const away = dirs.filter(d =>
-            !(d.destinations || []).some((dest: any) => dest.id === naptanId));
-        return away.length === 1 ? (away[0].direction || null) : null;
-    }
-
-    // TfL's expectedArrival is computed from a prediction snapshot that can lag
-    // ~40-60s behind real time, so an approaching train routinely shows an
-    // expectedArrival slightly in the past while its timeToStation is still
-    // positive. 2 minutes is safely beyond that skew: anything older is a
-    // genuinely departed train TfL hasn't expired yet, not a live one.
-    // Must stay in lockstep with StationlySyncer's DataTransformationService.
-    private static readonly DEPARTED_CUTOFF_MS = 2 * 60_000;
-
-    private static isLongDeparted(eta: string): boolean {
-        if (!eta) return false;
-        const etaMs = new Date(eta).getTime();
-        return Number.isFinite(etaMs) && etaMs < Date.now() - StationController.DEPARTED_CUTOFF_MS;
-    }
-
     private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {
         console.log(`PRED: 📡 Fetching live signals for ${naptanId}...`);
 
-        // 1. Fetch raw arrivals from TfL
-        const arrivals = await TflApiClient.getArrivalsForStation(naptanId);
+        // 1. Start the countdown arrivals fetch — every source builds from or
+        //    falls back to them. Not awaited here: board sources overlap
+        //    their own board calls with it.
+        const arrivalsPromise = TflApiClient.getArrivalsForStation(naptanId);
 
-        // 2. Group by Line and Direction
-        const lines: Record<string, LinePredictions> = {};
-
-        // Departing direction is identical for every self-terminating arrival
-        // on the same line — resolve once per line, not per arrival.
-        const departingDirByLine = new Map<string, string | null>();
-
-        arrivals.forEach(arrival => {
-            const lineId = arrival.lineId.toLowerCase();
-            const modeName = (arrival.modeName || '').toLowerCase();
-            const rawPlatform = arrival.platformName || '';
-            const platform = formatPlatform(modeName, rawPlatform);
-            const eta = arrival.expectedArrival || '';
-
-            // Overground/DLR/Elizabeth line: TfL doesn't assign platforms until ~5–15 min before
-            // departure — skip far-future unplatformed arrivals before they enter the response.
-            if (StationController.isFarFutureUnassigned(modeName, platform, eta)) return;
-
-            // Drop trains TfL should have expired: >2 min past expectedArrival.
-            if (StationController.isLongDeparted(eta)) return;
-
-            // Terminus rule (mirrors tfl.gov.uk): a train whose destination is
-            // this very station is arriving to turn around. It IS a future
-            // departure, but its outbound destination is unknown until TfL
-            // assigns the return working at the platform — so show it as
-            // "Check Front of Train" (never drop it; keyed on the naptanId, not
-            // the name). Its direction is re-bucketed to the line's single
-            // departing direction here, since the raw entry carries none.
-            const isSelfTerminating = !!arrival.destinationNaptanId && arrival.destinationNaptanId === naptanId;
-
-            let direction = arrival.direction
-                || (rawPlatform.toLowerCase().includes('inbound') ? 'inbound' : 'outbound');
-            if (isSelfTerminating && !arrival.direction) {
-                if (!departingDirByLine.has(lineId)) {
-                    departingDirByLine.set(lineId, StationController.resolveDepartingDirection(naptanId, lineId));
-                }
-                direction = departingDirByLine.get(lineId) || direction;
-            }
-
-            if (!lines[lineId]) {
-                lines[lineId] = {
-                    id: arrival.lineId,
-                    name: arrival.lineName,
-                    dirs: {}
-                };
-            }
-
-            if (!lines[lineId].dirs[direction]) {
-                lines[lineId].dirs[direction] = { preds: [] };
-            }
-
-            lines[lineId].dirs[direction].preds.push({
-                destId: isSelfTerminating ? 'unknown' : (arrival.destinationNaptanId || 'unknown'),
-                platform,
-                eta,
-                displayName: isSelfTerminating ? 'Check Front of Train' : StationController.formatDisplayName(arrival)
-            });
-        });
+        // 2. One source per station, picked from its locally-stored mode set:
+        //    pure elizabeth-line/overground stations get the rail-style
+        //    departures board, everything else keeps the arrivals path.
+        const station = DataCacheService.getStationById(naptanId);
+        const source = PredictionSourceFactory.forStation(station);
+        console.log(`PRED: 🔀 ${naptanId} → ${source.name} (local modes: ${station ? Object.keys(station.modes || {}).join(',') || 'none' : 'not in local db'})`);
+        const lines = await source.buildStationPredictions({ naptanId, station, arrivals: arrivalsPromise });
+        const arrivals = await arrivalsPromise;
 
         // 3. Sort predictions by ETA
         Object.values(lines).forEach((line: LinePredictions) => {
@@ -245,7 +145,7 @@ export class StationController {
 
         return {
             id: naptanId,
-            name: arrivals[0]?.stationName || "Unknown Station",
+            name: arrivals[0]?.stationName || station?.commonName || "Unknown Station",
             lut: new Date().toISOString(),
             lines
         };
