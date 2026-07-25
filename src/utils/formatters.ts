@@ -10,7 +10,8 @@ const MODE_ICONS: Record<string, string> = {
     'dlr': '/icons/dlr.png',
     'elizabeth-line': '/icons/elizabeth.png',
     'elizabeth': '/icons/elizabeth.png',
-    'overground': '/icons/overground.png'
+    'overground': '/icons/overground.png',
+    'national-rail': '/icons/national-rail.png'
 };
 
 /**

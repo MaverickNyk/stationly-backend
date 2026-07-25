@@ -23,6 +23,9 @@ yarn-error.log*
 !package-lock.json
 !tsconfig.json
 !openapi.json
+# National Rail station list: a hand-built NaPTAN + CRS + Wikidata join that the
+# seeder depends on and that nothing in the repo can regenerate.
+!src/data/nationalRail/*.json
 serviceAccountKey.json
 test-key.json
 *.pem

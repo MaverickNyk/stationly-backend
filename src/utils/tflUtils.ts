@@ -32,7 +32,8 @@ export const DISPLAY_NAME_MAP: Record<string, string> = {
     "dlr": "DLR",
     "overground": "Overground",
     "elizabeth-line": "Elizabeth Line",
-    "bus": "Bus"
+    "bus": "Bus",
+    "national-rail": "National Rail"
 };
 
 export const GOOD_SERVICE_MESSAGES = [

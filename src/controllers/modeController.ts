@@ -35,7 +35,7 @@ const MODE_TINT: Record<string, string> = {
  * re-download. Bumping is cheap (one constant) — no need to wait for an
  * app release.
  */
-const MODE_ICON_VERSION = '1';
+const MODE_ICON_VERSION = '2';
 
 export class ModeController {
     /**
