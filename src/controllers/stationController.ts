@@ -9,6 +9,7 @@ import { getIconUrl } from '../utils/formatters';
 import { nowMs } from '../utils/timestamps';
 import { PredictionSourceFactory } from '../services/predictionSources/PredictionSourceFactory';
 import { PredictionCache } from '../services/predictionCache';
+import { StationStreamHub } from '../services/stationStreamHub';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -155,12 +156,14 @@ export class StationController {
             });
         });
 
-        return {
+        const payload = {
             id: naptanId,
             name: arrivals[0]?.stationName || station?.commonName || "Unknown Station",
             lut: new Date().toISOString(),
             lines
         };
+        StationStreamHub.broadcast(naptanId, payload, 'rest');
+        return payload;
     }
 
     /**
