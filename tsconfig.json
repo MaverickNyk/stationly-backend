@@ -13,6 +13,9 @@
         "src/**/*"
     ],
     "exclude": [
-        "node_modules"
+        "node_modules",
+        // Kept out of dist/ — `npm test` runs them through ts-node, which
+        // typechecks them anyway, so excluding here costs no type safety.
+        "src/tests"
     ]
 }

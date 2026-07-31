@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -12,6 +13,10 @@ import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
 import { getWebUrl, getBaseUrl } from './utils/formatters';
+import internalRoutes from './routes/internalRoutes';
+import { attachStationStream } from './services/stationStreamServer';
+import { StationStreamHub } from './services/stationStreamHub';
+import { PredictionCache } from './services/predictionCache';
 
 dotenv.config();
 
@@ -27,6 +32,18 @@ app.use(helmet({
     contentSecurityPolicy: false, // Scalar needs this for its assets
 }));
 app.use(morgan('dev'));
+
+// The Syncer's ingest batches up to STATIONS_PER_TICK (250) stations into ONE
+// POST, which at ~1-3 kB per station comfortably exceeds body-parser's 100 kb
+// default. Blowing that limit returns 413 and the Syncer drops the whole batch
+// by design (fire-and-forget, never retried) — so the stream would silently
+// stall during exactly the busiest cycles, while FCM carried on working.
+//
+// This MUST be mounted before the global parser below: body-parser no-ops when
+// `req._body` is already set, so the first one to match wins. Mounting it next
+// to the route (further down) would be too late.
+app.use('/internal', express.json({ limit: '5mb' }));
+
 app.use(express.json());
 
 // Serving icons from the public directory
@@ -759,14 +776,63 @@ app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController
 // them up — `/docs` and `/openapi.json` stay clean.
 app.use('/api/v1/admin', adminRoutes);
 
+// Syncer → backend ingest for the live stream. Mounted BEFORE `/api/v1` so it
+// bypasses the client API-key check and rate limiters (it's machine traffic
+// from localhost, not a public client). Nginx never proxies `/internal`, so
+// this prefix is unreachable from the internet — see internalRoutes.ts.
+app.use('/internal', internalRoutes);
+
 app.use('/api/v1', apiRoutes);
 
 // Start Server
-app.listen(port, () => {
+// An explicit http.Server (rather than app.listen's implicit one) is required
+// so the WebSocket server can attach to the same port and handle `upgrade`.
+const server = http.createServer(app);
+
+attachStationStream(server);
+
+// Tuning knobs, env-overridable so `freshForMs` can be moved on a live box
+// without a code change — the whole point of watching `restHitRate` is being
+// able to act on it. Unset vars leave the module defaults untouched.
+const numEnv = (name: string): number | undefined => {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === '') return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+PredictionCache.configure({
+    freshForMs: numEnv('PREDICTION_CACHE_FRESH_MS'),
+    retainForMs: numEnv('PREDICTION_CACHE_RETAIN_MS'),
+    maxEntries: numEnv('PREDICTION_CACHE_MAX_ENTRIES'),
+});
+
+// Bound the shared prediction cache. Safe to start before listen — it only
+// arms a timer; the cache itself is populated lazily by REST + Syncer writes.
+PredictionCache.startSweeper();
+
+server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
+    console.log(`Stream: ws://localhost:${port}/api/v1/stream`);
     console.log(`Docs: http://localhost:${port}/docs`);
     console.log(`Spec: http://localhost:${port}/openapi.json`);
 });
+
+// Graceful shutdown — none existed before. PM2 reload previously severed every
+// connection abruptly; with long-lived sockets that means clients reconnect on
+// an error path rather than a clean 1001, and all reconnect at the same instant.
+let shuttingDown = false;
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.log(`\n[SHUTDOWN] ${signal} received — closing stream connections...`);
+        StationStreamHub.closeAll();
+        server.close(() => process.exit(0));
+        // PM2's default kill_timeout is short; don't let a lingering socket
+        // hold the process open past it.
+        setTimeout(() => process.exit(0), 1500).unref();
+    });
+}
