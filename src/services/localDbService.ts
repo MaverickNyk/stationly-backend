@@ -77,14 +77,6 @@ export class LocalDbService {
                 lastUpdatedTime TEXT,
                 raw_data TEXT
             )`,
-            // Ephemeral predictions cache — NOT replicated from Firestore.
-            // Sourced from TfL, served from here for repeated calls within ~60s,
-            // then purged. `lastUpdatedTime` is epoch millis (integer).
-            `CREATE TABLE IF NOT EXISTS station_preds (
-                stationId TEXT PRIMARY KEY,
-                lastUpdatedTime INTEGER,
-                raw_data TEXT
-            )`,
             // Admin notification send-log — LOCAL ONLY, deliberately NOT in
             // Firestore. An audit trail of admin pushes costs zero Firestore
             // reads/writes by living here on disk alongside the replication
@@ -292,40 +284,6 @@ export class LocalDbService {
             data.lastUpdatedTime || '',
             JSON.stringify(data)
         ]);
-    }
-
-    // --- Ephemeral predictions cache (local-only, ~60s TTL) ---
-
-    /** Store a station's predictions with an epoch-millis stamp. */
-    static async upsertStationPreds(stationId: string, data: any, ms: number): Promise<void> {
-        await this.run('INSERT OR REPLACE INTO station_preds (stationId, lastUpdatedTime, raw_data) VALUES (?, ?, ?)', [
-            stationId,
-            ms,
-            JSON.stringify(data)
-        ]);
-    }
-
-    /**
-     * Predictions for a station IF still fresh (within `maxAgeMs`, default 60s),
-     * else null. The freshness is enforced at read time so a stale row is never
-     * served even if the async purge hasn't run yet.
-     */
-    static async getFreshStationPreds(stationId: string, maxAgeMs: number = 60_000): Promise<any | null> {
-        const cutoff = Date.now() - maxAgeMs;
-        const row = await this.get<{ raw_data: string }>(
-            'SELECT raw_data FROM station_preds WHERE stationId = ? AND lastUpdatedTime > ?',
-            [stationId, cutoff]
-        );
-        return row ? JSON.parse(row.raw_data) : null;
-    }
-
-    /**
-     * Delete predictions older than `maxAgeMs`. Housekeeping only — call as
-     * fire-and-forget AFTER responding so it never blocks the read path.
-     */
-    static async purgeStaleStationPreds(maxAgeMs: number = 60_000): Promise<void> {
-        const cutoff = Date.now() - maxAgeMs;
-        await this.run('DELETE FROM station_preds WHERE lastUpdatedTime <= ?', [cutoff]);
     }
 
     // --- Admin notification send-log (local-only audit trail) ---

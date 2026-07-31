@@ -4,11 +4,11 @@ import { TflApiClient } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
-import { LocalDbService } from '../services/localDbService';
 import { TFL_LINE_COLORS } from '../utils/tflUtils';
 import { getIconUrl } from '../utils/formatters';
 import { nowMs } from '../utils/timestamps';
 import { PredictionSourceFactory } from '../services/predictionSources/PredictionSourceFactory';
+import { PredictionCache } from '../services/predictionCache';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -96,12 +96,17 @@ export class StationController {
     }
 
     private static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
-        // Tier 1/2 — serve from the local ephemeral cache while still fresh
-        // (<60s), so repeated calls within the window don't re-hit TfL. The
-        // freshness window is enforced at read time, so a stale row is never
-        // served even before the async purge runs.
-        const cached = await LocalDbService.getFreshStationPreds(naptanId);
-        if (cached) return cached as StationPredictionResponse;
+        // Tier 1 — the SHARED prediction cache. Populated both by our own TfL
+        // fetches below AND by the Syncer's pushes (which already pull every
+        // subscribed station every ~30s for the FCM/stream fan-out). That's the
+        // saving: for any subscribed station, this usually hits and TfL is
+        // never called. Freshness is asserted at read time, so a lapsed entry
+        // is never served.
+        //
+        // Replaces the old SQLite `station_preds` table — see
+        // services/predictionCache/README.md for why this is memory-only.
+        const cached = PredictionCache.getFresh(naptanId);
+        if (cached) return cached;
 
         if (skipRefresh) {
             return {
@@ -111,12 +116,19 @@ export class StationController {
             } as any;
         }
 
-        // Tier 4 — cache miss/stale → fetch live from TfL, then cache it.
-        const fresh = await StationController.fetchPredictionsFromTfl(naptanId);
-        await LocalDbService.upsertStationPreds(naptanId, fresh, nowMs());
-        // Fire-and-forget housekeeping — drop rows older than 60s. Never blocks.
-        void LocalDbService.purgeStaleStationPreds().catch(() => {});
-        return fresh;
+        // Tier 2 — miss or stale → fetch from TfL, write back so the next
+        // caller AND any WebSocket subscriber of this station benefit.
+        // Stations nobody has subscribed to are only ever populated this way,
+        // since the Syncer doesn't poll them.
+        //
+        // getOrFetch, not a bare fetch: concurrent requests for the same cold
+        // station share ONE TfL call instead of each starting their own. That
+        // matters precisely when traffic spikes — same single-flight pattern as
+        // LineController.inFlightStatusRefresh.
+        return PredictionCache.getOrFetch(
+            naptanId,
+            () => StationController.fetchPredictionsFromTfl(naptanId),
+        );
     }
 
     private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {

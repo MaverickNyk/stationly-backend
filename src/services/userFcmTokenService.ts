@@ -52,9 +52,9 @@ export class UserFcmTokenService {
      * subcollection data, not global metadata, so it stays out of the
      * DataCacheService master→slave replication).
      *
-     * Same spirit as LocalDbService's ephemeral `station_preds` cache:
-     * freshness is enforced at READ time, so a stale entry is never served
-     * past its TTL even before any sweep. A repeated `uid`-audience send or
+     * Same spirit as the shared PredictionCache: freshness is enforced at
+     * READ time, so a stale entry is never served past its TTL even before
+     * any sweep. A repeated `uid`-audience send or
      * an admin token-count lookup for the same uid within the TTL costs
      * ZERO Firestore reads. Writes (register/unregister) invalidate the
      * uid's entry so the cache can't serve a list that's missing a freshly
