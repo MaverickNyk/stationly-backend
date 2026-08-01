@@ -28,9 +28,10 @@ import type { WebSocket } from 'ws';
 import { PredictionCache } from '../services/predictionCache';
 import { StationStreamHub } from '../services/stationStreamHub';
 import { StreamPrefetch } from '../services/streamPrefetch';
+import { LineStatusStreamHub } from '../services/lineStatusStreamHub';
 import { DataCacheService } from '../services/dataCacheService';
 import { StationController } from '../controllers/stationController';
-import { TflApiClient, UnknownStationError } from '../client/TflApiClient';
+import { TflApiClient, UnknownStationError, TflUnavailableError } from '../client/TflApiClient';
 import { StationPredictionResponse } from '../models';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
             PredictionCache.reset();
             StationStreamHub.closeAll();
             StreamPrefetch.reset();
+            LineStatusStreamHub.reset();
             await fn();
             passed++;
             console.log(`  ✓ ${name}`);
@@ -418,6 +420,41 @@ test('a dead id costs ONE TfL call; repeats are refused from memory', async () =
     assert.strictEqual(calls, 1, 'the repeat must be served by the negative cache, not TfL');
 });
 
+test('a TfL outage never overwrites good cached data', async () => {
+    // The bug this pins: on a TfL 5xx the arrivals call used to flatten to [],
+    // an empty board was built with a FRESH lut, and that was cached (beating
+    // the ordering guard, since its timestamp was newest) and broadcast — so one
+    // failed fetch replaced a good board with "no service" for every subscriber.
+    const good = payload('940GZZLUOXC', ISO_NOW);
+    PredictionCache.set('940GZZLUOXC', good, 'rest');
+
+    // Force the entry past its REST freshness window so the fetch is actually
+    // attempted, while it stays RETAINED — exactly the state an outage finds.
+    PredictionCache.configure({ freshForMs: -1 });
+    (TflApiClient as any).getArrivalsForStation = async (id: string) => {
+        throw new TflUnavailableError(id, 'connect ETIMEDOUT');
+    };
+
+    try {
+        await assert.rejects(
+            StationController.fetchPredictions('940GZZLUOXC', false),
+            TflUnavailableError,
+            'an unreachable upstream must surface, not masquerade as an empty board',
+        );
+
+        assert.strictEqual(
+            PredictionCache.getLatest('940GZZLUOXC'),
+            good,
+            'the previously-good payload must survive the failed fetch',
+        );
+        // A network failure is a fact about the network, not the station.
+        // Blacklisting here would take out every station an outage touched.
+        assert.strictEqual(PredictionCache.isUnknown('940GZZLUOXC'), false);
+    } finally {
+        PredictionCache.configure({ freshForMs: 60_000 });
+    }
+});
+
 // ─── StreamPrefetch ──────────────────────────────────────────────────────────
 
 /**
@@ -567,6 +604,105 @@ test('a station TfL 404s is reported as permanent, not as a transient failure', 
     }
     assert.deepStrictEqual(notified, [['940GZZDLTWG', true]]);
     assert.strictEqual(StreamPrefetch.stats().rejectedByTfl, 1);
+});
+
+// ─── LineStatusStreamHub ─────────────────────────────────────────────────────
+
+const status = (id: string, severity: string) =>
+    ({ id, name: id, statusSeverityDescription: severity, mode: 'tube', lastUpdatedTime: Date.now() });
+
+test('a line status reaches subscribers and only subscribers', () => {
+    const watcher = fakeSocket();
+    const bystander = fakeSocket();
+    LineStatusStreamHub.subscribe(watcher, ['victoria']);
+    LineStatusStreamHub.subscribe(bystander, ['central']);
+
+    const sent = LineStatusStreamHub.broadcast('victoria', status('victoria', 'Good Service'));
+
+    assert.strictEqual(sent, 1);
+    assert.strictEqual(watcher.sent.length, 1);
+    assert.strictEqual(bystander.sent.length, 0, 'a line room must not leak to other lines');
+    const frame = JSON.parse(watcher.sent[0]);
+    assert.strictEqual(frame.type, 'update');
+    assert.strictEqual(frame.line, 'victoria', 'line frames key on `line`, not `station`');
+});
+
+test('an identical status is suppressed rather than re-sent', () => {
+    // Guards a GUARANTEED duplicate: refreshLineStatusesFromTfl writes to
+    // Firestore, and that write echoes back through this instance's own
+    // snapshot listener, calling setLineStatus a second time with the same data.
+    const sock = fakeSocket();
+    LineStatusStreamHub.subscribe(sock, ['victoria']);
+    const payload = status('victoria', 'Good Service');
+
+    assert.strictEqual(LineStatusStreamHub.broadcast('victoria', payload), 1);
+    assert.strictEqual(LineStatusStreamHub.broadcast('victoria', { ...payload }), -1, 'echo must be suppressed');
+    assert.strictEqual(sock.sent.length, 1, 'the client must see the change once');
+    assert.strictEqual(LineStatusStreamHub.stats().suppressedDuplicates, 1);
+});
+
+test('a genuine status change after a suppressed echo still gets through', () => {
+    const sock = fakeSocket();
+    LineStatusStreamHub.subscribe(sock, ['victoria']);
+    const good = status('victoria', 'Good Service');
+
+    LineStatusStreamHub.broadcast('victoria', good);
+    LineStatusStreamHub.broadcast('victoria', { ...good });          // echo
+    LineStatusStreamHub.broadcast('victoria', status('victoria', 'Severe Delays'));
+
+    assert.strictEqual(sock.sent.length, 2, 'suppression must not swallow a real change');
+    assert.strictEqual(JSON.parse(sock.sent[1]).payload.statusSeverityDescription, 'Severe Delays');
+});
+
+test('forget() frees every line room the socket joined', () => {
+    // The leak this guards is specific to this hub: it has no lifecycle of its
+    // own, so it is only cleaned because the socket's close handler calls it.
+    const sock = fakeSocket();
+    LineStatusStreamHub.subscribe(sock, ['victoria', 'central', 'northern']);
+    assert.strictEqual(LineStatusStreamHub.stats().rooms, 3);
+
+    LineStatusStreamHub.forget(sock);
+
+    assert.strictEqual(LineStatusStreamHub.stats().rooms, 0, 'empty rooms must be deleted, not left behind');
+    assert.strictEqual(LineStatusStreamHub.stats().subscribers, 0);
+    assert.strictEqual(LineStatusStreamHub.broadcast('victoria', status('victoria', 'Minor Delays')), 0);
+});
+
+test('unsubscribe drops the room once its last subscriber leaves', () => {
+    const sock = fakeSocket();
+    LineStatusStreamHub.subscribe(sock, ['victoria']);
+    LineStatusStreamHub.unsubscribe(sock, ['victoria']);
+
+    assert.strictEqual(LineStatusStreamHub.stats().rooms, 0);
+    assert.strictEqual(LineStatusStreamHub.stats().subscribers, 0);
+});
+
+test('re-subscribing at the line limit is idempotent, and excess is reported', () => {
+    const sock = fakeSocket();
+    const many = Array.from({ length: 35 }, (_, i) => `line-${i}`);
+
+    const first = LineStatusStreamHub.subscribe(sock, many);
+    assert.strictEqual(first.subscribed.length, 30);
+    assert.strictEqual(first.rejected.length, 5, 'over-limit lines are reported, not silently dropped');
+
+    const again = LineStatusStreamHub.subscribe(sock, many.slice(0, 30));
+    assert.strictEqual(again.rejected.length, 0, 're-sending an existing list must not trip the limit');
+});
+
+test('writes are attributed by producer, so a dead Syncer push is visible', () => {
+    // The Syncer's push is the ONLY live source of line status. If it stops,
+    // the TfL fallback keeps the cache warm and nothing looks broken — a flat
+    // writes.syncer is the only signal, so it must actually be tracked.
+    LineStatusStreamHub.broadcast('victoria', status('victoria', 'Good Service'), 'syncer');
+    LineStatusStreamHub.broadcast('central', status('central', 'Minor Delays'), 'tfl');
+
+    assert.deepStrictEqual(LineStatusStreamHub.stats().writes, { syncer: 1, tfl: 1 });
+});
+
+test('a snapshot frame is undefined when nothing is held', () => {
+    assert.strictEqual(LineStatusStreamHub.snapshotFrame('victoria', undefined), undefined);
+    const frame = LineStatusStreamHub.snapshotFrame('victoria', status('victoria', 'Good Service'));
+    assert.strictEqual(JSON.parse(frame!).type, 'snapshot');
 });
 
 main();

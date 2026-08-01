@@ -3,6 +3,9 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { auth } from '../config/firebase';
 import { StationStreamHub } from './stationStreamHub';
 import { StreamPrefetch } from './streamPrefetch';
+import { LineStatusStreamHub } from './lineStatusStreamHub';
+import { DataCacheService } from './dataCacheService';
+import { LineController } from '../controllers/lineController';
 
 /**
  * WebSocket endpoint that streams live departure updates to foreground clients.
@@ -117,43 +120,17 @@ export function attachStationStream(server: HttpServer, path = '/api/v1/stream')
             if (!authed) return;
 
             if (msg.action === 'subscribe') {
-                const ids = toStationList(msg.stations);
-                const { subscribed, rejected } = StationStreamHub.subscribe(ws, ids);
-                // Flush what we already hold so the board paints immediately
-                // rather than waiting up to a Syncer cycle for the next change.
-                // snapshotFrame returns undefined when the cache holds nothing
-                // for a station, which is the only presence test we need.
-                const cold: string[] = [];
-                for (const naptanId of subscribed) {
-                    const frame = StationStreamHub.snapshotFrame(naptanId);
-                    if (!frame) { cold.push(naptanId); continue; }
-                    if (ws.readyState !== WebSocket.OPEN) break;
-                    try { ws.send(frame); } catch { break; /* closed mid-write; cleanup runs on 'close' */ }
-                }
-                // Nothing cached — fetch from TfL so the first subscriber to a
-                // station the Syncer doesn't poll isn't left with a blank
-                // board. Skipped when the socket died mid-flush above: the
-                // fetch's only purpose is delivering to this socket. See
-                // prefetchColdStations for why success sends nothing here.
-                if (cold.length && ws.readyState === WebSocket.OPEN) {
-                    prefetchColdStations(ws, cold);
-                }
-                // Tell the client what it did NOT get. Silently dropping these
-                // would leave it believing it's subscribed, watching a board
-                // that never updates, with nothing to diagnose.
-                if (rejected.length) {
-                    send(ws, {
-                        type: 'error',
-                        code: 'subscription_limit',
-                        message: `Subscription limit reached; ${rejected.length} station(s) not subscribed.`,
-                        stations: rejected,
-                    });
-                }
+                // Additive by channel: a client may send either field or both
+                // in one frame. Guarded on `!== undefined` so an absent field
+                // is untouched rather than treated as an empty subscribe.
+                if (msg.stations !== undefined) subscribeStations(ws, toIdList(msg.stations));
+                if (msg.lines !== undefined) subscribeLines(ws, toIdList(msg.lines));
                 return;
             }
 
             if (msg.action === 'unsubscribe') {
-                StationStreamHub.unsubscribe(ws, toStationList(msg.stations));
+                if (msg.stations !== undefined) StationStreamHub.unsubscribe(ws, toIdList(msg.stations));
+                if (msg.lines !== undefined) LineStatusStreamHub.unsubscribe(ws, toIdList(msg.lines));
                 return;
             }
 
@@ -162,7 +139,14 @@ export function attachStationStream(server: HttpServer, path = '/api/v1/stream')
             }
         });
 
-        const cleanup = () => { clearTimeout(authTimer); StationStreamHub.unregister(ws); };
+        // Both hubs, always. LineStatusStreamHub has no lifecycle of its own —
+        // it piggybacks on this socket — so a missed call here leaks dead
+        // sockets into its routing table until the process restarts.
+        const cleanup = () => {
+            clearTimeout(authTimer);
+            StationStreamHub.unregister(ws);
+            LineStatusStreamHub.forget(ws);
+        };
         ws.on('close', cleanup);
         // Without this an errored socket stays in the routing table forever.
         ws.on('error', cleanup);
@@ -175,6 +159,129 @@ export function attachStationStream(server: HttpServer, path = '/api/v1/stream')
 
     console.log(`WS: 🔌 Station stream listening on ${path}`);
     return wss;
+}
+
+/**
+ * Subscribe to station boards and flush what we can immediately.
+ *
+ * Lifted verbatim out of the message handler when the `lines` channel was
+ * added, so the two channels read symmetrically at the call site.
+ */
+function subscribeStations(ws: WebSocket, ids: string[]): void {
+    const { subscribed, rejected } = StationStreamHub.subscribe(ws, ids);
+
+    // Flush what we already hold so the board paints immediately rather than
+    // waiting up to a Syncer cycle for the next change. snapshotFrame returns
+    // undefined when the cache holds nothing, which is the only presence test
+    // we need.
+    const cold: string[] = [];
+    for (const naptanId of subscribed) {
+        const frame = StationStreamHub.snapshotFrame(naptanId);
+        if (!frame) { cold.push(naptanId); continue; }
+        if (ws.readyState !== WebSocket.OPEN) break;
+        try { ws.send(frame); } catch { break; /* closed mid-write; cleanup runs on 'close' */ }
+    }
+
+    if (cold.length && ws.readyState === WebSocket.OPEN) prefetchColdStations(ws, cold);
+
+    if (rejected.length) {
+        send(ws, {
+            type: 'error',
+            code: 'subscription_limit',
+            message: `Subscription limit reached; ${rejected.length} station(s) not subscribed.`,
+            stations: rejected,
+        });
+    }
+}
+
+/**
+ * Subscribe to line statuses and flush what we can immediately.
+ *
+ * Deliberately simpler than the station path, because the cache underneath is
+ * a different shape. DataCacheService holds line statuses in memory, kept
+ * current by the Syncer's push, so a snapshot is usually available and "cold"
+ * means a real gap — a backend restart before the first push, or a line that
+ * has not changed since.
+ *
+ * Warming is per MODE, not per line: TfL returns a whole mode in one call, so
+ * subscribing to `victoria` warms every tube line at once. Cold lines are
+ * grouped by mode so eleven cold tube lines trigger ONE refresh.
+ * No budget or concurrency cap is needed here — see
+ * LineController.ensureLineStatuses for why the existing per-mode gating is
+ * already sufficient.
+ */
+function subscribeLines(ws: WebSocket, ids: string[]): void {
+    // Existence gate, same reasoning as the station path: an unrecognised id
+    // must never reach TfL, and must not be left holding a subscription slot
+    // for a line that can never deliver.
+    const known: string[] = [];
+    const unknown: string[] = [];
+    for (const lineId of ids) {
+        (DataCacheService.getLineById(lineId) ? known : unknown).push(lineId);
+    }
+    if (unknown.length) {
+        send(ws, {
+            type: 'error',
+            code: 'unknown_line',
+            message: `Line(s) not recognised: ${unknown.join(', ')}`,
+            lines: unknown,
+        });
+    }
+    if (!known.length) return;
+
+    const { subscribed, rejected } = LineStatusStreamHub.subscribe(ws, known);
+
+    // Grouped by mode, because TfL is fetched per mode: eleven cold tube lines
+    // become ONE refresh. The ids are carried through so ensureLineStatuses can
+    // tell "this mode is stale" from "this mode is cached but missing the line
+    // this client actually asked for".
+    const coldByMode = new Map<string, string[]>();
+    for (const lineId of subscribed) {
+        const frame = LineStatusStreamHub.snapshotFrame(lineId, DataCacheService.getLineStatusById(lineId));
+        if (!frame) {
+            const mode = DataCacheService.getLineById(lineId)?.modeName;
+            if (mode) coldByMode.set(mode, [...(coldByMode.get(mode) ?? []), lineId]);
+            continue;
+        }
+        if (ws.readyState !== WebSocket.OPEN) break;
+        try { ws.send(frame); } catch { break; /* closed mid-write; cleanup runs on 'close' */ }
+    }
+
+    // Not awaited, and nothing is sent on SUCCESS: a refresh writes through
+    // DataCacheService.setLineStatus, which broadcasts to everyone in the
+    // line's room — and subscribe() put this socket there a few lines ago.
+    //
+    // Failure IS reported, matching the station path's prefetch_failed. Without
+    // it a TfL outage leaves the client watching a row that never paints, with
+    // nothing to distinguish that from a line simply having no news.
+    if (ws.readyState === WebSocket.OPEN) {
+        for (const [mode, lineIds] of coldByMode) {
+            void LineController.ensureLineStatuses(mode, lineIds).then((ok) => {
+                if (ok || ws.readyState !== WebSocket.OPEN) return;
+                send(ws, {
+                    type: 'error',
+                    code: 'prefetch_failed',
+                    message: 'Could not load initial status; updates will still arrive.',
+                    lines: lineIds,
+                });
+            }).catch((err) => {
+                // ensureLineStatuses swallows TfL errors internally, so this
+                // only fires on something unexpected before that try block.
+                // It still must be handled: Node terminates the process on an
+                // unhandled rejection, which would take every socket with it.
+                console.warn(`WS: ⚠️  Line prefetch error for ${mode}:`, (err as any)?.message || err);
+            });
+        }
+    }
+
+    if (rejected.length) {
+        send(ws, {
+            type: 'error',
+            code: 'subscription_limit',
+            message: `Subscription limit reached; ${rejected.length} line(s) not subscribed.`,
+            lines: rejected,
+        });
+    }
 }
 
 /**
@@ -239,7 +346,7 @@ function send(ws: WebSocket, obj: unknown): void {
     }
 }
 
-function toStationList(value: unknown): string[] {
+function toIdList(value: unknown): string[] {
     if (typeof value === 'string') return [value];
     if (!Array.isArray(value)) return [];
     return value.filter((v): v is string => typeof v === 'string' && v.length > 0);

@@ -43,6 +43,25 @@ export class UnknownStationError extends Error {
     }
 }
 
+/**
+ * TfL could not be reached, or answered with an error that is not a 404.
+ *
+ * Exists because an empty arrivals list is ambiguous: it means BOTH "no trains
+ * are running" (true at 3am) and "we never got an answer". That ambiguity was
+ * harmless while the result was only rendered, and became a real problem once
+ * it started being CACHED and BROADCAST — a single failed fetch asserted "no
+ * service here" to every connected client for the next 60 seconds.
+ *
+ * Transient by definition, so unlike UnknownStationError it must never be
+ * cached or treated as a fact about the station.
+ */
+export class TflUnavailableError extends Error {
+    constructor(public readonly naptanId: string, cause?: string) {
+        super(`TfL unavailable for '${naptanId}'${cause ? `: ${cause}` : ''}`);
+        this.name = 'TflUnavailableError';
+    }
+}
+
 export class TflApiClient {
     /**
      * Get Transport Modes from TfL Meta API
@@ -109,11 +128,13 @@ export class TflApiClient {
             // made-up name — which is what silently swallowing this used to do.
             if (error?.response?.status === 404) throw new UnknownStationError(naptanId);
 
-            // Everything else stays tolerant, as before: an outage, timeout or
-            // rate-limit must degrade to an empty board rather than turn every
-            // station in the network into a 404.
+            // Everything else is a transient failure. It is now RAISED rather
+            // than flattened to [], because callers cache and broadcast this
+            // result and must be able to tell it apart from a genuinely empty
+            // board. Callers that only want a best-effort list catch it and
+            // substitute [] themselves — see fetchPredictionsFromTfl.
             console.warn(`[TflApi] Failed to fetch arrivals for ${naptanId}: ${error.message}`);
-            return [];
+            throw new TflUnavailableError(naptanId, error.message);
         }
     }
 

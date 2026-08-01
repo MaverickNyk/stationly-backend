@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { TflApiClient, UnknownStationError } from '../client/TflApiClient';
+import { TflApiClient, UnknownStationError, TflUnavailableError } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
@@ -102,6 +102,16 @@ export class StationController {
                     naptanId,
                 });
             }
+            // Upstream is down — say so, rather than returning 200 with an
+            // empty board. An empty board is a CLAIM ("no trains here") and is
+            // indistinguishable from a genuinely quiet station at 3am.
+            if (error instanceof TflUnavailableError) {
+                return res.status(503).json({
+                    error: "Upstream unavailable",
+                    message: "Could not reach TfL for this station. Please retry shortly.",
+                    naptanId,
+                });
+            }
             console.error(`Error fetching predictions for ${naptanId}:`, error);
             return res.status(500).json({ error: "Failed to fetch predictions" });
         }
@@ -168,13 +178,28 @@ export class StationController {
         // 1. Start the countdown arrivals fetch — every source builds from or
         //    falls back to them. Not awaited here: board sources overlap
         //    their own board calls with it.
-        const arrivalsPromise = TflApiClient.getArrivalsForStation(naptanId);
-        // This promise can now REJECT (UnknownStationError) rather than always
-        // resolving to []. It is created here but not awaited until after
-        // buildStationPredictions, and not every source awaits it on every path
-        // — so without a handler attached at creation, a rejection in that gap
-        // surfaces as an unhandled rejection. This does not swallow it: the
-        // `await arrivalsPromise` below still throws.
+        // Sources await this promise wherever they consume it, so the fetch
+        // overlaps their own board calls — that overlap is why it is passed as a
+        // promise rather than awaited here.
+        const rawArrivals = TflApiClient.getArrivalsForStation(naptanId);
+
+        // A transient TfL failure is downgraded to an empty list for the SOURCES
+        // — ElizabethOvergroundPredictionSource awaits arrivals unconditionally
+        // even though its real board comes from ArrivalDepartures, so letting
+        // the rejection through would blank a board we successfully built.
+        // The failure is remembered instead, and acted on after the build.
+        //
+        // A 404 still propagates: that one is a fact about the station, not a
+        // transport failure.
+        let arrivalsFailed = false;
+        const arrivalsPromise: Promise<any[]> = rawArrivals.catch((err) => {
+            if (err instanceof UnknownStationError) throw err;
+            arrivalsFailed = true;
+            return [];
+        });
+        // Without a handler attached at creation, a 404 rejection between here
+        // and the `await` below surfaces as an unhandled rejection. This does
+        // not swallow it — `await arrivalsPromise` still throws.
         arrivalsPromise.catch(() => { });
 
         // 2. One source per station, picked from its locally-stored mode set:
@@ -192,6 +217,18 @@ export class StationController {
                 dir.preds.sort((a, b) => new Date(a.eta).getTime() - new Date(b.eta).getTime());
             });
         });
+
+        // An error is not data. If TfL never answered AND we built nothing from
+        // any other source, there is nothing worth keeping — so refuse before
+        // the broadcast below, which would otherwise write an empty board into
+        // the shared cache with a fresh `lut` (overwriting good data) and push
+        // "no service here" to every subscriber of this station.
+        //
+        // Guarded on `lines` being empty so a station whose board came from
+        // ArrivalDepartures still serves normally when only arrivals failed.
+        if (arrivalsFailed && Object.keys(lines).length === 0) {
+            throw new TflUnavailableError(naptanId);
+        }
 
         const payload = {
             id: naptanId,

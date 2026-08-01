@@ -77,7 +77,7 @@ WHERE CAST(excluded.value AS INTEGER) > CAST(sync_metadata.value AS INTEGER);
 
 Five reference collections replicate through **one** code path
 (`replicationTargets()`): `modes`, `lines`, `routes`, `stations`,
-`lineStatuses`. Each target owns its `apply` (memory + SQLite upsert) and
+and (until 2026-08-01) `lineStatuses`. Each target owns its `apply` (memory + SQLite upsert) and
 `remove` (memory + SQLite delete).
 
 **Boot delta (`deltaSync`)** — `where('lastUpdatedTime', '>', checkpoint).get()`,
@@ -131,23 +131,34 @@ waste. Instead:
 - On miss → fetch TfL → cache → **fire-and-forget** async purge of >60 s rows
   (`purgeStaleStationPreds`) so it never blocks the response.
 
-### Line status (`lineController.getLineStatuses`) — tier-4 with 10-min staleness
+### Line status (`lineController.getLineStatuses`) — NOT replicated
 
-Served from memory → SQLite. If **cold OR older than 10 min** (the syncer's
-poll cadence), it refreshes from TfL:
+**As of 2026-08-01 `lineStatuses` is memory-only, like `stationPredictions`.**
+The Firestore boot delta-sync, the live `onSnapshot` listener, the Firestore
+write and the SQLite table were all removed, on both the backend and the syncer.
+The listener alone billed a document read for every status change, on every
+instance, forever — and once the backend's write was gone it was reading back
+only the syncer's own writes.
 
-- **Single-flight per mode** (`inFlightStatusRefresh`) → a burst of requests =
-  one TfL call.
-- **Change-detected** → only statuses whose severity/reason changed are written
-  to **Firestore master** (which propagates to the syncer + replicas) and bump
-  their watermark. Unchanged statuses cost nothing.
-- `lastTflRefreshByMode` prevents re-polling TfL when data is old-but-unchanged.
+Statuses now reach the backend by **push**: the syncer POSTs changed statuses to
+`/internal/line-status-updates`, which writes through
+`DataCacheService.setLineStatus` (in-memory Map + WebSocket fan-out).
+
+- **Liveness** = the syncer's push. If it stops, nothing looks broken — watch
+  `lines.writes.syncer` at `/internal/stream-stats`.
+- **Fallback** = TfL, if a mode is cold or unverified for `LINE_STATUS_TTL_MS`
+  (60s, env-overridable). Single-flight per mode (`inFlightStatusRefresh`), so a
+  burst of requests is one TfL call.
+- **Change-detected** → only statuses whose severity/reason changed are stored
+  and broadcast. Unchanged statuses cost nothing.
+- `lastTflRefreshByMode` prevents re-polling when data is old-but-unchanged.
 
 ## What is replicated where
 
 | Collection | Backend replica | Via | Notes |
 |---|---|---|---|
-| `modes`,`lines`,`routes`,`stations`,`lineStatuses` | ✅ SQLite + memory | generic replicator | integer watermark, delta + listener |
+| `modes`,`lines`,`routes`,`stations` | ✅ SQLite + memory | generic replicator | integer watermark, delta + listener |
+| `lineStatuses` | ❌ memory only | syncer push → `/internal/line-status-updates` | never persisted; TfL fallback at 60s |
 | `api_keys` | ✅ SQLite | `authMiddleware` own listener | tiny (≈2 docs); full listen is fine |
 | `metadata/subscribed_stations` | ✅ (counts) | `subscriptionService` + (syncer) | single doc |
 | `stationPredictions` | local-only | TfL + `station_preds` | **not in Firestore**, 60 s TTL |

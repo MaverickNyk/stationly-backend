@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { StationStreamHub } from '../services/stationStreamHub';
 import { StreamPrefetch } from '../services/streamPrefetch';
+import { LineStatusStreamHub } from '../services/lineStatusStreamHub';
+import { DataCacheService } from '../services/dataCacheService';
 
 /**
  * Machine-to-machine ingest from the StationlySyncer (same host).
@@ -99,6 +101,50 @@ router.post('/station-updates', guard, (req: Request, res: Response) => {
 });
 
 /**
+ * POST /internal/line-status-updates
+ *
+ * Body is the Syncer's changed-statuses map, keyed by lineId:
+ *   { "victoria": { id, name, statusSeverityDescription, reason, mode,
+ *                   lastUpdatedTime }, ... }
+ *
+ * This is now the LIVENESS path for line status, not a convenience. Statuses
+ * used to reach us through a Firestore onSnapshot listener; that listener was
+ * removed because it billed a document read for every change on every instance,
+ * forever. Without this endpoint the backend only learns of a change when it
+ * asks TfL itself, which is gated to once per mode per 60s — a fallback, not
+ * a liveness path.
+ *
+ * Writes through DataCacheService.setLineStatus, NEVER LineStatusStreamHub
+ * directly: that method owns ordering and is the single point every producer
+ * shares, so bypassing it would let the cache and the stream disagree.
+ */
+router.post('/line-status-updates', guard, (req: Request, res: Response) => {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return res.status(400).json({ error: 'Expected an object of lineId -> status' });
+    }
+
+    let lines = 0;
+    let delivered = 0;
+    let skipped = 0;
+
+    for (const [key, status] of Object.entries(body)) {
+        if (!status || typeof status !== 'object') continue;
+
+        // Returns -1 when nothing was sent: either a newer status is already
+        // held (a retried or delayed POST) or the payload is identical to the
+        // last one broadcast. Both mean "do not count this as delivered".
+        const sent = DataCacheService.setLineStatus(key, status);
+        if (sent < 0) { skipped++; continue; }
+
+        lines++;
+        delivered += sent;
+    }
+
+    return res.json({ lines, delivered, skipped });
+});
+
+/**
  * Liveness + fan-out visibility for ops. Loopback+secret gated like the rest.
  * `StationStreamHub.stats()` already embeds the cache stats under `cache`;
  * `prefetch` surfaces the cold-subscribe limiters, where a climbing
@@ -106,7 +152,11 @@ router.post('/station-updates', guard, (req: Request, res: Response) => {
  * `droppedQueueFull` means TfL is the bottleneck.
  */
 router.get('/stream-stats', guard, (_req: Request, res: Response) => {
-    return res.json({ ...StationStreamHub.stats(), prefetch: StreamPrefetch.stats() });
+    return res.json({
+        ...StationStreamHub.stats(),
+        prefetch: StreamPrefetch.stats(),
+        lines: LineStatusStreamHub.stats(),
+    });
 });
 
 export default router;
