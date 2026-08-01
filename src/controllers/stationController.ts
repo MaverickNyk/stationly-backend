@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { TflApiClient } from '../client/TflApiClient';
+import { TflApiClient, UnknownStationError } from '../client/TflApiClient';
 import { SubscriptionService } from '../services/subscriptionService';
 import { Station, StationPredictionResponse, LinePredictions, DirectionPredictions } from '../models';
 import { DataCacheService } from '../services/dataCacheService';
@@ -91,12 +91,35 @@ export class StationController {
             const predictions = await StationController.fetchPredictions(naptanId, skipRefresh === 'true');
             return res.json(predictions);
         } catch (error) {
+            // A bad id is the caller's problem, not ours — 404 it rather than
+            // returning 200 with an empty board named "Unknown Station", which
+            // is indistinguishable from a real station outside service hours.
+            // Nothing was cached, because the throw happened before broadcast().
+            if (error instanceof UnknownStationError) {
+                return res.status(404).json({
+                    error: "Station not found",
+                    message: `TfL does not recognise naptanId '${naptanId}'.`,
+                    naptanId,
+                });
+            }
             console.error(`Error fetching predictions for ${naptanId}:`, error);
             return res.status(500).json({ error: "Failed to fetch predictions" });
         }
     }
 
-    private static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
+    /**
+     * Cache-then-TfL tiering for a single station. Public because the WebSocket
+     * stream calls it directly to warm a cold station on subscribe — sharing
+     * this method (rather than forking the logic) is what makes a stream
+     * prefetch and a concurrent REST request collapse into ONE TfL call.
+     */
+    static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
+        // Tier 0 — the negative cache. An id TfL 404'd in the last few minutes
+        // is refused from memory. Without this, every repeat of a dead id is a
+        // fresh TfL call — the old fake-200 entry used to absorb them by
+        // accident. Checked before skipRefresh so a dead id 404s even there.
+        if (PredictionCache.isUnknown(naptanId)) throw new UnknownStationError(naptanId);
+
         // Tier 1 — the SHARED prediction cache. Populated both by our own TfL
         // fetches below AND by the Syncer's pushes (which already pull every
         // subscribed station every ~30s for the FCM/stream fan-out). That's the
@@ -126,10 +149,17 @@ export class StationController {
         // station share ONE TfL call instead of each starting their own. That
         // matters precisely when traffic spikes — same single-flight pattern as
         // LineController.inFlightStatusRefresh.
-        return PredictionCache.getOrFetch(
-            naptanId,
-            () => StationController.fetchPredictionsFromTfl(naptanId),
-        );
+        try {
+            return await PredictionCache.getOrFetch(
+                naptanId,
+                () => StationController.fetchPredictionsFromTfl(naptanId),
+            );
+        } catch (error) {
+            // Feed the negative cache so the next request stops at tier 0.
+            // Marked here, not in TflApiClient — the client stays cache-unaware.
+            if (error instanceof UnknownStationError) PredictionCache.markUnknown(naptanId);
+            throw error;
+        }
     }
 
     private static async fetchPredictionsFromTfl(naptanId: string): Promise<StationPredictionResponse> {
@@ -139,6 +169,13 @@ export class StationController {
         //    falls back to them. Not awaited here: board sources overlap
         //    their own board calls with it.
         const arrivalsPromise = TflApiClient.getArrivalsForStation(naptanId);
+        // This promise can now REJECT (UnknownStationError) rather than always
+        // resolving to []. It is created here but not awaited until after
+        // buildStationPredictions, and not every source awaits it on every path
+        // — so without a handler attached at creation, a rejection in that gap
+        // surfaces as an unhandled rejection. This does not swallow it: the
+        // `await arrivalsPromise` below still throws.
+        arrivalsPromise.catch(() => { });
 
         // 2. One source per station, picked from its locally-stored mode set:
         //    pure elizabeth-line/overground stations get the rail-style

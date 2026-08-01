@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { StationStreamHub } from '../services/stationStreamHub';
+import { StreamPrefetch } from '../services/streamPrefetch';
 
 /**
  * Machine-to-machine ingest from the StationlySyncer (same host).
@@ -99,10 +100,13 @@ router.post('/station-updates', guard, (req: Request, res: Response) => {
 
 /**
  * Liveness + fan-out visibility for ops. Loopback+secret gated like the rest.
- * `StationStreamHub.stats()` already embeds the cache stats under `cache`.
+ * `StationStreamHub.stats()` already embeds the cache stats under `cache`;
+ * `prefetch` surfaces the cold-subscribe limiters, where a climbing
+ * `droppedUnknown` means a client is asking for junk station ids and a climbing
+ * `droppedQueueFull` means TfL is the bottleneck.
  */
 router.get('/stream-stats', guard, (_req: Request, res: Response) => {
-    return res.json(StationStreamHub.stats());
+    return res.json({ ...StationStreamHub.stats(), prefetch: StreamPrefetch.stats() });
 });
 
 export default router;

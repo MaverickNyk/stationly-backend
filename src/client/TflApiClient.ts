@@ -28,6 +28,21 @@ tflClient.interceptors.request.use(async (config) => {
     return config;
 });
 
+/**
+ * TfL does not recognise this StopPoint id.
+ *
+ * Deliberately distinct from every other TfL failure: a 404 is permanent and
+ * caused by the caller's id, while a 500/timeout/429 is transient and ours to
+ * absorb. Conflating the two would make a TfL outage start 404ing perfectly
+ * real stations, so only the 404 is ever turned into this.
+ */
+export class UnknownStationError extends Error {
+    constructor(public readonly naptanId: string) {
+        super(`TfL does not recognise station '${naptanId}'`);
+        this.name = 'UnknownStationError';
+    }
+}
+
 export class TflApiClient {
     /**
      * Get Transport Modes from TfL Meta API
@@ -88,7 +103,15 @@ export class TflApiClient {
             const response = await tflClient.get(`/StopPoint/${naptanId}/Arrivals`);
             return response.data || [];
         } catch (error: any) {
-            // Log warning but return empty list - avoids 500ing on invalid IDs
+            // TfL's authoritative "no such StopPoint" (verified: a malformed id
+            // returns 404, a real one 200). Propagated so callers can answer 404
+            // instead of manufacturing an empty board and caching it under a
+            // made-up name — which is what silently swallowing this used to do.
+            if (error?.response?.status === 404) throw new UnknownStationError(naptanId);
+
+            // Everything else stays tolerant, as before: an outage, timeout or
+            // rate-limit must degrade to an empty board rather than turn every
+            // station in the network into a 404.
             console.warn(`[TflApi] Failed to fetch arrivals for ${naptanId}: ${error.message}`);
             return [];
         }

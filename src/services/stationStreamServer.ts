@@ -2,6 +2,7 @@ import { Server as HttpServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { auth } from '../config/firebase';
 import { StationStreamHub } from './stationStreamHub';
+import { StreamPrefetch } from './streamPrefetch';
 
 /**
  * WebSocket endpoint that streams live departure updates to foreground clients.
@@ -19,9 +20,16 @@ import { StationStreamHub } from './stationStreamHub';
  *   → {"action":"auth","token":"<firebase id token>"}
  *   ← {"type":"ready"}
  *   → {"action":"subscribe","stations":["940GZZDLTWG"]}
- *   ← {"type":"snapshot","station":"940GZZDLTWG","payload":{…}}   (immediate)
+ *   ← {"type":"snapshot","station":"940GZZDLTWG","payload":{…}}   (immediate, if cached)
  *   ← {"type":"update","station":"940GZZDLTWG","payload":{…}}     (on change)
  *   → {"action":"unsubscribe","stations":[…]}
+ *
+ * A `snapshot` is only sent when the cache already holds the station. A cold
+ * one is fetched from TfL on demand and arrives as an `update` instead (it
+ * reaches the client through the normal broadcast), so clients must paint on
+ * both and never block waiting for a `snapshot`. Cold subscribes that will not
+ * produce data are reported as `unknown_station`, `prefetch_throttled` or
+ * `prefetch_failed` — none of which close the socket. See StreamPrefetch.
  */
 
 /** Auth must arrive within this window or the socket is closed. */
@@ -115,11 +123,20 @@ export function attachStationStream(server: HttpServer, path = '/api/v1/stream')
                 // rather than waiting up to a Syncer cycle for the next change.
                 // snapshotFrame returns undefined when the cache holds nothing
                 // for a station, which is the only presence test we need.
+                const cold: string[] = [];
                 for (const naptanId of subscribed) {
                     const frame = StationStreamHub.snapshotFrame(naptanId);
-                    if (frame && ws.readyState === WebSocket.OPEN) {
-                        try { ws.send(frame); } catch { break; /* closed mid-write; cleanup runs on 'close' */ }
-                    }
+                    if (!frame) { cold.push(naptanId); continue; }
+                    if (ws.readyState !== WebSocket.OPEN) break;
+                    try { ws.send(frame); } catch { break; /* closed mid-write; cleanup runs on 'close' */ }
+                }
+                // Nothing cached — fetch from TfL so the first subscriber to a
+                // station the Syncer doesn't poll isn't left with a blank
+                // board. Skipped when the socket died mid-flush above: the
+                // fetch's only purpose is delivering to this socket. See
+                // prefetchColdStations for why success sends nothing here.
+                if (cold.length && ws.readyState === WebSocket.OPEN) {
+                    prefetchColdStations(ws, cold);
                 }
                 // Tell the client what it did NOT get. Silently dropping these
                 // would leave it believing it's subscribed, watching a board
@@ -158,6 +175,62 @@ export function attachStationStream(server: HttpServer, path = '/api/v1/stream')
 
     console.log(`WS: 🔌 Station stream listening on ${path}`);
     return wss;
+}
+
+/**
+ * Fetch stations the cache had nothing for, so a first subscriber gets data.
+ *
+ * Nothing is sent on success — deliberately. fetchPredictions ends in
+ * fetchPredictionsFromTfl, whose broadcast() writes an `update` frame to every
+ * socket in the station's room, and subscribe() put this socket in those rooms
+ * before we were called. Sending here too would deliver the payload twice.
+ *
+ * Every refusal IS reported, though (same reasoning as subscription_limit: a
+ * client watching a board that never paints, with nothing to explain it, is
+ * the worst outcome), with codes split by what the client should do —
+ * `unknown_station` is permanent and drops the subscription, the two
+ * `prefetch_*` codes are transient and keep it.
+ */
+function prefetchColdStations(ws: WebSocket, cold: string[]): void {
+    const { unknown, throttled } = StreamPrefetch.request(ws, cold, (naptanId, permanent) => {
+        // Fires per station only when its fetch failed. `permanent` is a TfL
+        // 404 on an id our local table still lists (retired or renamed
+        // upstream) — treat it exactly like a locally-rejected id.
+        if (permanent) return dropUnknownStations(ws, [naptanId]);
+        send(ws, {
+            type: 'error',
+            code: 'prefetch_failed',
+            message: 'Could not load initial data; updates will still arrive.',
+            stations: [naptanId],
+        });
+    });
+
+    if (unknown.length) dropUnknownStations(ws, unknown);
+    if (throttled.length) {
+        send(ws, {
+            type: 'error',
+            code: 'prefetch_throttled',
+            message: 'Too many initial loads; updates will still arrive.',
+            stations: throttled,
+        });
+    }
+}
+
+/**
+ * Cancel subscriptions to dead ids and say so. subscribe() necessarily ran
+ * before anything could know an id was junk, so without this the socket keeps
+ * an active subscription to a station that can never deliver — holding one of
+ * its 25 slots for the connection's lifetime and stranding a room in the
+ * routing table. A client looping junk ids would exhaust its own slots.
+ */
+function dropUnknownStations(ws: WebSocket, naptanIds: string[]): void {
+    StationStreamHub.unsubscribe(ws, naptanIds);
+    send(ws, {
+        type: 'error',
+        code: 'unknown_station',
+        message: `Station(s) not recognised: ${naptanIds.join(', ')}`,
+        stations: naptanIds,
+    });
 }
 
 function send(ws: WebSocket, obj: unknown): void {

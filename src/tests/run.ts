@@ -16,11 +16,21 @@
  * Nothing here imports stationStreamServer: that pulls in config/firebase, which
  * initialises the Admin SDK and needs real credentials. The hub is where the
  * logic worth testing lives; the server is thin protocol glue over it.
+ *
+ * StreamPrefetch is the exception — it reaches config/firebase transitively via
+ * DataCacheService and StationController. That turns out to be safe: the Admin
+ * SDK's initializeApp() and firestore() are lazy, so nothing connects or
+ * authenticates at import time. Both of its edges are stubbed below, so no test
+ * here touches Firestore, SQLite or TfL.
  */
 import assert from 'assert';
 import type { WebSocket } from 'ws';
 import { PredictionCache } from '../services/predictionCache';
 import { StationStreamHub } from '../services/stationStreamHub';
+import { StreamPrefetch } from '../services/streamPrefetch';
+import { DataCacheService } from '../services/dataCacheService';
+import { StationController } from '../controllers/stationController';
+import { TflApiClient, UnknownStationError } from '../client/TflApiClient';
 import { StationPredictionResponse } from '../models';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -41,6 +51,7 @@ async function main(): Promise<void> {
             // presented before it was fixed.
             PredictionCache.reset();
             StationStreamHub.closeAll();
+            StreamPrefetch.reset();
             await fn();
             passed++;
             console.log(`  ✓ ${name}`);
@@ -116,6 +127,26 @@ test('an older lut is rejected; a newer one is accepted', () => {
     assert.strictEqual(PredictionCache.set('X', payload('X', ISO_NEWER), 'syncer'), true);
     assert.strictEqual(PredictionCache.stats().rejectedOutOfOrder, 1);
     assert.strictEqual(PredictionCache.getLatest('X')?.lut, ISO_NEWER);
+});
+
+test('re-storing the identical payload counts as one write, not two', () => {
+    // The REST path stores the same object twice — once via broadcast() inside
+    // fetchPredictionsFromTfl, once when getOrFetch resolves — which made
+    // writes.rest read 2x reality.
+    const p = payload('A', ISO_NOW);
+    assert.strictEqual(PredictionCache.set('A', p, 'rest'), true);
+    assert.strictEqual(PredictionCache.set('A', p, 'rest'), true, 'must still report accepted');
+    assert.strictEqual(PredictionCache.stats().writes.rest, 1, 'one fetch is one write');
+});
+
+test('a TfL-404 is remembered, counted, and expires', () => {
+    PredictionCache.markUnknown('DEADID');
+    assert.strictEqual(PredictionCache.isUnknown('DEADID'), true);
+    assert.strictEqual(PredictionCache.stats().negativeHits, 1);
+
+    PredictionCache.markUnknown('GONE', -1); // TTL already elapsed
+    assert.strictEqual(PredictionCache.isUnknown('GONE'), false, 'expired entries drop on read');
+    assert.strictEqual(PredictionCache.stats().unknownIds, 1);
 });
 
 test('an unparseable lut never blocks a write', () => {
@@ -366,6 +397,176 @@ test('a pong clears the strike so the socket survives', () => {
 
     assert.strictEqual(sock.closed, false);
     StationStreamHub.unregister(sock);
+});
+
+// ─── negative cache, end to end ──────────────────────────────────────────────
+
+test('a dead id costs ONE TfL call; repeats are refused from memory', async () => {
+    // Stub the one TfL edge an unknown id reaches. Permanent for the rest of
+    // the run — no later test calls TfL (StreamPrefetch tests stub the whole
+    // controller anyway).
+    let calls = 0;
+    (TflApiClient as any).getArrivalsForStation = async (id: string) => {
+        calls++;
+        throw new UnknownStationError(id);
+    };
+
+    await assert.rejects(StationController.fetchPredictions('910GNOWHERE'), UnknownStationError);
+    assert.strictEqual(PredictionCache.isUnknown('910GNOWHERE'), true, 'the 404 must be remembered');
+
+    await assert.rejects(StationController.fetchPredictions('910GNOWHERE'), UnknownStationError);
+    assert.strictEqual(calls, 1, 'the repeat must be served by the negative cache, not TfL');
+});
+
+// ─── StreamPrefetch ──────────────────────────────────────────────────────────
+
+/**
+ * Stub both edges of the prefetch path: station existence (normally the
+ * SQLite-backed station cache) and the fetch itself (normally a live TfL call).
+ *
+ * Both are statics on imported classes, so assigning to them is seen by
+ * StreamPrefetch without needing any injection seam in production code. Not
+ * restored afterwards — these are the only tests that touch either class, and
+ * they run last.
+ *
+ * Returns the array of naptanIds the fetcher was actually called with, which is
+ * the assertion that matters: everything here is ultimately about what does and
+ * does not reach TfL.
+ */
+function stubPrefetch(opts: {
+    known?: (naptanId: string) => boolean;
+    fetch?: (naptanId: string) => Promise<StationPredictionResponse>;
+} = {}): string[] {
+    const calls: string[] = [];
+    (DataCacheService as any).getStationById = (id: string) =>
+        (opts.known ? opts.known(id) : true) ? { id } : undefined;
+    (StationController as any).fetchPredictions = (id: string) => {
+        calls.push(id);
+        return opts.fetch ? opts.fetch(id) : Promise.resolve(payload(id, ISO_NOW));
+    };
+    return calls;
+}
+
+const ids = (n: number, prefix = 'S') => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+
+test('a naptanId absent from the local station table never reaches TfL', () => {
+    const calls = stubPrefetch({ known: (id) => id !== 'ASDF1' });
+    const sock = fakeSocket();
+
+    const { unknown } = StreamPrefetch.request(sock, ['940GZZDLTWG', 'ASDF1'], () => { });
+
+    assert.deepStrictEqual(unknown, ['ASDF1'], 'the client must be told which id was junk');
+    assert.deepStrictEqual(calls, ['940GZZDLTWG'], 'a junk id must not become an outbound TfL call');
+});
+
+test('a socket cannot exceed its prefetch budget however it splits the requests', () => {
+    const calls = stubPrefetch({ fetch: () => new Promise(() => { }) }); // never settles
+    const sock = fakeSocket();
+
+    // 25 + 25 across two subscribes — under the per-subscribe cap both times,
+    // which is exactly the loop the concurrent subscription limit cannot catch.
+    const first = StreamPrefetch.request(sock, ids(25, 'A'), () => { });
+    const second = StreamPrefetch.request(sock, ids(25, 'B'), () => { });
+
+    assert.strictEqual(first.throttled.length, 0, 'the first 25 are within budget');
+    assert.strictEqual(second.throttled.length, 10, '40 allowed per window, so 10 of the next 25 are refused');
+    assert.strictEqual(calls.length + StreamPrefetch.stats().queued, 40, 'exactly the budget may be admitted');
+});
+
+test('a separate socket gets its own budget', () => {
+    stubPrefetch({ fetch: () => new Promise(() => { }) });
+    const greedy = fakeSocket();
+    const innocent = fakeSocket();
+
+    StreamPrefetch.request(greedy, ids(50, 'A'), () => { });
+    const { throttled } = StreamPrefetch.request(innocent, ids(5, 'B'), () => { });
+
+    assert.strictEqual(throttled.length, 0, 'one abusive socket must not throttle everyone else');
+});
+
+test('outbound TfL fetches are capped, and the queue drains as slots free', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls = stubPrefetch({ fetch: async (id) => { await gate; return payload(id, ISO_NOW); } });
+    const sock = fakeSocket();
+
+    StreamPrefetch.request(sock, ids(20), () => { });
+
+    assert.strictEqual(calls.length, 4, 'must not fire all 20 at TfL at once');
+    assert.strictEqual(StreamPrefetch.stats().active, 4);
+    assert.strictEqual(StreamPrefetch.stats().queued, 16);
+
+    release();
+    for (let i = 0; i < 200 && StreamPrefetch.stats().queued > 0; i++) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.strictEqual(calls.length, 20, 'every queued station must eventually be fetched');
+});
+
+test('two sockets cold on the same station share ONE TfL fetch', () => {
+    const calls = stubPrefetch({ fetch: () => new Promise(() => { }) });
+    const a = fakeSocket();
+    const b = fakeSocket();
+
+    StreamPrefetch.request(a, ['940GZZDLTWG'], () => { });
+    StreamPrefetch.request(b, ['940GZZDLTWG'], () => { });
+
+    // The second socket is still served — it is in the room, so the in-flight
+    // fetch's broadcast reaches it — but it must not cost a second slot.
+    assert.deepStrictEqual(calls, ['940GZZDLTWG']);
+});
+
+test('a shared in-flight failure notifies EVERY waiting socket', async () => {
+    // Regression guard: with a bare pending Set only the FIRST requester's
+    // callback survived, so a TfL-404 on a shared cold station left every later
+    // subscriber holding a dead subscription with no unknown_station frame to
+    // explain it.
+    stubPrefetch({ fetch: async (id) => { throw new UnknownStationError(id); } });
+    const a = fakeSocket();
+    const b = fakeSocket();
+    const notified: string[] = [];
+
+    StreamPrefetch.request(a, ['940GZZDLTWG'], (_id, permanent) => notified.push(`a:${permanent}`));
+    StreamPrefetch.request(b, ['940GZZDLTWG'], (_id, permanent) => notified.push(`b:${permanent}`));
+
+    for (let i = 0; i < 50 && notified.length < 2; i++) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.deepStrictEqual(notified.sort(), ['a:true', 'b:true']);
+});
+
+test('a failed fetch notifies the requesting socket rather than dying silently', async () => {
+    stubPrefetch({ fetch: async () => { throw new Error('TfL 503'); } });
+    const sock = fakeSocket();
+    const notified: Array<[string, boolean]> = [];
+
+    StreamPrefetch.request(sock, ['940GZZDLTWG'], (id, permanent) => notified.push([id, permanent]));
+
+    for (let i = 0; i < 50 && notified.length === 0; i++) {
+        await new Promise((r) => setImmediate(r));
+    }
+    // A 503 is the service, not the id: reported as TRANSIENT so the client
+    // keeps the subscription and the board fills on the next push.
+    assert.deepStrictEqual(notified, [['940GZZDLTWG', false]]);
+    assert.strictEqual(StreamPrefetch.stats().failed, 1);
+    assert.strictEqual(StreamPrefetch.stats().rejectedByTfl, 0);
+});
+
+test('a station TfL 404s is reported as permanent, not as a transient failure', async () => {
+    // The case the local table CANNOT catch: an id we still list, but which TfL
+    // has retired or renamed. Miscategorising it would leave the client retrying
+    // a dead station forever.
+    stubPrefetch({ fetch: async (id) => { throw new UnknownStationError(id); } });
+    const sock = fakeSocket();
+    const notified: Array<[string, boolean]> = [];
+
+    StreamPrefetch.request(sock, ['940GZZDLTWG'], (id, permanent) => notified.push([id, permanent]));
+
+    for (let i = 0; i < 50 && notified.length === 0; i++) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.deepStrictEqual(notified, [['940GZZDLTWG', true]]);
+    assert.strictEqual(StreamPrefetch.stats().rejectedByTfl, 1);
 });
 
 main();

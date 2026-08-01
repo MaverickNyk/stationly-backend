@@ -74,6 +74,34 @@ The cache is the centre of gravity: **both producers write to it, both consumers
 ← {"type":"error","code":"subscription_limit","stations":[…]}
 ```
 
+### Cold subscribes
+
+A `snapshot` arrives immediately only when the cache already holds the station — normally true, because the Syncer pushes every subscribed station each cycle. For a station nobody is subscribed to (so the Syncer never polls it), the cache is empty and the server fetches from TfL on demand, exactly as the REST endpoint does. That result arrives as a normal **`update`**, not a `snapshot` — so a client must paint on both frame types, and must not wait for a `snapshot` that may never come.
+
+Three error codes report a cold subscribe that will not produce data. None of them close the socket, and none affect the subscription itself — live updates still flow if the station later changes:
+
+| code | meaning | client action |
+|---|---|---|
+| `unknown_station` | the id is not in our station table, **or** TfL 404s it | permanent — the subscription is dropped server-side; stop asking |
+| `prefetch_throttled` | over the per-socket budget, or the server is shedding load | transient — the next Syncer push fills the board |
+| `prefetch_failed` | TfL errored (5xx, timeout, rate-limit) | transient — retry is safe |
+
+`unknown_station` is the only one that **cancels the subscription**. It is raised in two places: cheaply, before any network call, for an id missing from the local station table; and after the fetch, for an id we do list but TfL has since retired or renamed. Both drop the subscription so it stops consuming one of the 25 slots.
+
+Limits are per socket: 25 concurrent subscriptions, and 40 cold fetches per 60s. A normal cold app open spends ~25; browsing to an already-cached board spends none.
+
+### REST: unknown stations
+
+`GET /stations/{naptanId}/predictions` now returns **404** when TfL does not recognise the id, instead of 200 with an empty board named "Unknown Station":
+
+```json
+{ "error": "Station not found",
+  "message": "TfL does not recognise naptanId '940GZZLUACYsdfsdfd'.",
+  "naptanId": "940GZZLUACYsdfsdfd" }
+```
+
+Only a TfL **404** produces this. A 5xx, timeout or rate-limit still degrades to an empty board exactly as before, so an outage never turns real stations into 404s. No board data is cached on this path — previously a junk id cached a fake entry that the stream would then serve as a `snapshot`. Instead the 404 itself is remembered for ~5 minutes (a shared negative cache), so repeats — REST or stream subscribe — are refused from memory without another TfL call.
+
 Auth is the **first frame**, not a header — browsers can't set headers on a WS handshake, and a query param would land in `morgan` access logs. It must arrive within 10s (close `4001`); a bad token closes `4003`. `decodedToken.uid` is authoritative; a uid in the frame is never trusted.
 
 Payload is the same `{id, name, lut, lines}` shape as the REST endpoint and the FCM payload, so a KMP client can reuse `FcmPayload` + `SyncPredictionsUseCase` unchanged.
