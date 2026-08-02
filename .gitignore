@@ -57,3 +57,6 @@ graphify-out/
 
 # Staging deploy scripts
 staging_*.sh
+
+# Local dev/debug scripts
+.scripts/
