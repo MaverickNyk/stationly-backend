@@ -52,6 +52,7 @@ jobs:
           FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           STATIONLY_ADMIN_KEY: ${{ secrets.STATIONLY_ADMIN_KEY }}
+          LIVESTREAM_INGEST_SECRET: ${{ secrets.LIVESTREAM_INGEST_SECRET }}
         run: |
           cp .env.defaults .env.prod
           while IFS='=' read -r key value || [[ -n "$key" ]]; do

@@ -71,12 +71,9 @@ export class LocalDbService {
                 id TEXT PRIMARY KEY,
                 raw_data TEXT
             )`,
-            `CREATE TABLE IF NOT EXISTS line_statuses (
-                id TEXT PRIMARY KEY,
-                mode TEXT,
-                lastUpdatedTime TEXT,
-                raw_data TEXT
-            )`,
+            // `line_statuses` removed: statuses are memory-only now, fed by the
+            // Syncer's push. Any table left on an existing box is simply never
+            // read or written again — same treatment as the old `station_preds`.
             // Admin notification send-log — LOCAL ONLY, deliberately NOT in
             // Firestore. An audit trail of admin pushes costs zero Firestore
             // reads/writes by living here on disk alongside the replication
@@ -273,15 +270,6 @@ export class LocalDbService {
     static async upsertRoute(id: string, data: any): Promise<void> {
         await this.run('INSERT OR REPLACE INTO routes (id, raw_data) VALUES (?, ?)', [
             id,
-            JSON.stringify(data)
-        ]);
-    }
-
-    static async upsertLineStatus(id: string, data: any): Promise<void> {
-        await this.run('INSERT OR REPLACE INTO line_statuses (id, mode, lastUpdatedTime, raw_data) VALUES (?, ?, ?, ?)', [
-            id,
-            data.mode || '',
-            data.lastUpdatedTime || '',
             JSON.stringify(data)
         ]);
     }
