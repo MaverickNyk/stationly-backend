@@ -16,7 +16,6 @@ import { getWebUrl, getBaseUrl } from './utils/formatters';
 import internalRoutes from './routes/internalRoutes';
 import { attachStationStream } from './services/stationStreamServer';
 import { StationStreamHub } from './services/stationStreamHub';
-import { LineStatusStreamHub } from './services/lineStatusStreamHub';
 import { PredictionCache } from './services/predictionCache';
 
 dotenv.config();
@@ -831,9 +830,6 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         shuttingDown = true;
         console.log(`\n[SHUTDOWN] ${signal} received — closing stream connections...`);
         StationStreamHub.closeAll();
-        // Sockets are closed by the line above; this just clears line routing
-        // state so nothing survives into a reload.
-        LineStatusStreamHub.closeAll();
         server.close(() => process.exit(0));
         // PM2's default kill_timeout is short; don't let a lingering socket
         // hold the process open past it.

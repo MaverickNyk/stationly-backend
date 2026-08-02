@@ -52,12 +52,6 @@ export interface PredictionCacheStats {
     evicted: number;
     /** Concurrent misses that awaited an in-flight fetch instead of starting one. */
     coalesced: number;
-
-    // ── Negative cache (TfL-confirmed 404s) ──────────────────────────────
-    /** Ids currently remembered as unknown to TfL. */
-    unknownIds: number;
-    /** Requests refused from that memory — each one a TfL call avoided. */
-    negativeHits: number;
 }
 
 export interface PredictionCacheOptions {

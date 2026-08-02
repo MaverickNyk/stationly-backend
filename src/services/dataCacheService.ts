@@ -1,7 +1,6 @@
 import { db } from '../config/firebase';
 import { Station, TransportMode } from '../models';
 import { LocalDbService } from './localDbService';
-import { LineStatusStreamHub, LineStatusSource } from './lineStatusStreamHub';
 import { AuthMiddleware } from '../middleware/authMiddleware';
 import { SubscriptionService } from './subscriptionService';
 import { nowMs, toEpochMs } from '../utils/timestamps';
@@ -80,11 +79,13 @@ export class DataCacheService {
             this.routes.set(r.id, data);
         });
 
-        // Line statuses are deliberately NOT loaded here: they are memory-only
-        // and arrive from the Syncer's push (or the TfL fallback) after boot.
-        // Nothing persists them, so there is nothing to read back.
+        const localStatuses = await LocalDbService.all<{ id: string, raw_data: string }>('SELECT id, raw_data FROM line_statuses');
+        localStatuses.forEach(s => {
+            const data = JSON.parse(s.raw_data);
+            this.lineStatuses.set(s.id, data);
+        });
 
-        console.log(`CACHE: 📁 Load from SQLite success. Modes: ${this.modes.size}, Stations: ${this.stations.size}, Lines: ${this.lines.size}, Routes: ${this.routes.size}`);
+        console.log(`CACHE: 📁 Load from SQLite success. Modes: ${this.modes.size}, Stations: ${this.stations.size}, Lines: ${this.lines.size}, Routes: ${this.routes.size}, Statuses: ${this.lineStatuses.size}`);
     }
 
     /**
@@ -119,17 +120,11 @@ export class DataCacheService {
                 apply: async (id, data) => { const m = { ...data, id: data.naptanId || id }; this.stations.set(id, m as Station); await LocalDbService.upsertStation(id, m); },
                 remove: async (id) => { this.stations.delete(id); await LocalDbService.run('DELETE FROM stations WHERE id = ?', [id]); },
             },
-            // NOTE: `lineStatuses` is deliberately ABSENT from this list.
-            //
-            // It used to be replicated like the others, which meant a boot
-            // deltaSync read plus a live onSnapshot listener billing a Firestore
-            // document read for every status change, on every instance, forever.
-            // Statuses now live in memory only, fed by TfL and by the Syncer
-            // pushing to POST /internal/line-status-updates — the same shape as
-            // station predictions, which have never touched Firestore.
-            //
-            // Re-adding it here would restore the read cost AND double-deliver
-            // every update: the ingest path already broadcasts.
+            {
+                name: 'lineStatuses',
+                apply: async (id, data) => { this.lineStatuses.set(id, data); await LocalDbService.upsertLineStatus(id, data); },
+                remove: async (id) => { this.lineStatuses.delete(id); await LocalDbService.run('DELETE FROM line_statuses WHERE id = ?', [id]); },
+            },
         ];
     }
 
@@ -515,37 +510,8 @@ export class DataCacheService {
         return all.filter(s => s.mode === mode);
     }
 
-    static getLineStatusById(id: string): any | undefined {
-        return this.lineStatuses.get(id);
-    }
-
-    /**
-     * The single write point for line statuses — the TfL refresh in
-     * LineController and the Syncer's ingest both land here. Broadcasting from
-     * this one place is what makes the live stream free: every producer fans
-     * out without knowing the stream exists.
-     *
-     * Returns the number of sockets written to, or **-1** when nothing was
-     * sent — either the payload was out-of-order or it was identical to the
-     * last one broadcast. Callers must test `< 0` explicitly; a bare
-     * truthiness check reads -1 as "delivered".
-     *
-     * Store first, then broadcast, so a subscriber can never receive a status
-     * newer than the cache a REST caller would be served in the same tick.
-     */
-    static setLineStatus(id: string, data: any, source: LineStatusSource = 'syncer'): number {
-        // Ordering guard, mirroring PredictionCache.set: a delayed or retried
-        // Syncer push must not overwrite a newer status we already hold. Only
-        // rejected when BOTH sides carry a comparable timestamp — an
-        // unparseable one must never block a write, or a producer that omits
-        // the field could never update the cache at all.
-        const existing = this.lineStatuses.get(id);
-        const incomingTs = toEpochMs(data?.lastUpdatedTime);
-        const heldTs = existing ? toEpochMs(existing.lastUpdatedTime) : null;
-        if (existing && heldTs != null && incomingTs != null && incomingTs < heldTs) return -1;
-
+    static setLineStatus(id: string, data: any): void {
         this.lineStatuses.set(id, data);
-        return LineStatusStreamHub.broadcast(id, data, source);
     }
 }
 

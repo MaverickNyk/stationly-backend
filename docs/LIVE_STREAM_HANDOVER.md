@@ -1,6 +1,6 @@
 # Live departure stream + shared prediction cache — handover
 
-**Status: stations deployed to staging and verified end-to-end (2026-07-31). Line status added 2026-08-01, not yet deployed.**
+**Status: deployed to staging and verified end-to-end (2026-07-31). Not committed.**
 
 **Reviewed 2026-07-31.** Fixes applied since the first cut: the `/internal` body
 limit (the stream would have stalled silently under load — §4), a double-auth
@@ -54,9 +54,7 @@ The cache is the centre of gravity: **both producers write to it, both consumers
 | `src/routes/internalRoutes.ts` | Syncer → backend ingest |
 | `src/server.ts` | `http.createServer` (was `app.listen`), mounts, graceful shutdown |
 | `.scripts/watch_stream.mjs` | Dev client — connects, authenticates, renders a live board |
-| `src/services/lineStatusStreamHub.ts` | Line-status routing — `lineId → Set<socket>`. Shares the station socket; owns no payloads |
-| `src/services/streamPrefetch.ts` | Cold-station TfL prefetch behind an existence gate, per-socket budget and a global concurrency cap |
-| `src/tests/run.ts` | `npm test` — 46 assertions, no test framework |
+| `src/tests/run.ts` | `npm test` — 27 assertions, no test framework |
 | `server-config/nginx.staging.conf` | The live staging nginx, verbatim. **Includes the stream block.** |
 | `StationlySyncer/.../service/LiveStreamPublisher.java` | Syncer-side dispatcher |
 
@@ -75,91 +73,6 @@ The cache is the centre of gravity: **both producers write to it, both consumers
 → {"action":"unsubscribe","stations":[…]}
 ← {"type":"error","code":"subscription_limit","stations":[…]}
 ```
-
-### Line status (second channel)
-
-Additive on the **same socket** — one connection, one auth, one keepalive. `stations` and `lines` may be sent in the same frame or separately; an absent field is left untouched, so existing station-only clients are unaffected.
-
-```json
-→ {"action":"subscribe","lines":["victoria","central"]}
-← {"type":"snapshot","line":"victoria","payload":{…}}   ← immediate, from cache
-← {"type":"update","line":"victoria","payload":{…}}     ← on each change
-→ {"action":"unsubscribe","lines":[…]}
-← {"type":"error","code":"unknown_line","lines":[…]}
-← {"type":"error","code":"subscription_limit","lines":[…]}
-```
-
-Line frames key on **`line`**, not `station`, and errors carry **`lines`** rather than `stations` — so a client can route by field without inspecting the code. Payload is the same `LineStatus` shape the REST endpoint returns. Limit is 30 lines per socket.
-
-Two behavioural differences from stations, both stemming from the cache underneath:
-
-- **A snapshot is usually available**, because the Syncer pushes on every poll. "Cold" means a genuine gap — a backend restart before the first push, or a line that has not changed since. There is no `PredictionCache` equivalent and none is needed; `DataCacheService.lineStatuses` is already the single store, and adding a second would give the same data two sources of truth.
-- **Warming is per mode, not per line.** TfL returns a whole mode per call, so subscribing to `victoria` warms every tube line at once, and eleven cold tube lines trigger **one** refresh. `LineController.ensureLineStatuses` caps a mode at one TfL call per 60s and single-flights concurrent callers, which is why the line path needs no `StreamPrefetch`-style budget or concurrency cap.
-
-**Zero Firestore, zero SQLite.** Line statuses were replicated from Firestore via a live `onSnapshot` listener, which billed a document read per change on every instance, forever. That listener, the boot delta sync, the Firestore write and the SQLite tier were all removed on both sides. Statuses are now memory-only, per process, exactly like predictions.
-
-Liveness therefore comes from **`POST /internal/line-status-updates`** — the Syncer's `LiveStreamPublisher` pushes changed statuses there each poll. The TfL refresh is only the fallback for a Syncer that is down or delayed. Fan-out hangs off `DataCacheService.setLineStatus`, the single write point both producers share; call that, never `LineStatusStreamHub.broadcast` directly, or the cache and the stream will disagree.
-
-Watch **`lines.writes.syncer`** at `/internal/stream-stats`. If the Syncer push breaks, the TfL fallback keeps the cache populated and nothing looks wrong while every client sits up to a minute stale — a flat `writes.syncer` is the only signal.
-
-### Cold subscribes
-
-A `snapshot` arrives immediately only when the cache already holds the station — normally true, because the Syncer pushes every subscribed station each cycle. For a station nobody is subscribed to (so the Syncer never polls it), the cache is empty and the server fetches from TfL on demand, exactly as the REST endpoint does. That result arrives as a normal **`update`**, not a `snapshot` — so a client must paint on both frame types, and must not wait for a `snapshot` that may never come.
-
-Three error codes report a cold subscribe that will not produce data. None of them close the socket, and none affect the subscription itself — live updates still flow if the station later changes:
-
-| code | meaning | client action |
-|---|---|---|
-| `unknown_station` | the id is not in our station table, **or** TfL 404s it | permanent — the subscription is dropped server-side; stop asking |
-| `prefetch_throttled` | over the per-socket budget, or the server is shedding load | transient — the next Syncer push fills the board |
-| `prefetch_failed` | TfL errored (5xx, timeout, rate-limit) | transient — retry is safe |
-
-`unknown_station` is the only one that **cancels the subscription**. It is raised in two places: cheaply, before any network call, for an id missing from the local station table; and after the fetch, for an id we do list but TfL has since retired or renamed. Both drop the subscription so it stops consuming one of the 25 slots.
-
-Limits are per socket: 25 concurrent subscriptions, and 40 cold fetches per 60s. A normal cold app open spends ~25; browsing to an already-cached board spends none.
-
-### Freshness windows (how long REST serves from memory)
-
-| | Window | Scope | Tunable |
-|---|---|---|---|
-| **Predictions** | **60s** (`freshForMs`) | per station | `PREDICTION_CACHE_FRESH_MS` |
-| Predictions — stream snapshot | any age | per station | — |
-| Predictions — retention | 10 min (`retainForMs`) | per station | `PREDICTION_CACHE_RETAIN_MS` |
-| Predictions — negative cache | 5 min | per TfL-404'd id | — |
-| **Line status** | **60s** (`LINE_STATUS_TTL_MS`) | per **mode** | `LINE_STATUS_TTL_MS` |
-| Line status — missing-line retry | 60s (`MISSING_LINE_RETRY_MS`) | per mode | — |
-
-The two differ in **scope**, not just duration. Predictions expire per entry: each station is independently 60s fresh, then refetched. Line status is a per-*mode* gate — the mode counts as fresh if `max(newest cached lastUpdatedTime, last TfL attempt)` is inside the window, so one recently-updated line keeps its whole mode from being refetched.
-
-That is why both the REST endpoint and the stream pass the specific line ids they need: a mode can be "fresh" yet missing the line actually being asked for, since the Syncer pushes only *changed* lines. Without that, an unchanged line returned nothing until the staleness gate tripped.
-
-The line-status window is a FALLBACK bound, not the liveness path — the Syncer pushes changes within a poll cycle, and every push counts as a verification. It only sets the worst case when the Syncer is down: one TfL call per mode per minute.
-
-### REST: unknown stations
-
-`GET /stations/{naptanId}/predictions` now returns **404** when TfL does not recognise the id, instead of 200 with an empty board named "Unknown Station":
-
-```json
-{ "error": "Station not found",
-  "message": "TfL does not recognise naptanId '940GZZLUACYsdfsdfd'.",
-  "naptanId": "940GZZLUACYsdfsdfd" }
-```
-
-### REST: TfL unreachable
-
-A TfL 5xx, timeout or rate-limit now returns **503**, not a 200 with an empty board:
-
-```json
-{ "error": "Upstream unavailable",
-  "message": "Could not reach TfL for this station. Please retry shortly.",
-  "naptanId": "940GZZLUOXC" }
-```
-
-An empty board is a **claim** — "no trains here" — and is indistinguishable from a genuinely quiet station at 3am. Worse, it used to be *cached with a fresh `lut`* (so it beat the ordering guard and overwrote good data) and *broadcast*, meaning one failed fetch asserted "no service" to every subscriber of that station for the next 60s. Nothing is written or broadcast on failure now; the previously-held board survives untouched, and streaming clients get `prefetch_failed` rather than a blanked board.
-
-`TflUnavailableError` is deliberately **never** added to the negative cache — that is for facts about an id, and an outage would otherwise blacklist every station it touched. Stations whose board comes from `ArrivalDepartures` (Elizabeth/overground) still serve normally when only the countdown-arrivals call fails.
-
-Only a TfL **404** produces this. A 5xx, timeout or rate-limit still degrades to an empty board exactly as before, so an outage never turns real stations into 404s. No board data is cached on this path — previously a junk id cached a fake entry that the stream would then serve as a `snapshot`. Instead the 404 itself is remembered for ~5 minutes (a shared negative cache), so repeats — REST or stream subscribe — are refused from memory without another TfL call.
 
 Auth is the **first frame**, not a header — browsers can't set headers on a WS handshake, and a query param would land in `morgan` access logs. It must arrive within 10s (close `4001`); a bad token closes `4003`. `decodedToken.uid` is authoritative; a uid in the frame is never trusted.
 
