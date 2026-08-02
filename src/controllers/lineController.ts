@@ -168,32 +168,7 @@ function getSeverityPriority(severity: number): number {
 
 export class LineController {
     // ── Line-status tier-4 (TfL) freshness control ──
-    /**
-     * How long a mode may go unverified before the TfL fallback re-asks.
-     *
-     * 60s. This is a FALLBACK bound, not the liveness path — the Syncer's push
-     * delivers changes within a poll cycle, and every push counts as a
-     * verification (see `newestData` below), so with a healthy Syncer this
-     * rarely fires at all. It only sets the worst case when the Syncer is down:
-     * one TfL call per mode per minute, ~5 modes, well inside TflApiClient's
-     * 210ms request spacing.
-     *
-     * Was 10 minutes, which was chosen to match the Syncer's Firestore
-     * replication cadence — a mechanism that no longer exists.
-     *
-     * Env-overridable at boot, mirroring PREDICTION_CACHE_FRESH_MS.
-     */
-    private static readonly LINE_STATUS_TTL_MS =
-        Number(process.env.LINE_STATUS_TTL_MS) > 0 ? Number(process.env.LINE_STATUS_TTL_MS) : 60 * 1000;
-    /**
-     * How often a mode may be re-asked because a SPECIFIC line is missing.
-     *
-     * Distinct from the TTL because it keys off `lastCheck` alone, not
-     * `max(newestData, lastCheck)`: a Syncer happily pushing OTHER lines in the
-     * mode keeps it "verified" and therefore not stale, while the line a client
-     * actually asked for is still absent.
-     */
-    private static readonly MISSING_LINE_RETRY_MS = 60 * 1000;
+    private static readonly LINE_STATUS_TTL_MS = 10 * 60 * 1000; // 10 min — matches the syncer's poll cadence
     /** Last time we hit TfL for a mode — gates re-fetching even when the data
      *  watermark is old but unchanged, so we don't TfL-poll on every request. */
     private static lastTflRefreshByMode: Map<string, number> = new Map();
@@ -201,70 +176,10 @@ export class LineController {
     private static inFlightStatusRefresh: Map<string, Promise<LineStatusResponse[]>> = new Map();
 
     /**
-     * Warm a mode's statuses if they are cold or stale, otherwise do nothing.
-     *
-     * The staleness gate lives here rather than at the call sites so REST and
-     * the WebSocket stream cannot drift apart on when TfL is worth asking —
-     * and, more importantly, so a stream subscribe inherits ALL the existing
-     * protection for free: single-flight per mode via `inFlightStatusRefresh`,
-     * plus `lastTflRefreshByMode`, which caps a mode at one TfL call per
-     * LINE_STATUS_TTL_MS no matter how many clients subscribe.
-     *
-     * That is why line status needs no StreamPrefetch equivalent. Predictions
-     * are fetched per station, so N cold stations meant N calls and had to be
-     * budgeted and capped; statuses are fetched per MODE, of which there are
-     * about ten, already rate-gated and already deduplicated.
-     *
-     * Never throws: a TfL failure leaves whatever is cached in place, which is
-     * the right outcome for both callers. It is REPORTED instead — the boolean
-     * says whether the mode is usable afterwards, so the stream can tell a
-     * client its board will stay blank rather than leaving it to guess. REST
-     * ignores it and serves whatever is cached.
-     */
-    static async ensureLineStatuses(mode: string, requiredLineIds: string[] = []): Promise<boolean> {
-        const cached = DataCacheService.getLineStatuses(mode);
-        const newestData = cached.length
-            ? Math.max(...cached.map((s: any) => toEpochMs(s.lastUpdatedTime) ?? 0))
-            : 0;
-        const lastCheck = LineController.lastTflRefreshByMode.get(mode) ?? 0;
-        const stale = (Date.now() - Math.max(newestData, lastCheck)) > LineController.LINE_STATUS_TTL_MS;
-
-        // A line we specifically need is absent, which neither check above
-        // catches. The cache now fills from the Syncer's pushes, and those
-        // carry only CHANGED lines — so after a backend restart it is routinely
-        // non-empty yet missing most of the mode: "fresh" by timestamp, but
-        // incomplete. Left to the staleness gate, a subscriber to an unchanged
-        // line would wait up to LINE_STATUS_TTL_MS for its first paint.
-        //
-        // Only the stream passes ids; REST asks for a whole mode and is content
-        // to let the staleness gate fill any gap.
-        const missing = requiredLineIds.some((id) => !DataCacheService.getLineStatusById(id));
-        // Floor, so a line TfL simply never reports cannot turn every subscribe
-        // into a fetch. One attempt a minute is enough to self-heal.
-        const mayRetryMissing = (Date.now() - lastCheck) > LineController.MISSING_LINE_RETRY_MS;
-
-        if (cached.length !== 0 && !stale && !(missing && mayRetryMissing)) return true;
-
-        const why = cached.length === 0 ? 'cold'
-            : (missing ? 'missing a requested line' : `stale (>${LineController.LINE_STATUS_TTL_MS / 1000}s)`);
-        console.log(`STATUS: ⏳ ${mode} statuses ${why} — refreshing from TfL...`);
-        try {
-            await LineController.refreshLineStatusesFromTfl(mode);
-            return true;
-        } catch (tflErr: any) {
-            console.warn(`STATUS: ⚠️ TfL refresh failed for ${mode}: ${tflErr.message}`);
-            return false;
-        }
-    }
-
-    /**
      * Tier-4 line-status refresh: fetch live from TfL, change-detect against the
-     * current cache, store ONLY changed statuses, and return the mode's
+     * current cache, persist + write ONLY changed statuses to Firestore (master)
+     * so they replicate to the syncer + other instances, and return the mode's
      * statuses. Single-flighted per mode.
-     *
-     * This is the FALLBACK path, not the live one. Liveness comes from the
-     * Syncer pushing to POST /internal/line-status-updates; this covers a cold
-     * cache and a Syncer that is down or delayed.
      */
     private static async refreshLineStatusesFromTfl(modeStr: string): Promise<LineStatusResponse[]> {
         const inFlight = LineController.inFlightStatusRefresh.get(modeStr);
@@ -313,18 +228,18 @@ export class LineController {
                     mode: ls.modeName,
                     lastUpdatedTime: nowTs,
                 };
-                DataCacheService.setLineStatus(ls.id, status, 'tfl');
+                DataCacheService.setLineStatus(ls.id, status);
+                await LocalDbService.upsertLineStatus(ls.id, status);
                 changed.push(status);
             }
 
-            // Firestore write removed deliberately. It existed to replicate to
-            // the Syncer and other instances, but statuses are now in-memory
-            // per-process (exactly like PredictionCache) and the Syncer does its
-            // own TfL polling, so the write bought nothing and cost a document
-            // write per change. setLineStatus above has already stored each one
-            // and fanned it out to subscribers.
             if (changed.length > 0) {
-                console.log(`STATUS: ✅ ${modeStr}: ${changed.length} changed status(es) refreshed from TfL.`);
+                const batch = db.batch();
+                for (const s of changed) {
+                    batch.set(db.collection('lineStatuses').doc(s.id), s, { merge: true });
+                }
+                await batch.commit();
+                console.log(`STATUS: ✅ ${modeStr}: ${changed.length} changed status(es) refreshed from TfL → Firestore.`);
             }
 
             LineController.lastTflRefreshByMode.set(modeStr, nowTs);
@@ -752,60 +667,59 @@ export class LineController {
     static async getLineStatuses(req: Request, res: Response) {
         try {
             const { lineId, mode, skipRefresh } = req.query;
+            const modeStr = mode as string || 'tube';
             const shouldSkipRefresh = skipRefresh === 'true';
 
-            // A concrete line, as opposed to the literal `{lineId}` swagger
-            // placeholder the docs UI sends.
-            const wantedLine = lineId && !String(lineId).includes('{') ? String(lineId) : undefined;
-            const known = wantedLine ? DataCacheService.getLineById(wantedLine) : undefined;
-
-            // Unknown line → 404, matching what the station endpoint does for an
-            // unknown naptanId. We hold the full line set in memory, so this is a
-            // Map lookup — and it saves the caller from a 200 with an empty array,
-            // which is indistinguishable from "this line has no status yet".
-            if (wantedLine && !known) {
-                return res.status(404).json({
-                    error: "Line not found",
-                    message: `No line with id '${wantedLine}'.`,
-                    lineId: wantedLine,
-                });
-            }
-
-            // Prefer the line's OWN mode over the query param. Statuses are
-            // cached and fetched per mode, so asking for a bus line without
-            // specifying `mode` used to search the default 'tube' set and
-            // silently return nothing.
-            const modeStr = known?.modeName || (mode as string) || 'tube';
-
-            // 1. In-memory cache — the ONLY store. Fed by the Syncer pushing to
-            //    /internal/line-status-updates, and by the TfL fallback below.
-            //    The Firestore listener and the SQLite tier were both removed:
-            //    the listener billed a document read per change forever, and
-            //    once it was gone SQLite was persisting data nothing read back.
+            // 1. Try to read from in-memory Cache (synced in real-time with Firestore)
             let cachedStatuses = DataCacheService.getLineStatuses(modeStr);
-
-            // 2. Refresh from TfL when the cache is EMPTY or STALE (>60s) —
-            //    the safety net for a delayed or down Syncer. Single-flighted
-            //    per mode and change-detected; see ensureLineStatuses.
-            if (!shouldSkipRefresh) {
-                // Passing the specific line matters: the cache fills from the
-                // Syncer's pushes, which carry only CHANGED lines, so after a
-                // backend restart the mode is routinely non-empty yet missing
-                // most of it. Without this a request for an unchanged line
-                // returned [] until the staleness gate happened to trip.
-                await LineController.ensureLineStatuses(modeStr, wantedLine ? [wantedLine] : []);
-                cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+            
+            // 2. If Cache is empty (e.g., cold start/failed listener), load from SQLite
+            if (cachedStatuses.length === 0) {
+                console.log(`STATUS: 📁 Cache MISS for ${modeStr} statuses. Loading from local SQLite...`);
+                try {
+                    const localRows = await LocalDbService.all<{ raw_data: string }>(
+                        'SELECT raw_data FROM line_statuses WHERE mode = ?',
+                        [modeStr]
+                    );
+                    if (localRows.length > 0) {
+                        localRows.forEach(row => {
+                            const status = JSON.parse(row.raw_data);
+                            DataCacheService.setLineStatus(status.id, status);
+                        });
+                        cachedStatuses = DataCacheService.getLineStatuses(modeStr);
+                    }
+                } catch (dbErr: any) {
+                    console.warn(`STATUS: ⚠️ SQLite query failed: ${dbErr.message}`);
+                }
             }
 
-            if (wantedLine) {
-                cachedStatuses = cachedStatuses.filter((s: any) => s.id === wantedLine);
+            // 3. Refresh from TfL when the cache is EMPTY or STALE (>10 min) —
+            //    the safety net for a delayed/down syncer. Single-flighted per
+            //    mode, change-detected, and written back to Firestore (master)
+            //    so the refresh propagates to the syncer + other instances.
+            const newestData = cachedStatuses.length
+                ? Math.max(...cachedStatuses.map((s: any) => toEpochMs(s.lastUpdatedTime) ?? 0))
+                : 0;
+            const lastCheck = LineController.lastTflRefreshByMode.get(modeStr) ?? 0;
+            const stale = (Date.now() - Math.max(newestData, lastCheck)) > LineController.LINE_STATUS_TTL_MS;
+            if (!shouldSkipRefresh && (cachedStatuses.length === 0 || stale)) {
+                console.log(`STATUS: ⏳ ${modeStr} statuses ${cachedStatuses.length === 0 ? 'cold' : 'stale (>10m)'} — refreshing from TfL...`);
+                try {
+                    cachedStatuses = await LineController.refreshLineStatusesFromTfl(modeStr);
+                } catch (tflErr: any) {
+                    console.warn(`STATUS: ⚠️ TfL refresh failed for ${modeStr}: ${tflErr.message}`);
+                }
+            }
+
+            // Filter results by lineId if requested
+            if (lineId && !String(lineId).includes('{')) {
+                cachedStatuses = cachedStatuses.filter((s: any) => s.id === lineId);
             }
 
             // API boundary: the watermark is an integer internally; clients
             // (e.g. the mobile LineStatus.lastUpdatedTime: String) expect ISO.
-            // `toEpochMs` first because producers disagree on the type — the
-            // Syncer's ingest sends epoch millis (a Java Long), the TfL fallback
-            // sets nowMs() — and coercing both here keeps the wire shape stable.
+            // `toEpochMs` first makes this robust during the cutover window when
+            // a replicated doc might still carry a legacy ISO string.
             return res.json(cachedStatuses.map((s: any) => ({
                 ...s,
                 lastUpdatedTime: toIso(toEpochMs(s.lastUpdatedTime)),

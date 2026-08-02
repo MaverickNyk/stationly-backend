@@ -65,20 +65,6 @@ export class PredictionCache {
     private static maxEntries = 500;
     private static sweepIntervalMs = 60_000;
 
-    /**
-     * Negative cache: naptanId → epoch-ms expiry of a TfL-confirmed 404.
-     *
-     * Needed because honest 404s stopped producing entries: the old behaviour
-     * cached a fake "Unknown Station" board whose freshness window accidentally
-     * absorbed repeated requests for a dead id. Propagating the 404 removed
-     * that, which would have turned every repeat into a fresh TfL call. This
-     * restores the absorption without caching fabricated board data.
-     * Short-lived and hard-capped: junk ids are a client bug, not data.
-     */
-    private static notFound = new Map<string, number>();
-    private static notFoundTtlMs = 5 * 60_000;
-    private static maxNotFound = 1000;
-
     // REST and stream reads are counted separately and never mixed: only a
     // REST miss causes a TfL call, so blending stream reads into the hit rate
     // would inflate it toward 1.0 and hide the metric's whole purpose.
@@ -90,7 +76,6 @@ export class PredictionCache {
     private static evicted = 0;
     private static rejectedOutOfOrder = 0;
     private static coalesced = 0;
-    private static negativeHits = 0;
     private static writes: Record<PredictionSourceTag, number> = { syncer: 0, rest: 0 };
 
     /**
@@ -180,28 +165,6 @@ export class PredictionCache {
         return entry ? Date.now() - entry.storedAt : null;
     }
 
-    /** Is this id currently remembered as one TfL does not recognise? */
-    static isUnknown(naptanId: string): boolean {
-        const id = this.normalise(naptanId);
-        const expiresAt = this.notFound.get(id);
-        if (expiresAt === undefined) return false;
-        if (Date.now() >= expiresAt) { this.notFound.delete(id); return false; }
-        this.negativeHits++;
-        return true;
-    }
-
-    /** Remember a TfL 404 so repeats are refused from memory, not re-asked. */
-    static markUnknown(naptanId: string, ttlMs: number = this.notFoundTtlMs): void {
-        const id = this.normalise(naptanId);
-        if (!id) return;
-        if (!this.notFound.has(id) && this.notFound.size >= this.maxNotFound) {
-            // Cap hit: drop the oldest-marked id (Map keeps insertion order).
-            const oldest = this.notFound.keys().next().value;
-            if (oldest !== undefined) this.notFound.delete(oldest);
-        }
-        this.notFound.set(id, Date.now() + ttlMs);
-    }
-
     // ─── writes ──────────────────────────────────────────────────────────
 
     /**
@@ -225,15 +188,6 @@ export class PredictionCache {
             this.rejectedOutOfOrder++;
             return false;
         }
-
-        // Re-storing the very same object is bookkeeping, not a write: the REST
-        // path stores once via StationStreamHub.broadcast() inside
-        // fetchPredictionsFromTfl, then again when getOrFetch resolves. Counting
-        // both made `writes.rest` read 2x reality. Returning true (not false)
-        // keeps the caller's "accepted" contract — this IS the stored payload —
-        // and skipping the write preserves `storedAt` as the age of the actual
-        // fetch rather than refreshing it for a no-op.
-        if (existing && existing.payload === payload && existing.lut === lut) return true;
 
         this.entries.set(id, { payload, storedAt: Date.now(), lut, source });
         this.writes[source]++;
@@ -263,11 +217,6 @@ export class PredictionCache {
             if (entry.storedAt < cutoff) { this.entries.delete(id); dropped++; }
         }
         this.evicted += dropped;
-
-        const now = Date.now();
-        for (const [id, expiresAt] of this.notFound) {
-            if (now >= expiresAt) this.notFound.delete(id);
-        }
         return dropped;
     }
 
@@ -287,8 +236,6 @@ export class PredictionCache {
             rejectedOutOfOrder: this.rejectedOutOfOrder,
             evicted: this.evicted,
             coalesced: this.coalesced,
-            unknownIds: this.notFound.size,
-            negativeHits: this.negativeHits,
         };
     }
 
@@ -300,8 +247,6 @@ export class PredictionCache {
         this.streamHits = this.streamMisses = 0;
         this.evicted = this.rejectedOutOfOrder = this.coalesced = 0;
         this.writes = { syncer: 0, rest: 0 };
-        this.notFound.clear();
-        this.negativeHits = 0;
     }
 
     // ─── internals ───────────────────────────────────────────────────────
