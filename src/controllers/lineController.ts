@@ -44,28 +44,69 @@ async function fetchSequences(
     return { sequences, stationNames };
 }
 
-/** Map a run of naptan ids to display names (cache fallback + formatting). */
-function namesFor(ids: string[], stationNames: Record<string, string>): string[] {
-    return ids
-        .map(id => {
-            if (stationNames[id]) return stationNames[id];
-            const cached = DataCacheService.getAllStations().find((s: any) => s.naptanId === id);
-            return cached?.commonName;
-        })
-        .filter((n): n is string => Boolean(n))
-        .map(n => formatDestination(n));
+/** One stop on a route sequence, carrying the naptan id alongside the display
+ *  name. The id is what clients MATCH on (a prediction's destination naptan);
+ *  the name is only for display. They must never be derived separately — see
+ *  [stopsFor]. */
+export interface RouteStop {
+    id: string;
+    name: string;
 }
 
-/** Longest common ordered prefix across several stop lists — the shared trunk
- *  all branches travel before they diverge. Empty at a hard junction. */
-function commonPrefix(lists: string[][]): string[] {
+/**
+ * Map a run of naptan ids to {id, name} stops (cache fallback + formatting).
+ *
+ * This is the primitive; [namesFor] is derived from it so the two can never
+ * drift — building an id list and a name list independently would misalign them
+ * at any stop handled differently by one and not the other, and clients
+ * index-match the two arrays.
+ *
+ * A stop whose name resolves to nothing is KEPT, falling back to its naptan id.
+ * Dropping it was tolerable while this returned names only — a cosmetic gap in a
+ * timeline. It is not tolerable now that `id` is the field clients match on: an
+ * omitted stop reads as "this train does not call there", turning a missing
+ * label into a wrong answer. An ugly label is the lesser failure.
+ */
+function stopsFor(ids: string[], stationNames: Record<string, string>): RouteStop[] {
+    return ids.map(id => {
+        const raw = stationNames[id]
+            ?? DataCacheService.getAllStations().find((s: any) => s.naptanId === id)?.commonName;
+        return { id, name: raw ? formatDestination(raw) : id };
+    });
+}
+
+/** A destination chip: one reachable terminus and the run of stops to it. */
+interface DestinationChip {
+    id: string;
+    label: string;
+    name: string;
+    upcomingStations: string[];
+    upcomingStops: RouteStop[];
+}
+
+/** Display names only — the legacy shape, kept byte-identical for existing clients. */
+function namesFor(ids: string[], stationNames: Record<string, string>): string[] {
+    return stopsFor(ids, stationNames).map(s => s.name);
+}
+
+/**
+ * Longest common ordered prefix across several stop lists — the shared trunk
+ * all branches travel before they diverge. Empty at a hard junction.
+ *
+ * Compares on naptan id rather than display name: names are formatted strings
+ * and two distinct stops can format to the same text, which would silently
+ * over-extend the trunk past a real divergence.
+ */
+function commonPrefix(lists: RouteStop[][]): RouteStop[] {
     if (lists.length === 0) return [];
-    if (lists.length === 1) return lists[0];
-    const out: string[] = [];
+    // Copy: the single-branch result would otherwise alias that chip's own
+    // upcomingStops array, so any later mutation of the trunk would corrupt it.
+    if (lists.length === 1) return lists[0].slice();
+    const out: RouteStop[] = [];
     const first = lists[0];
     for (let i = 0; i < first.length; i++) {
         const v = first[i];
-        if (lists.every(l => l[i] === v)) out.push(v); else break;
+        if (lists.every(l => l[i]?.id === v.id)) out.push(v); else break;
     }
     return out;
 }
@@ -449,7 +490,21 @@ export class LineController {
      *       - in: path
      *         name: lineId
      *         required: true
-         *         schema:
+     *         schema:
+     *           type: string
+     *       - in: query
+     *         name: station
+     *         required: false
+     *         description: >
+     *           Naptan id to make the sequence relative to. When supplied, every
+     *           stop list starts at the stop AFTER this station and runs to its
+     *           branch terminus, and directions not served from here are omitted.
+     *         schema:
+     *           type: string
+     *       - in: query
+     *         name: mode
+     *         required: false
+     *         schema:
      *           type: string
      *     responses:
      *       200:
@@ -462,7 +517,48 @@ export class LineController {
      *                 type: object
      *                 properties:
      *                   id: { type: string, example: inbound }
-     *                   label: { type: string, example: "Inbound towards\nCockfosters" }
+     *                   directionName: { type: string, example: Southbound }
+     *                   towards: { type: string, example: Russell Square }
+     *                   label: { type: string, example: "Southbound towards Russell Square" }
+     *                   secondaryLabel: { type: string, example: "Russell Square · Holborn" }
+     *                   originStationId: { type: string, nullable: true, example: 940GZZLUKSX }
+     *                   upcomingStations:
+     *                     description: Display names of the shared trunk. Legacy shape.
+     *                     type: array
+     *                     items: { type: string }
+     *                   upcomingStops:
+     *                     description: >
+     *                       Same stops as upcomingStations, same order and length,
+     *                       carrying the naptan id. Index-aligned by construction.
+     *                       Match on `id` — display names differ between the route
+     *                       sequence and live predictions.
+     *                     type: array
+     *                     items:
+     *                       type: object
+     *                       properties:
+     *                         id: { type: string, example: 940GZZLURSQ }
+     *                         name: { type: string, example: Russell Square }
+     *                   destinations:
+     *                     type: array
+     *                     items:
+     *                       type: object
+     *                       properties:
+     *                         id: { type: string, example: 940GZZLUHR5 }
+     *                         label: { type: string, example: Heathrow Terminal 5 }
+     *                         name: { type: string, example: Heathrow Terminal 5 }
+     *                         upcomingStations:
+     *                           type: array
+     *                           items: { type: string }
+     *                         upcomingStops:
+     *                           description: >
+     *                             Full ordered run from the origin station to this
+     *                             terminus, inclusive of the terminus, with naptan ids.
+     *                           type: array
+     *                           items:
+     *                             type: object
+     *                             properties:
+     *                               id: { type: string }
+     *                               name: { type: string }
      *       404:
      *         description: Route not found
      */
@@ -634,7 +730,15 @@ export class LineController {
                     // Per-branch downstream RUNS from the user's station:
                     // { terminusId, stops[] }. A junction (e.g. Earl's Court) yields
                     // several runs — one per branch leaving the station.
-                    const runs: { terminusId: string; stops: string[] }[] = [];
+                    //
+                    // `stops` carries {id, name} pairs rather than names alone: a
+                    // client filtering "show me trains that call at X" has to match
+                    // the naptan id a prediction reports, and display names do not
+                    // survive that comparison (the route sequence says
+                    // "Hammersmith (Dist&Picc Line)" where a prediction says
+                    // "Hammersmith"). The name list is derived from these pairs so
+                    // the two arrays stay index-aligned.
+                    const runs: { terminusId: string; stops: RouteStop[] }[] = [];
                     if (station && branches.length > 0) {
                         for (const branch of branches) {
                             let idx = -1;
@@ -642,7 +746,7 @@ export class LineController {
                             if (idx >= 0 && idx < branch.length - 1) {
                                 runs.push({
                                     terminusId: branch[branch.length - 1],
-                                    stops: namesFor(branch.slice(idx + 1), names),
+                                    stops: stopsFor(branch.slice(idx + 1), names),
                                 });
                             }
                         }
@@ -665,23 +769,34 @@ export class LineController {
                     // `upcomingStations`, so the client can swap the timeline when
                     // the chip is tapped. If several runs share a terminus, take
                     // the longest (most informative).
-                    const destChips = reachableDestinations.map((d: any) => {
+                    const destChips: DestinationChip[] = reachableDestinations.map((d: any) => {
                         const matching = runs
                             .filter(r => r.terminusId === d.id)
                             .sort((a, b) => b.stops.length - a.stops.length);
+                        const stops: RouteStop[] = matching[0]?.stops || [];
                         return {
                             id: d.id,
                             label: formatDestination(d.name),
                             name: formatDestination(d.name),
-                            upcomingStations: matching[0]?.stops || [],
+                            // Legacy shape — unchanged values, unchanged order.
+                            upcomingStations: stops.map(s => s.name),
+                            // ADDITIVE: same stops, same order, with naptan ids.
+                            // Index-aligned with `upcomingStations` by construction.
+                            // Existing clients parse with ignoreUnknownKeys and skip it.
+                            upcomingStops: stops,
                         };
                     });
 
                     // DEFAULT timeline = the common trunk shared by ALL reachable
                     // branches. One branch → the whole branch; a hard junction →
                     // empty (client prompts the user to tap a destination).
-                    const branchStopLists = destChips.map((d: any) => d.upcomingStations).filter((s: string[]) => s.length > 0);
-                    const commonStations = runs.length > 0 ? commonPrefix(branchStopLists) : [];
+                    // Computed from the {id, name} pairs, so the trunk is matched
+                    // on naptan id rather than on formatted display text.
+                    const branchStopLists = destChips
+                        .map(d => d.upcomingStops)
+                        .filter(s => s.length > 0);
+                    const commonStops = runs.length > 0 ? commonPrefix(branchStopLists) : [];
+                    const commonStations = commonStops.map(s => s.name);
 
                     // 'towards' priority (unchanged): the stop's TfL Towards →
                     // first common stop → first reachable terminus.
@@ -712,6 +827,15 @@ export class LineController {
                         secondaryLabel: commonStations.join(' · '),
                         destinations: destChips,          // each chip has its own branch stops
                         upcomingStations: commonStations, // default timeline = shared trunk
+                        // ADDITIVE: the trunk with naptan ids, index-aligned with
+                        // `upcomingStations`.
+                        upcomingStops: commonStops,
+                        // The station this sequence is relative to. Every stop list
+                        // above starts at the stop AFTER this one, so a client
+                        // reading a cached payload can tell which origin it was
+                        // built for instead of inferring it from the request it no
+                        // longer has.
+                        originStationId: station || null,
                     };
                 })
                 .filter((d: any): d is Exclude<any, null> => d !== null);

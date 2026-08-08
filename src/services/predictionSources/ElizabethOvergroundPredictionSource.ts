@@ -8,6 +8,7 @@ import { TubeDlrBusTramMixPredictionSource } from './TubeDlrBusTramMixPrediction
 import {
     cleanDestinationName,
     isLongDeparted,
+    readNaptan,
     resolveDepartingDirection,
     resolveDirectionTowards,
 } from './predictionUtils';
@@ -90,7 +91,7 @@ export class ElizabethOvergroundPredictionSource implements PredictionSource {
         // entries are filtered below, once the arrivals-taught maps exist.
         const boardEntries = Promise.all([...modeByLine.entries()].map(async ([lineId, modeName]) => ({
             lineId, modeName,
-            entries: await TflApiClient.getArrivalDepartures(naptanId, [lineId]),
+            entries: await TflApiClient.getArrivalDepartures(readNaptan(naptanId), [lineId]),
         })));
         const arrivals = await ctx.arrivals;
 
