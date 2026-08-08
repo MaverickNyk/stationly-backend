@@ -10,6 +10,7 @@ import { nowMs } from '../utils/timestamps';
 import { PredictionSourceFactory } from '../services/predictionSources/PredictionSourceFactory';
 import { PredictionCache } from '../services/predictionCache';
 import { StationStreamHub } from '../services/stationStreamHub';
+import { readNaptan, aliasDisplayName } from '../services/predictionSources/predictionUtils';
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -181,7 +182,7 @@ export class StationController {
         // Sources await this promise wherever they consume it, so the fetch
         // overlaps their own board calls — that overlap is why it is passed as a
         // promise rather than awaited here.
-        const rawArrivals = TflApiClient.getArrivalsForStation(naptanId);
+        const rawArrivals = TflApiClient.getArrivalsForStation(readNaptan(naptanId));
 
         // A transient TfL failure is downgraded to an empty list for the SOURCES
         // — ElizabethOvergroundPredictionSource awaits arrivals unconditionally
@@ -232,7 +233,7 @@ export class StationController {
 
         const payload = {
             id: naptanId,
-            name: arrivals[0]?.stationName || station?.commonName || "Unknown Station",
+            name: aliasDisplayName(naptanId) || arrivals[0]?.stationName || station?.commonName || "Unknown Station",
             lut: new Date().toISOString(),
             lines
         };

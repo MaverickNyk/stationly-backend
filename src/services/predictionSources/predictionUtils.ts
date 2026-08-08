@@ -77,3 +77,26 @@ export function resolveDirectionTowards(lineId: string, destinationNaptanId?: st
         (d.destinations || []).some((dest: any) => dest.id === destinationNaptanId));
     return matching.length === 1 ? (matching[0].direction || '') : '';
 }
+
+/**
+ * TEMP: TfL publishes some Elizabeth line stations under two naptanIds. The
+ * mainline/hub copy's `direction` field is largely empty and self-contradictory
+ * (910GLIVST: 42 of 57 arrivals unlabelled, Gidea Park "inbound" vs Shenfield
+ * "outbound" on the same Platform A); the low-level copy labels every train.
+ * Read the good copy, keep publishing under the requested id.
+ * Mirrors ELIZABETH_SOURCE in the Syncer — keep the two in step.
+ */
+const ELIZABETH_SOURCE: Record<string, { naptanId: string; name: string }> = {
+    '910GLIVST': { naptanId: '910GLIVSTLL', name: 'London Liverpool Street' },
+    '910GPADTON': { naptanId: '910GPADTLL', name: 'London Paddington' },
+};
+
+/** The naptanId to actually ask TfL for; unchanged when there is no alias. */
+export function readNaptan(naptanId: string): string {
+    return ELIZABETH_SOURCE[naptanId]?.naptanId || naptanId;
+}
+
+/** The display name to keep when aliased, so the swap is invisible to clients. */
+export function aliasDisplayName(naptanId: string): string | undefined {
+    return ELIZABETH_SOURCE[naptanId]?.name;
+}
