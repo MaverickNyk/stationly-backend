@@ -4,7 +4,7 @@ import { TflApiClient } from '../client/TflApiClient';
 import { formatDestination } from '../utils/formatters';
 import { LineInfo, LineRouteResponse, LineStatusResponse, TransportMode } from '../models';
 
-import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS } from '../utils/tflUtils';
+import { GOOD_SERVICE_MESSAGES, TFL_LINE_COLORS, shortNameFor } from '../utils/tflUtils';
 import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
 import { nowMs, toIso, toEpochMs } from '../utils/timestamps';
@@ -400,6 +400,31 @@ export class LineController {
      *               items:
      *                 $ref: '#/components/schemas/LineInfo'
      */
+    /**
+     * The display fields every `/lines` response carries: `label`, `color` and
+     * `shortName`.
+     *
+     * One function because `getLinesByMode` has FOUR return paths — station
+     * discovery, the mode cache, the Firestore fallback and the TfL fallback —
+     * and each built its own object literal with its own copy of the colour
+     * lookup. Adding a field meant remembering all four, and a path that
+     * forgot it would serve a line with no short name; the client would fall
+     * back and nobody would notice until a rename made the fallback wrong.
+     *
+     * `shortName` is omitted rather than nulled when there isn't one (bus
+     * routes), so the field's absence keeps its meaning on the wire — see
+     * `shortNameFor`.
+     */
+    private static decorateLine(l: any) {
+        const short = shortNameFor(l.id);
+        return {
+            ...l,
+            label: l.name || l.label,
+            color: TFL_LINE_COLORS[l.id] || null,
+            ...(short ? { shortName: short } : {}),
+        };
+    }
+
     static async getLinesByMode(req: Request, res: Response) {
         try {
             const mode = req.params.mode;
@@ -428,7 +453,7 @@ export class LineController {
                         const allLines = DataCacheService.getLinesByMode(mode);
                         const filteredLines = allLines
                             .filter(l => lineIdsAtStation.has(l.id))
-                            .map(l => ({ ...l, label: l.name, color: TFL_LINE_COLORS[l.id] || null }));
+                            .map(l => LineController.decorateLine(l));
 
                         if (filteredLines.length > 0) {
                             return res.json(filteredLines.sort((a, b) => a.label.localeCompare(b.label)));
@@ -441,11 +466,7 @@ export class LineController {
             // Standard Path: Get all lines for mode from cache
             const cachedLines = DataCacheService.getLinesByMode(mode);
             if (cachedLines.length > 0) {
-                const sduiLines = cachedLines.map(l => ({
-                    ...l,
-                    label: l.name || l.label,
-                    color: TFL_LINE_COLORS[l.id] || null
-                }));
+                const sduiLines = cachedLines.map(l => LineController.decorateLine(l));
                 return res.json(sduiLines.sort((a, b) => a.label.localeCompare(b.label)));
             }
 
@@ -463,13 +484,15 @@ export class LineController {
                     batch.set(docRef, { id: l.id, name: l.name, modeName: l.modeName, lastUpdatedTime: nowTs }, { merge: true });
                 });
                 await batch.commit();
-                lines = rawLines.map(l => ({
-                    id: l.id,
-                    name: l.name,
-                    modeName: l.modeName,
-                    label: l.name,
-                    color: TFL_LINE_COLORS[l.id] || null
+                lines = rawLines.map(l => LineController.decorateLine({
+                    id: l.id, name: l.name, modeName: l.modeName,
                 }));
+            } else {
+                // The Firestore documents are raw `{id, name, modeName}` and
+                // were returned undecorated — so this path alone served no
+                // colour and no label either. Same decoration as every other
+                // path now, which is the point of having one.
+                lines = lines.map(l => LineController.decorateLine(l));
             }
 
             return res.json(lines.sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name)));
