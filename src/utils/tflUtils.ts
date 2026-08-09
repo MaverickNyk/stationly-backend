@@ -23,6 +23,77 @@ export const TFL_LINE_COLORS: Record<string, string> = {
     'cable-car':          '#E21836',
 };
 
+/**
+ * Short display forms for line names, keyed by canonical line id.
+ *
+ * ## Why the server owns this
+ * The clients need a short label wherever horizontal space is the binding
+ * constraint — a platform header naming the lines using it ("Dist. & Circ.
+ * Platform 2"), a per-row line prefix, and above all the iOS widget, whose
+ * pager header spends its width on two arrows and a page marker before the
+ * title gets any. "Hammersmith & City" alone is wider than a phone board row.
+ *
+ * Both clients carried their own hardcoded copy of this map. That is a
+ * duplicate of naming the backend already owns everywhere else (platform
+ * labels, status text, mode names all come down from the API), and it drifts:
+ * the whole Overground fleet was renamed in 2024 and every client copy had to
+ * be found and shipped. Serving it means a rename is a deploy, not a release.
+ *
+ * ## Conventions, so future additions stay consistent
+ *  - **Real TfL abbreviations win.** "H&C" and "W&C" are what the roundels, the
+ *    tube map key and station signage already say — inventing "Hamm." would be
+ *    a worse label than the one passengers can read off the wall.
+ *  - Otherwise: first syllable, trailing period ("Dist.", "Picc."). Long enough
+ *    to disambiguate — "Cen." not "C." — because a board is read at a glance.
+ *  - Initialisms that are already the line's whole name keep it and take no
+ *    period: DLR, Tram.
+ *
+ * Not exhaustive on purpose: bus routes ("39") are already as short as a label
+ * gets and there are hundreds of them, so they are absent and the clients pass
+ * an unknown id through unchanged. An absent entry is a normal answer here, not
+ * a gap — see `shortNameFor`.
+ */
+export const TFL_LINE_SHORT_NAMES: Record<string, string> = {
+    'bakerloo':           'Bak.',
+    'central':            'Cen.',
+    'circle':             'Circ.',
+    'district':           'Dist.',
+    'hammersmith-city':   'H&C',
+    'jubilee':            'Jub.',
+    'metropolitan':       'Met.',
+    'northern':           'Nor.',
+    'piccadilly':         'Picc.',
+    'victoria':           'Vic.',
+    'waterloo-city':      'W&C',
+    'dlr':                'DLR',
+    'elizabeth':          'Eliz.',
+    'elizabeth-line':     'Eliz.',
+    'london-overground':  'Ovr.',
+    'lioness':            'Lion.',
+    'mildmay':            'Mild.',
+    'windrush':           'Wind.',
+    'weaver':             'Weav.',
+    'suffragette':        'Suff.',
+    'liberty':            'Lib.',
+    'tram':               'Tram',
+    'cable-car':          'Cable',
+};
+
+/**
+ * The short form for a line id, or `undefined` when there isn't one.
+ *
+ * Deliberately NOT falling back to the full name. The field is optional on the
+ * wire, and a client that receives it absent uses its own fallback chain — which
+ * ends in "show the full name". Echoing the full name here would look like an
+ * answer and rob the client of the chance to apply a better one, and it would
+ * make "the backend has no short form for this line" indistinguishable from
+ * "the short form happens to equal the full name".
+ */
+export function shortNameFor(lineId: string | undefined | null): string | undefined {
+    if (!lineId) return undefined;
+    return TFL_LINE_SHORT_NAMES[lineId.trim().toLowerCase()];
+}
+
 export const EXEMPT_MODES = new Set([
     "national-rail", "tram", "river-bus", "cable-car", "river-tour", "cycle-hire", "replacement-bus"
 ]);

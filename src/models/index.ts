@@ -14,6 +14,14 @@ export interface LineInfo {
     id: string;
     name: string;
     modeName: string;
+    /**
+     * Short display form ("Picc.", "H&C") — see `TFL_LINE_SHORT_NAMES`.
+     *
+     * Optional, and absent rather than null when there is none (bus routes,
+     * whose id is already the shortest true label). Clients treat absence as
+     * "fall back to your own rule", so it must not be echoed as the full name.
+     */
+    shortName?: string;
 }
 
 export interface Destination {
