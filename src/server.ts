@@ -17,6 +17,7 @@ import internalRoutes from './routes/internalRoutes';
 import { attachStationStream } from './services/stationStreamServer';
 import { StationStreamHub } from './services/stationStreamHub';
 import { LineStatusStreamHub } from './services/lineStatusStreamHub';
+import { DisruptionTriggerService } from './services/disruptionTriggerService';
 import { PredictionCache } from './services/predictionCache';
 
 dotenv.config();
@@ -814,6 +815,14 @@ PredictionCache.startSweeper();
 server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
+
+    // Disruption → immediate widget refresh. Registered as an OBSERVER rather
+    // than imported by the hub, which is constrained to import only `ws` to
+    // stay free of cycles (see the note atop lineStatusStreamHub). Wiring it
+    // here inverts the dependency and keeps that invariant intact.
+    LineStatusStreamHub.observe((lineId, payload) => {
+        DisruptionTriggerService.observe(lineId, payload.statusSeverityDescription, payload.mode);
+    });
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
     console.log(`Stream: ws://localhost:${port}/api/v1/stream`);

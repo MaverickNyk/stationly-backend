@@ -1,8 +1,9 @@
 import { messaging } from '../config/firebase';
 import { UserFcmTokenService } from './userFcmTokenService';
+import { DevicePushService } from './devicePushService';
 
 /**
- * Cross-device session sync via silent FCM data pushes.
+ * Cross-device session sync, on every platform.
  *
  * When a user's server-side state changes (stations added/removed,
  * display name updated, account deleted) we ping every device that
@@ -10,15 +11,30 @@ import { UserFcmTokenService } from './userFcmTokenService';
  * cold launch. Otherwise device A keeps showing yesterday's board
  * after device B changed it.
  *
- * Wire format: a `data`-only FCM message with `{ type: "user_sync",
- * reason }`. There is deliberately NO `notification_payload` field —
- * the Android `FcmMessagingService` only renders a system
- * notification when that field is present, so `user_sync` stays
- * silent and just triggers a client-side reconcile.
- *
  *   reason = "stations"  → saved-stations list changed
  *   reason = "profile"   → display name (or other profile field) changed
  *   reason = "deleted"   → account deleted; client force-logs-out
+ *
+ * ## Two transports, one signal
+ * This used to be FCM-only, which quietly meant Android-only: an iPhone got no
+ * `user_sync` at all and stayed on stale account state until its next cold
+ * launch. Since iOS dropped FirebaseMessaging that is no longer even
+ * theoretically fixable by adding a token — so the signal now fans out over
+ * BOTH transports:
+ *
+ *   - **FCM** to `users/{uid}/fcm_tokens` — Android, unchanged, still
+ *     `{ type: "user_sync", reason }` so existing clients need no update.
+ *   - **APNs** to the device registry, via [DevicePushService] — iOS, using the
+ *     shared envelope vocabulary (`PushEnvelope` in commonMain).
+ *
+ * Both carry the same fields and mean the same thing; only the pipe differs.
+ * A device registered in both places (it should not be) would reconcile twice,
+ * which is idempotent.
+ *
+ * Note this is deliberately unlike the `Station_*` / `LineStatus_*` topics,
+ * which stay Android-only on purpose: those fire every minute or ten and would
+ * exhaust the iOS widget's reload quota. `user_sync` fires when a human changes
+ * something, which is rare enough to be safe everywhere.
  *
  * Fire-and-forget: callers wrap this in setImmediate so the user's
  * write returns immediately and a push failure never fails the request.
@@ -33,6 +49,35 @@ export class UserSyncNotifier {
      * the durable fallback.
      */
     static async notify(uid: string, reason: UserSyncReason): Promise<void> {
+        // Both transports, independently: a failure or an empty audience on one
+        // must not stop the other. Historically the FCM path returning early on
+        // "no tokens" is exactly what would have skipped every iOS device.
+        await Promise.all([
+            this.notifyFcm(uid, reason),
+            this.notifyApns(uid, reason),
+        ]);
+    }
+
+    /** iOS (and anything else in the device registry), over APNs. */
+    private static async notifyApns(uid: string, reason: UserSyncReason): Promise<void> {
+        try {
+            const outcome = await DevicePushService.send({
+                kind: 'user.sync',
+                uid,
+                reason,
+            });
+            if (outcome.devicesTargeted > 0) {
+                console.log(
+                    `USER_SYNC: 📡 APNs reason='${reason}' → ${outcome.delivered}/${outcome.devicesTargeted} device(s) for ${uid}`,
+                );
+            }
+        } catch (err) {
+            console.error(`USER_SYNC: ❌ APNs notify failed for ${uid} (reason=${reason})`, err);
+        }
+    }
+
+    /** Android, over FCM. Wire format unchanged — existing clients keep working. */
+    private static async notifyFcm(uid: string, reason: UserSyncReason): Promise<void> {
         try {
             const tokens = await UserFcmTokenService.listForUid(uid);
             if (tokens.length === 0) return;
@@ -73,7 +118,7 @@ export class UserSyncNotifier {
                 }
             }
 
-            console.log(`USER_SYNC: 📡 Pushed reason='${reason}' to ${tokens.length} device(s) for ${uid}`);
+            console.log(`USER_SYNC: 📡 FCM reason='${reason}' to ${tokens.length} device(s) for ${uid}`);
         } catch (err) {
             console.error(`USER_SYNC: ❌ Failed to notify ${uid} (reason=${reason})`, err);
         }

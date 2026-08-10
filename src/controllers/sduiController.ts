@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { SduiService } from '../services/sduiService';
+import { RefreshPolicyService } from '../services/refreshPolicyService';
 
 export class SduiController {
     /**
@@ -89,5 +90,24 @@ export class SduiController {
 
     static getHomeConfig(req: Request, res: Response) {
         res.json(SduiService.getHomeConfig());
+    }
+
+    /**
+     * @swagger
+     * /sdui/app/refresh-policy:
+     *   get:
+     *     summary: Get widget refresh policy
+     *     description: >
+     *       The cadence schedule clients evaluate to decide when to refresh
+     *       glanceable surfaces (the iOS widget today; shared with Android).
+     *       Tiers are keyed by opaque string ids so bands can be added without
+     *       shipping a client.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON policy document
+     */
+    static getRefreshPolicy(req: Request, res: Response) {
+        res.json(RefreshPolicyService.getRefreshPolicy());
     }
 }

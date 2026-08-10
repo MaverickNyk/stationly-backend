@@ -6,6 +6,7 @@ import { AuthController } from '../controllers/authController';
 import { ModeController } from '../controllers/modeController';
 import { LineController } from '../controllers/lineController';
 import { StationController } from '../controllers/stationController';
+import { DevicePushController } from '../controllers/devicePushController';
 import { AuthMiddleware } from '../middleware/authMiddleware';
 import { RateLimitMiddleware } from '../middleware/rateLimitMiddleware';
 
@@ -36,6 +37,9 @@ router.get('/sdui/app/about', SduiController.getAboutLayout);
 router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
 router.get('/sdui/app/home-config', SduiController.getHomeConfig);
 router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
+// Refresh cadence schedule. Clients cache this and evaluate it locally, so it
+// is read on a cold launch and after a `policy.update` push — not per refresh.
+router.get('/sdui/app/refresh-policy', SduiController.getRefreshPolicy);
 
 // Metadata
 router.get('/modes', ModeController.getModes);
@@ -54,6 +58,17 @@ router.get(
     RateLimitMiddleware.developer, 
     StationController.getSubscribedStationIds
 );
+
+// --- DEVICE PUSH REGISTRY (API key only — deliberately no Firebase auth) ---
+//
+// Mounted BEFORE the /user/* middleware on purpose. This keys on the app's own
+// device id, and a signed-out device still runs widgets and still wants
+// disruption pushes — gating it on a user token 401s exactly those devices
+// (measured: the first on-device registration died here). The uid is recorded
+// only when the client happens to send a validated bearer token, and is never
+// read from the body. Global API-key check above still applies.
+router.post('/device/register',   DevicePushController.register);
+router.post('/device/unregister', DevicePushController.unregister);
 
 // --- USER PRIVATE ROUTES (Key + Firebase Auth Required) ---
 router.use('/user', AuthMiddleware.validateUserToken);
@@ -76,6 +91,10 @@ router.post('/user/delete-account', UserController.deleteAccount);
 // limiter already installed above.
 router.post('/user/fcm/register',   UserController.registerFcmToken);
 router.post('/user/fcm/unregister', UserController.unregisterFcmToken);
+// (The device push registry does NOT live here. It was first mounted under
+// /user/*, which put it behind validateUserToken and 401'd every registration
+// from a client carrying only the API key — precisely the signed-out-devices-
+// still-register case its own comment promised. See /device/* below.)
 // Send Stationly-branded verification email for the authenticated user. Lives
 // under /user/* (not /auth/*) so StationlyAuth on the client automatically
 // attaches the Bearer token — /auth/* endpoints are public-by-default.
