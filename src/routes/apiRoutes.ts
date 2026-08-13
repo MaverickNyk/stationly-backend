@@ -80,7 +80,18 @@ router.get('/user/sync/profile', UserController.getUserProfile);
 // user's profile to anyone holding the shared app key.
 router.get('/sdui/app/profile/:uid', AuthMiddleware.validateUserToken, UserController.getSduiProfile);
 router.post('/user/sync/profile', UserController.syncProfile);
+// LEGACY board list (Android). Kept exactly as it was — see UserService.syncBoards
+// for why the v2 list below is a SEPARATE array rather than a wider schema on
+// this one.
 router.post('/user/sync/stations', UserController.syncStations);
+// v2 board list (iOS today, Android later) + the account's settings blob. Both
+// are last-write-wins on a client clock and both fan out `user.sync`.
+router.post('/user/sync/boards', UserController.syncBoards);
+// Activity trail. Its own limiter, mounted AFTER the /user/* strict one above:
+// a batch upload is one request carrying a day of events, so it needs far fewer
+// calls than the strict limiter allows but must not be able to spend that
+// budget and lock a user out of the endpoints that matter.
+router.post('/user/activity/batch', RateLimitMiddleware.activity, UserController.recordActivity);
 router.post('/user/stations/add', UserController.addStation);
 router.post('/user/stations/delete', UserController.deleteStation);
 router.post('/user/logout', UserController.logOut);

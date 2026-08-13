@@ -402,11 +402,22 @@ export class DataCacheService {
 
     /**
      * Returns the grouping key for a station.
-     * Priority: icsCode → stationNaptan → commonName (for stops missing TfL group keys) → naptanId.
-     * Using commonName catches bus poles that share the same stop name but lack icsCode/stationNaptan.
+     *
+     * Priority: stationNaptan → icsCode → commonName → naptanId.
+     *
+     * `stationNaptan` leads because it is TfL's own StopArea id and the only
+     * candidate that is BOTH stable and an id — Smithwood Close's two poles
+     * (490008805N N-bound, 490012211N S-bound) both carry `490G00008805`. It
+     * used to sit behind `icsCode`, which groups the same stops but is an
+     * Interchange Scheme number (`1008805`), not a naptan: correct for grouping,
+     * useless as something to hand back to a client or to TfL.
+     *
+     * `commonName` is the last-resort fallback for stops carrying neither, and
+     * it is a grouping key ONLY — see [getHubId] for why it must never escape
+     * as an identity.
      */
     static getGroupKey(station: Station): string {
-        return (station as any).icsCode || (station as any).stationNaptan
+        return (station as any).stationNaptan || (station as any).icsCode
             || station.commonName?.trim()
             || station.naptanId;
     }
@@ -451,21 +462,59 @@ export class DataCacheService {
     }
 
     /**
+     * The id a CLIENT should store for this location — the hub.
+     *
+     * [getGroupKey] with one guard: a key that is only the common name is a
+     * grouping fallback, never an identity. London has 36 stops called "Park
+     * Road" and 22 called "Church Road"; handing that back as an id would make
+     * them one board, and one saved board would name 36 unrelated places.
+     *
+     * Where TfL gives a real StopArea (`490G…` on bus, `940G…` on rail) that is
+     * what comes back, and it is exactly what a saved board is keyed on. Where
+     * it does not, this degrades to the representative stop's own naptan —
+     * the behaviour that shipped before, and no worse.
+     */
+    static getHubId(station: Station): string {
+        const key = this.getGroupKey(station);
+        const name = station.commonName?.trim();
+        if (name && key === name) return station.naptanId || (station as any).id || key;
+        return key;
+    }
+
+    /**
+     * Every stop at one location, given EITHER the hub id or any member naptan.
+     *
+     * One helper because three call sites used to repeat it — the line list, the
+     * direction list and [resolveStation] — each finding a representative by
+     * naptan and re-deriving the group. That only ever worked while clients held
+     * a POLE id. They hold the hub now, which matches no station's naptanId at
+     * all, so every one of those lookups would have silently found nothing and
+     * fallen through to its "no cached data" branch.
+     *
+     * Hub first, member second: the hub is what clients send, and a location
+     * whose group key happens to equal a member's naptan (rail, where the
+     * StopArea IS the station) resolves identically either way.
+     */
+    static stationsInGroup(id: string): Station[] {
+        if (!id) return [];
+        const all = this.getAllStations();
+        const byHub = all.filter(s => this.getGroupKey(s) === id);
+        if (byHub.length > 0) return byHub;
+        const repr = all.find(s => s.naptanId === id || (s as any).id === id);
+        if (!repr) return [];
+        const key = this.getGroupKey(repr);
+        return all.filter(s => this.getGroupKey(s) === key);
+    }
+
+    /**
      * Resolve the exact physical stop (naptanId) for a station group + mode + line + direction.
      * Looks through all siblings sharing the same icsCode/stationNaptan and returns the one
      * that serves the requested line in the requested direction.
      * Falls back to the supplied representativeId if no better match is found.
      */
-    static resolveStation(representativeId: string, mode: string, lineId: string, direction: string): string {
-        const repr = Array.from(this.stations.values()).find(
-            s => s.naptanId === representativeId || (s as any).id === representativeId
-        );
-        if (!repr) return representativeId;
-
-        const groupKey = this.getGroupKey(repr);
-        const siblings = Array.from(this.stations.values()).filter(
-            s => this.getGroupKey(s) === groupKey
-        );
+    static resolveStation(hubOrStopId: string, mode: string, lineId: string, direction: string): string {
+        const siblings = this.stationsInGroup(hubOrStopId);
+        if (siblings.length === 0) return hubOrStopId;
 
         const dirLower = direction.toLowerCase();
         for (const sib of siblings) {
@@ -475,11 +524,16 @@ export class DataCacheService {
             if (!lineData) continue;
             const dirs: string[] = lineData.directions || [];
             if (dirs.length === 0 || dirs.some((d: string) => d.toLowerCase() === dirLower)) {
-                return sib.naptanId || (sib as any).id || representativeId;
+                return sib.naptanId || (sib as any).id || hubOrStopId;
             }
         }
 
-        return representativeId;
+        // No direction matched. Return a MEMBER, never the hub: the caller is
+        // asking for the stop to fetch departures from, and a StopArea id is an
+        // identity — arrivals for it is a different query returning every pole's
+        // departures mixed together, which is precisely the board this schema
+        // splits apart.
+        return siblings[0].naptanId || (siblings[0] as any).id || hubOrStopId;
     }
 
     static getStationsByLine(lineId: string): Station[] {

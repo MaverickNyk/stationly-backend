@@ -58,6 +58,22 @@ export interface DevicePushRequest {
      *  session, and acting on a push minted for a previous account would
      *  reconcile — or log out — the wrong one. */
     uid?: string;
+    /**
+     * Drop this device from the resolved audience — it is the one that CAUSED
+     * the change and has nothing to reconcile.
+     *
+     * `user.sync` fans out to every device on the account including the sender,
+     * so the phone that just saved a board is woken by its own write and
+     * answers with a `getUserProfile` read of state it already has. At twenty
+     * app opens a day that is a self-inflicted read and push per edit, on the
+     * hottest document in the system.
+     *
+     * Optional and unset by default: a caller that cannot say which device it
+     * was gets exactly today's behaviour, which is the safe direction — a
+     * missed exclusion costs one redundant reconcile, and a wrong one would
+     * leave a device permanently stale.
+     */
+    excludeDeviceId?: string;
     /** `boost.start` only: which tier, defaulting to the policy's boost tier. */
     tierId?: string;
     /** `boost.start` only: requested minutes. The CLIENT caps this at the
@@ -166,13 +182,20 @@ export class DevicePushService {
         // Audience, narrowest first. A uid scope beats a station scope because
         // `user.sync` is about an ACCOUNT — sending it to every device showing
         // a station would push one user's profile change at strangers.
-        const devices = request.uid
+        const resolved = request.uid
             ? await DeviceRegistryService.listForUid(request.uid)
             : request.lines?.length
                 ? await DeviceRegistryService.listForLines(request.lines)
                 : request.stations?.length
                     ? await DeviceRegistryService.listForStations(request.stations)
                     : await DeviceRegistryService.listAll();
+
+        // Applied after resolution rather than in the query: Firestore has no
+        // "!=" that composes with the scoping filters without another index, and
+        // the audience for one account is a handful of rows either way.
+        const devices = request.excludeDeviceId
+            ? resolved.filter(d => d.deviceId !== request.excludeDeviceId)
+            : resolved;
 
         const outcome: DevicePushOutcome = {
             kind: request.kind,

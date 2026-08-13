@@ -435,14 +435,14 @@ export class LineController {
             // so that grouped bus stops show the full set of routes at that location.
             if (station && !station.includes('{station}')) {
                 console.log(`DATA: 🔍 Filtering lines for station ${station} (Discovery Mode) using Cache`);
-                const repr = DataCacheService.getAllStations().find(s => s.naptanId === station || (s as any).id === station);
+                // Accepts the HUB id the client now stores as well as any
+                // member naptan. Matching on naptanId alone stopped working the
+                // moment clients held a StopArea id: no station document has
+                // one as its own naptan, so this found nothing and fell through
+                // to "every line on the mode".
+                const siblings = DataCacheService.stationsInGroup(station);
 
-                if (repr) {
-                    const groupKey = DataCacheService.getGroupKey(repr);
-                    const siblings = DataCacheService.getAllStations().filter(
-                        s => DataCacheService.getGroupKey(s) === groupKey
-                    );
-
+                if (siblings.length > 0) {
                     const lineIdsAtStation = new Set<string>();
                     siblings.forEach(sib => {
                         const modeData = sib.modes?.[mode];
@@ -720,16 +720,14 @@ export class LineController {
             // Resolve the station's individual stop IDs (grouped station → sibling naptanIds)
             const stationIds = new Set<string>();
             if (station) {
-                const repr = DataCacheService.getAllStations().find(
-                    (s: any) => s.naptanId === station || s.id === station
-                );
-                if (repr) {
-                    const groupKey = DataCacheService.getGroupKey(repr);
-                    DataCacheService.getAllStations()
-                        .filter((s: any) => DataCacheService.getGroupKey(s) === groupKey)
-                        .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
-                }
-                stationIds.add(station); // always include the representative itself
+                DataCacheService.stationsInGroup(station)
+                    .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
+                // Include the caller's own id only if it names a real stop. It
+                // used to be added unconditionally as "the representative", and
+                // that is now wrong: the client sends a HUB, and a StopArea id
+                // in a set of fetchable stops would be looked up against mode
+                // metadata no station document has.
+                if (stationIds.size === 0) stationIds.add(station);
             }
 
             // Filter directions to those the station actually serves (mode metadata)

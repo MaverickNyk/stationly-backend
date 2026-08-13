@@ -1,5 +1,8 @@
+import admin from 'firebase-admin';
 import { db } from '../config/firebase';
 import { ApnsEnvironment } from './apnsService';
+
+const FieldValue = admin.firestore.FieldValue;
 
 /**
  * Registry of the APNs tokens an iOS device exposes.
@@ -40,6 +43,18 @@ import { ApnsEnvironment } from './apnsService';
 
 export interface RegisteredDevice {
     deviceId: string;
+    /**
+     * The account currently signed in on this device, or ABSENT when none is.
+     *
+     * Absent rather than null: `listForUid` filters on equality, and a row that
+     * simply lacks the field matches no account's query at all. Written by
+     * `/device/register` when the caller presents a valid token, and by
+     * [bindUid] at session start; removed by [releaseUid] on logout.
+     *
+     * Before logout cleared it, a signed-out phone stayed in its previous
+     * account's `user.sync` audience indefinitely — including `reason=deleted`,
+     * which tells a client to tear down its session.
+     */
     uid?: string;
     widgetToken?: string;
     appToken?: string;
@@ -74,6 +89,25 @@ export interface RegisterDeviceInput {
 }
 
 const COLLECTION = 'devices';
+
+/** gRPC `NOT_FOUND` — what an `update()` on a missing document rejects with. */
+const NOT_FOUND = 5;
+
+/**
+ * Swallow "that document does not exist", and ONLY that.
+ *
+ * `update()` on a missing row is the normal case for the ownership writes below:
+ * only iOS calls `/device/register`, so an Android device legitimately has no
+ * row at all. A blanket `.catch(() => {})` would express that — and would also
+ * silently absorb a permission error, a quota rejection or an outage, leaving no
+ * trace anywhere that push targeting had stopped being maintained.
+ *
+ * Anything else is rethrown so the caller can log it.
+ */
+function swallowMissingDoc(err: any): void {
+    if (err?.code === NOT_FOUND) return;
+    throw err;
+}
 
 export class DeviceRegistryService {
 
@@ -141,24 +175,34 @@ export class DeviceRegistryService {
     }
 
     /**
-     * Devices whose widgets show any of [stations] — the audience for a
-     * disruption push.
+     * Devices whose [field] array contains any of [values], deduplicated by
+     * deviceId.
      *
      * `array-contains-any` caps at 30 values per query, so longer lists are
-     * chunked and deduplicated. Scoping this way is the difference between
-     * waking every device in the city for a Victoria-line closure and waking
-     * the ones that asked about it.
+     * chunked. The chunks are independent reads and now run CONCURRENTLY — a
+     * mode-wide incident naming 90 lines was three sequential round trips on
+     * the path that fires while a disruption is unfolding, which is the one
+     * moment latency is visible to a user.
+     *
+     * One helper for both scopes because they differed only in the field name:
+     * the chunking arithmetic and the dedup map were duplicated verbatim, and a
+     * fix applied to one (as the sequential-await was) silently missed the other.
      */
-    static async listForStations(stations: string[]): Promise<RegisteredDevice[]> {
-        if (!stations?.length) return [];
+    private static async listWhereArrayContains(
+        field: 'stations' | 'lines',
+        values: string[],
+    ): Promise<RegisteredDevice[]> {
+        if (!values.length) return [];
+
         const chunks: string[][] = [];
-        for (let i = 0; i < stations.length; i += 30) chunks.push(stations.slice(i, i + 30));
+        for (let i = 0; i < values.length; i += 30) chunks.push(values.slice(i, i + 30));
+
+        const snaps = await Promise.all(chunks.map(chunk =>
+            db.collection(COLLECTION).where(field, 'array-contains-any', chunk).get(),
+        ));
 
         const seen = new Map<string, RegisteredDevice>();
-        for (const chunk of chunks) {
-            const snap = await db.collection(COLLECTION)
-                .where('stations', 'array-contains-any', chunk)
-                .get();
+        for (const snap of snaps) {
             snap.docs.forEach(d => {
                 const device = d.data() as RegisteredDevice;
                 if (device?.deviceId) seen.set(device.deviceId, device);
@@ -168,29 +212,95 @@ export class DeviceRegistryService {
     }
 
     /**
+     * Devices whose widgets show any of [stations] — the audience for a
+     * disruption push.
+     *
+     * Scoping this way is the difference between waking every device in the
+     * city for a Victoria-line closure and waking the ones that asked about it.
+     */
+    static async listForStations(stations: string[]): Promise<RegisteredDevice[]> {
+        return this.listWhereArrayContains(
+            'stations',
+            (stations ?? []).filter(s => typeof s === 'string' && s.length > 0),
+        );
+    }
+
+    /**
      * Devices tracking any of [lines] — the audience for a disruption push.
      *
-     * Same 30-value chunking as [listForStations]: `array-contains-any` caps
-     * there, and a mode-wide incident can name more lines than that.
+     * Lowercased to match how [register] normalises them on the way in: TfL
+     * line ids are lowercase by convention, but a caller passing "Victoria"
+     * against a stored "victoria" matches nothing and reports success.
      */
     static async listForLines(lines: string[]): Promise<RegisteredDevice[]> {
-        const wanted = (lines ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
-        if (!wanted.length) return [];
+        return this.listWhereArrayContains(
+            'lines',
+            (lines ?? []).map(l => l.trim().toLowerCase()).filter(Boolean),
+        );
+    }
 
-        const chunks: string[][] = [];
-        for (let i = 0; i < wanted.length; i += 30) chunks.push(wanted.slice(i, i + 30));
+    /**
+     * Point an EXISTING device row at [uid] — this account now owns this device.
+     *
+     * Deliberately an `update` on a row that must already exist, never a
+     * `set(merge)`. Only iOS calls `/device/register`, so an Android device has
+     * no row here at all; creating one from the session path would put a
+     * token-less phantom into `listAll()` — the broadcast audience — where it
+     * would inflate every `devicesTargeted` count with devices that can never
+     * receive anything.
+     *
+     * Silent when the row is absent (`NOT_FOUND`), which is the normal Android
+     * case rather than an error.
+     */
+    static async bindUid(deviceId: string, uid: string): Promise<void> {
+        if (!deviceId || !uid) return;
+        await db.collection(COLLECTION).doc(deviceId)
+            .update({ uid, updatedAt: Date.now() })
+            .catch(swallowMissingDoc);
+    }
 
-        const seen = new Map<string, RegisteredDevice>();
-        for (const chunk of chunks) {
-            const snap = await db.collection(COLLECTION)
-                .where('lines', 'array-contains-any', chunk)
-                .get();
-            snap.docs.forEach(d => {
-                const device = d.data() as RegisteredDevice;
-                if (device?.deviceId) seen.set(device.deviceId, device);
-            });
-        }
-        return Array.from(seen.values());
+    /**
+     * This device is no longer signed in — take it out of every uid-scoped
+     * audience.
+     *
+     * The uid field is DELETED rather than set to null so the row stops
+     * matching `where('uid','==',…)` outright. The device keeps its tokens,
+     * stations and lines, because a signed-out phone still runs widgets and
+     * still wants disruption pushes — that is the whole reason this collection
+     * is not scoped under an account.
+     */
+    static async releaseUid(deviceId: string): Promise<void> {
+        if (!deviceId) return;
+        await db.collection(COLLECTION).doc(deviceId)
+            .update({ uid: FieldValue.delete(), updatedAt: Date.now() })
+            .catch(swallowMissingDoc);
+    }
+
+    /** Release every device this account is signed in on ("sign out everywhere"). */
+    static async releaseAllForUid(uid: string): Promise<number> {
+        if (!uid) return 0;
+        const snap = await db.collection(COLLECTION).where('uid', '==', uid).get();
+        if (snap.empty) return 0;
+        await Promise.all(snap.docs.map(d =>
+            d.ref.update({ uid: FieldValue.delete(), updatedAt: Date.now() })
+                .catch(() => { /* raced */ }),
+        ));
+        return snap.size;
+    }
+
+    /**
+     * Delete this account's device rows outright — account deletion only.
+     *
+     * Deletion, not release: the rows are removed rather than unbound because
+     * the account they described no longer exists. A device that is still
+     * installed re-registers on its next foreground and gets a fresh row.
+     */
+    static async deleteAllForUid(uid: string): Promise<number> {
+        if (!uid) return 0;
+        const snap = await db.collection(COLLECTION).where('uid', '==', uid).get();
+        if (snap.empty) return 0;
+        await Promise.all(snap.docs.map(d => d.ref.delete().catch(() => { /* raced */ })));
+        return snap.size;
     }
 
     /**
@@ -200,14 +310,17 @@ export class DeviceRegistryService {
      * widget token has been reissued still has a working app token, and
      * deleting the row would lose its station list and its registration
      * altogether.
+     *
+     * Both fields are scanned concurrently: they are independent queries, and
+     * this runs once per dead token in the failure sweep after a broadcast.
      */
     static async pruneToken(token: string): Promise<void> {
         if (!token) return;
-        for (const field of ['widgetToken', 'appToken'] as const) {
+        await Promise.all((['widgetToken', 'appToken'] as const).map(async field => {
             const snap = await db.collection(COLLECTION).where(field, '==', token).get();
             await Promise.all(snap.docs.map(d =>
                 d.ref.update({ [field]: null, updatedAt: Date.now() }).catch(() => { /* raced */ }),
             ));
-        }
+        }));
     }
 }

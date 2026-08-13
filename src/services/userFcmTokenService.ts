@@ -82,16 +82,25 @@ export class UserFcmTokenService {
         if (token.length < 20) throw new Error('Token looks malformed (too short)');
 
         const now = Date.now();
+        const doc: Record<string, unknown> = {
+            token,
+            updatedAt: now,
+            createdAt: now,            // merge → keeps original on update
+        };
+        // Assigned only when present. Firestore REJECTS `undefined` anywhere in
+        // a write (the Admin SDK is initialised without
+        // `ignoreUndefinedProperties`), so spreading the optional metadata in
+        // unconditionally turned a request that merely omitted `appVersion`
+        // into a 500 on a path whose whole job is to be a cheap idempotent
+        // no-op. Today's clients always send the key — a curl, a new platform,
+        // or a client configured to drop nulls would not.
+        if (meta?.platform !== undefined) doc.platform = meta.platform;
+        if (meta?.appVersion !== undefined) doc.appVersion = meta.appVersion;
+
         await db
             .collection('users').doc(uid)
             .collection('fcm_tokens').doc(token)
-            .set({
-                token,
-                updatedAt: now,
-                createdAt: now,            // merge → keeps original on update
-                platform: meta?.platform,
-                appVersion: meta?.appVersion,
-            }, { merge: true });
+            .set(doc, { merge: true });
         // Drop the cached list so the next read reflects this token.
         this.invalidate(uid);
     }
@@ -188,10 +197,59 @@ export class UserFcmTokenService {
             .collection('fcm_tokens')
             .where('updatedAt', '<', cutoff)
             .get();
+        return this.deleteDocs(uid, snap);
+    }
+
+    /**
+     * Forget EVERY token this account has — the last device has signed out, or
+     * the account is being deleted.
+     *
+     * ## Why the whole set, and why the backend has to do it
+     * These documents are keyed by the TOKEN, so there is no way to ask "which
+     * of these belongs to the device that just logged out": `/user/fcm/register`
+     * carries no device id (see the Android client's `FcmTokenRegistrar`), and
+     * adding one cannot help the builds already installed. What the backend
+     * *can* say with certainty is that when the last session ends, NO device is
+     * signed in — so none of these tokens should be in a `uid` audience.
+     *
+     * ## This is a backstop, not the primary path
+     * Android's `FirebaseAuthManager.logout()` already unregisters its own token
+     * inline — but under a 3 s timeout, best-effort, racing the sign-out. When
+     * that times out the token survives, and a signed-out phone goes on
+     * receiving that account's `user_sync` pushes, including `reason=deleted`.
+     * (`FcmTokenRegistrar.unregister` is a second, unused helper for the same
+     * job; nothing calls it. It is redundant, not the gap.)
+     *
+     * Safe to be aggressive: every client re-registers its token on the next
+     * cold launch AND immediately after sign-in, and Android's logout clears the
+     * `StationlyPrefs` watermark that would otherwise short-circuit that
+     * re-registration — so a user signing back in is whole again within one
+     * login. The pushes this gates are best-effort convenience signalling with a
+     * foreground reconcile behind them.
+     */
+    static async purgeAllForUid(uid: string): Promise<number> {
+        if (!uid) return 0;
+        const snap = await db
+            .collection('users').doc(uid)
+            .collection('fcm_tokens')
+            .get();
+        return this.deleteDocs(uid, snap);
+    }
+
+    /** Batch-delete a token query's results and invalidate the uid's cache. */
+    private static async deleteDocs(
+        uid: string,
+        snap: FirebaseFirestore.QuerySnapshot,
+    ): Promise<number> {
         if (snap.empty) return 0;
-        const batch = db.batch();
-        snap.docs.forEach(d => batch.delete(d.ref));
-        await batch.commit();
+        // Batches cap at 500 writes. A single account will never approach that,
+        // but the cap is a hard error rather than a truncation, so the chunking
+        // costs one loop and removes the failure mode entirely.
+        for (let i = 0; i < snap.docs.length; i += 500) {
+            const batch = db.batch();
+            snap.docs.slice(i, i + 500).forEach(d => batch.delete(d.ref));
+            await batch.commit();
+        }
         this.invalidate(uid);
         return snap.size;
     }

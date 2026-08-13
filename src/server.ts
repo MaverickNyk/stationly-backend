@@ -548,6 +548,64 @@ Stationly provides a high-performance middleware for transport data, specializin
                         modeName: { type: 'string', example: 'tube' }
                     }
                 },
+                BoardFilter: {
+                    type: 'object',
+                    description:
+                        'How one queue is narrowed. Both the user INTENT (`viaIds`) and its ' +
+                        'RESOLUTION (`destinationIds`) are kept: the resolution goes stale when a ' +
+                        'branch closes, so the intent has to survive to be re-resolved.',
+                    properties: {
+                        mode: { type: 'string', enum: ['ALL', 'DESTINATIONS', 'VIA'], example: 'ALL' },
+                        destinationIds: {
+                            type: 'array', items: { type: 'string' },
+                            description: 'Naptan allow-list. Filters never match on display name.'
+                        },
+                        destinationNames: { type: 'array', items: { type: 'string' } },
+                        viaIds: { type: 'array', items: { type: 'string' } },
+                        viaNames: { type: 'array', items: { type: 'string' } },
+                        resolvedAt: { type: 'number', description: 'Epoch millis' }
+                    }
+                },
+                BoardSelection: {
+                    type: 'object',
+                    description:
+                        'One departure queue on a board — one line, one direction, one stop. Flat ' +
+                        'under the board: a line level would hold nothing but the line id.',
+                    required: ['naptanId', 'line'],
+                    properties: {
+                        naptanId: {
+                            type: 'string', example: '490008805N',
+                            description:
+                                'The RESOLVED stop for this exact (line, direction). On rail it equals ' +
+                                'the station naptan; on bus it is the specific pole, and the two ' +
+                                'directions of one route sit on opposite sides of the road.'
+                        },
+                        line: { type: 'string', example: '39' },
+                        mode: { type: 'string', example: 'bus', description: 'On the selection — a hub can serve several modes' },
+                        direction: { type: 'string', example: 'inbound' },
+                        filter: { $ref: '#/components/schemas/BoardFilter' }
+                    }
+                },
+                SavedBoard: {
+                    type: 'object',
+                    description:
+                        'One saved board — ONE PER STATION. `id` is the hub the user picked (the ' +
+                        'client\'s groupingId), matching the one card the home screen draws and the ' +
+                        'one station a widget is configured with. Selections hang flat under it, ' +
+                        'each carrying its own fetch naptan, because on a bus hub each ' +
+                        '(line, direction) departs from its own pole — e.g. Smithwood Close hub ' +
+                        '490012211N, route 39 inbound from 490008805N and outbound from ' +
+                        '490012211N. Written by iOS; Android still uses the separate `stations` list. ' +
+                        'Carries what the user TRACKS only — appearance (expanded, rows, pin, ' +
+                        'order) is device-local and never sent.',
+                    required: ['id', 'selections'],
+                    properties: {
+                        id: { type: 'string', example: '490012211N', description: 'The hub / grouping id — the board\'s identity' },
+                        name: { type: 'string', example: 'Smithwood Close' },
+                        selections: { type: 'array', items: { $ref: '#/components/schemas/BoardSelection' } },
+                        addedAt: { type: 'number', description: 'Epoch millis — drives restore order' }
+                    }
+                },
                 UserProfile: {
                     type: 'object',
                     properties: {
@@ -556,8 +614,25 @@ Stationly provides a high-performance middleware for transport data, specializin
                         displayName: { type: 'string', example: 'John Doe' },
                         stations: {
                             type: 'array',
+                            description: 'LEGACY board list — Android only.',
                             items: { $ref: '#/components/schemas/SubscribedStation' }
-                        }
+                        },
+                        boards: {
+                            type: 'array',
+                            description:
+                                'v2 board list. Always present on read: derived from `stations` for an ' +
+                                'account that has only ever used Android, so a first iOS login restores ' +
+                                'their board without writing back over Android\'s list.',
+                            items: { $ref: '#/components/schemas/SavedBoard' }
+                        },
+                        boardsUpdatedAt: { type: 'number', description: 'LWW guard for `boards`, epoch millis' }
+                        // No `preferences`. Client settings — expanded, rows, pin,
+                        // order, layout — are DEVICE-LOCAL, kept per account on the
+                        // device and restored when the same person signs back in
+                        // there. They change on every touch and this document is the
+                        // one every login reads, so syncing them spent the write
+                        // quota on the lowest-value state in the app. Advertising the
+                        // field here is what would invite a client to start again.
                     }
                 },
                 UserSyncRequest: {

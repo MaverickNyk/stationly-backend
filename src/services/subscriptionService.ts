@@ -1,6 +1,9 @@
+import * as admin from 'firebase-admin';
 import { db } from '../config/firebase';
 import { LocalDbService } from '../services/localDbService';
 import { nowMs } from '../utils/timestamps';
+
+const FieldValue = admin.firestore.FieldValue;
 
 /**
  * SubscriptionService handles the global tracking of stations that users are subscribed to.
@@ -93,27 +96,60 @@ export class SubscriptionService {
 
     /**
      * Internal helper for atomic map updates.
+     *
+     * ## A station could never LEAVE the registry, and nothing said so
+     * This used to rebuild the whole `stationCounts` map, `delete` the key when
+     * its count hit zero, and write the result with `set(..., { merge: true })`.
+     * Merge performs a DEEP merge of map fields — it unions keys — so a key
+     * absent from the payload is preserved, not removed. The delete was
+     * therefore invisible to Firestore and the station stayed subscribed at its
+     * last count, forever.
+     *
+     * Measured on staging: adding a board for `940GZZLUVIC` took the registry
+     * 99 → 100; removing that board left it at 100 with `count: 1` still
+     * stored, through repeated polls.
+     *
+     * The consequence is quiet and only ever costs money — the Syncer keeps
+     * polling TfL for stations nobody watches, and the registry grows
+     * monotonically for the life of the deployment. Nothing breaks on screen,
+     * which is why it survived: the failure looks exactly like a popular
+     * station somebody else still tracks.
+     *
+     * The fix writes a single FIELD PATH rather than the whole map, using
+     * `FieldValue.delete()` for the removal — the one construct merge honours
+     * as "remove this". Writing one key also means two concurrent updates for
+     * DIFFERENT stations no longer carry each other's data.
+     *
+     * Naptan ids are alphanumeric, so they are safe to interpolate into a
+     * dotted field path; a key containing a dot would need `FieldPath`.
      */
     private static async updateCount(naptanId: string, delta: number) {
         try {
             await db.runTransaction(async (transaction) => {
                 const doc = await transaction.get(this.registryRef);
-                const data = doc.exists ? doc.data() : { stationCounts: {} };
-                const counts = data?.stationCounts || {};
-                
-                let currentCount = counts[naptanId] || 0;
-                let newCount = currentCount + delta;
-                
-                if (newCount <= 0) {
-                    delete counts[naptanId];
-                } else {
-                    counts[naptanId] = newCount;
+                const counts = (doc.exists ? doc.data()?.stationCounts : {}) || {};
+                const newCount = (counts[naptanId] || 0) + delta;
+
+                // No document yet: `update` would throw, and there is nothing to
+                // decrement anyway.
+                if (!doc.exists) {
+                    if (newCount > 0) {
+                        transaction.set(this.registryRef, {
+                            stationCounts: { [naptanId]: newCount },
+                            lastUpdatedTime: nowMs(),
+                        });
+                    }
+                    return;
                 }
-                
-                transaction.set(this.registryRef, {
-                    stationCounts: counts,
-                    lastUpdatedTime: nowMs()
-                }, { merge: true });
+
+                transaction.update(this.registryRef, {
+                    // Floors at removal rather than storing a zero or a negative:
+                    // the listener treats presence as "subscribed", so a key at 0
+                    // would keep the station polled just as effectively as a 1.
+                    [`stationCounts.${naptanId}`]:
+                        newCount <= 0 ? FieldValue.delete() : newCount,
+                    lastUpdatedTime: nowMs(),
+                });
             });
         } catch (e) {
             console.error(`SUBSCRIPTION: ❌ Transaction failed for ${naptanId}:`, e);

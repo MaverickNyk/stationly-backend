@@ -27,6 +27,32 @@ async function resolveUid(req: Request): Promise<string | undefined> {
     }
 }
 
+/**
+ * A request field that must reach Firestore as an array of non-empty strings.
+ *
+ * Both scoping arrays get the same treatment, from one place: they are written
+ * straight into documents that push audiences are queried against, so a stray
+ * number or null in the array is a row that silently never matches.
+ */
+function asStringList(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
+        : [];
+}
+
+/**
+ * A body field that must reach Firestore as a string, or not at all.
+ *
+ * The request body is `any`, so TypeScript cannot stop a number or an object
+ * reaching a field the registry types as `string`. Firestore would store it
+ * happily — and a non-string TOKEN then travels all the way to the APNs client
+ * before failing, as a delivery error on a device that looks correctly
+ * registered.
+ */
+function asString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 export class DevicePushController {
 
     /**
@@ -36,21 +62,34 @@ export class DevicePushController {
      *     summary: Register this iOS device's APNs tokens
      *     description: >
      *       Upserts the widget-extension push token (iOS 26+) and/or the app's
-     *       APNs token, plus the stations this device's widgets show. Idempotent;
-     *       the client calls it on cold launch, on token rotation, and whenever
-     *       the station list changes.
+     *       APNs token, plus the stations and lines this device's widgets show.
+     *       Idempotent; the client calls it on cold launch, on token rotation,
+     *       and whenever the board list changes.
+     *
+     *       `stations` scopes station-targeted refreshes; `lines` scopes
+     *       disruption pushes, which TfL reports by line rather than by station.
+     *       Both default to an empty array, which means "matches no scoped
+     *       send" — a device that registers without them receives only
+     *       unscoped broadcasts and its own account's `user.sync`.
      *     tags: [Widget Push]
      */
     static async register(req: Request, res: Response) {
         const {
             deviceId, widgetToken, appToken, environment,
-            iosVersion, appVersion, stations,
+            iosVersion, appVersion, stations, lines,
         } = req.body ?? {};
+
+        // Normalise BEFORE validating, so the presence check below sees what will
+        // actually be stored. Checking the raw body first would let a non-string
+        // token pass the guard and then fail the service's own identical check —
+        // turning a malformed request into a 500 instead of the 400 it is.
+        const widget = asString(widgetToken);
+        const app = asString(appToken);
 
         if (!deviceId || typeof deviceId !== 'string') {
             return res.status(400).json({ error: 'Missing deviceId' });
         }
-        if (!widgetToken && !appToken) {
+        if (!widget && !app) {
             return res.status(400).json({ error: 'Provide widgetToken and/or appToken' });
         }
         if (environment && environment !== 'production' && environment !== 'sandbox') {
@@ -74,12 +113,30 @@ export class DevicePushController {
                 // self-asserted uid would let any client subscribe itself to
                 // another account's sync signals.
                 uid: await resolveUid(req),
-                widgetToken,
-                appToken,
+                widgetToken: widget,
+                appToken: app,
                 environment,
-                iosVersion,
-                appVersion,
-                stations: Array.isArray(stations) ? stations.filter((s: unknown) => typeof s === 'string') : [],
+                iosVersion: asString(iosVersion),
+                appVersion: asString(appVersion),
+                stations: asStringList(stations),
+                // ── `lines` was destructured nowhere and forwarded nowhere ──
+                //
+                // The client has always sent it (`DevicePushCoordinator.register`
+                // posts stations AND lines), and the registry has always had a
+                // column for it, but this controller silently dropped it — so
+                // every row in `devices` was written with `lines: []`.
+                //
+                // That is not a cosmetic gap. TfL reports disruption BY LINE, so
+                // `DisruptionTriggerService` scopes its pushes with
+                // `listForLines`, which is an `array-contains-any` over exactly
+                // this field. Against an empty array it matches nothing: the
+                // audience resolved to zero devices, the send reported success,
+                // and the automatic disruption push — the entire feature —
+                // delivered to nobody without a single error anywhere.
+                //
+                // The registry's own doc comment warned about this precise
+                // failure. The warning was written; the wiring was not.
+                lines: asStringList(lines),
             });
             return res.json({ success: true, apnsConfigured: ApnsService.isConfigured() });
         } catch (error: any) {

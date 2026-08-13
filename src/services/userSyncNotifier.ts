@@ -11,9 +11,16 @@ import { DevicePushService } from './devicePushService';
  * cold launch. Otherwise device A keeps showing yesterday's board
  * after device B changed it.
  *
- *   reason = "stations"  → saved-stations list changed
- *   reason = "profile"   → display name (or other profile field) changed
- *   reason = "deleted"   → account deleted; client force-logs-out
+ *   reason = "stations"    → LEGACY saved-stations list changed (Android's)
+ *   reason = "boards"      → v2 saved-boards list changed (iOS's)
+ *   reason = "profile"     → display name (or other profile field) changed
+ *   reason = "deleted"     → account deleted; client force-logs-out
+ *
+ * The two list reasons are distinct because the two lists are, and a client
+ * that reconciles the wrong one does nothing at all — visibly, since the board
+ * it was told about never appears. A client that does not recognise a reason
+ * falls back to a full reconcile, which is correct for all of them and merely
+ * does more work than the reason asked for.
  *
  * ## Two transports, one signal
  * This used to be FCM-only, which quietly meant Android-only: an iPhone got no
@@ -39,7 +46,27 @@ import { DevicePushService } from './devicePushService';
  * Fire-and-forget: callers wrap this in setImmediate so the user's
  * write returns immediately and a push failure never fails the request.
  */
-export type UserSyncReason = 'stations' | 'profile' | 'deleted';
+export type UserSyncReason = 'stations' | 'boards' | 'profile' | 'deleted';
+
+/** Options for [UserSyncNotifier.notify]. */
+export interface UserSyncOptions {
+    /**
+     * The device that made the change, so it is not woken by its own write.
+     *
+     * ## Only the APNs half can honour it
+     * The device registry is keyed by device id, so excluding one is a filter on
+     * the resolved audience. `fcm_tokens` is keyed by the TOKEN and carries no
+     * device id — `/user/fcm/register` never sent one, and the Android builds
+     * already installed never will — so on that transport the sender cannot be
+     * identified, let alone skipped. Android clients already guard on the `uid`
+     * in the payload, and a self-directed reconcile is idempotent; it is waste,
+     * not breakage.
+     *
+     * Optional throughout: a caller that does not know which device it was gets
+     * exactly the previous behaviour.
+     */
+    excludeDeviceId?: string;
+}
 
 export class UserSyncNotifier {
     /**
@@ -48,23 +75,28 @@ export class UserSyncNotifier {
      * convenience signalling, the foreground re-sync on the client is
      * the durable fallback.
      */
-    static async notify(uid: string, reason: UserSyncReason): Promise<void> {
+    static async notify(uid: string, reason: UserSyncReason, opts?: UserSyncOptions): Promise<void> {
         // Both transports, independently: a failure or an empty audience on one
         // must not stop the other. Historically the FCM path returning early on
         // "no tokens" is exactly what would have skipped every iOS device.
         await Promise.all([
             this.notifyFcm(uid, reason),
-            this.notifyApns(uid, reason),
+            this.notifyApns(uid, reason, opts?.excludeDeviceId),
         ]);
     }
 
     /** iOS (and anything else in the device registry), over APNs. */
-    private static async notifyApns(uid: string, reason: UserSyncReason): Promise<void> {
+    private static async notifyApns(
+        uid: string,
+        reason: UserSyncReason,
+        excludeDeviceId?: string,
+    ): Promise<void> {
         try {
             const outcome = await DevicePushService.send({
                 kind: 'user.sync',
                 uid,
                 reason,
+                excludeDeviceId,
             });
             if (outcome.devicesTargeted > 0) {
                 console.log(

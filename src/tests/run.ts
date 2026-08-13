@@ -33,6 +33,9 @@ import { DataCacheService } from '../services/dataCacheService';
 import { StationController } from '../controllers/stationController';
 import { TflApiClient, UnknownStationError, TflUnavailableError } from '../client/TflApiClient';
 import { StationPredictionResponse } from '../models';
+import { DeviceLifecycleService } from '../services/deviceLifecycleService';
+import { DeviceRegistryService } from '../services/deviceRegistryService';
+import { UserFcmTokenService } from '../services/userFcmTokenService';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
 
@@ -703,6 +706,166 @@ test('a snapshot frame is undefined when nothing is held', () => {
     assert.strictEqual(LineStatusStreamHub.snapshotFrame('victoria', undefined), undefined);
     const frame = LineStatusStreamHub.snapshotFrame('victoria', status('victoria', 'Good Service'));
     assert.strictEqual(JSON.parse(frame!).type, 'snapshot');
+});
+
+// ─── device lifecycle ────────────────────────────────────────────────────────
+//
+// The fan-out that keeps the three device stores agreeing about which account a
+// device belongs to. Every one of these covers a bug that was live: a
+// signed-out phone left in its old account's push audience, an FCM purge that
+// must not fire while another device is still signed in, and a failure in one
+// store silently skipping the other.
+//
+// Both collaborators are stubbed at the static-method boundary, so nothing here
+// touches Firestore. Importing them is safe for the reason given at the top of
+// this file — the Admin SDK is lazy, so no connection is made at import time.
+
+interface RegistryCalls {
+    bind: Array<{ deviceId: string; uid: string }>;
+    release: string[];
+    releaseAll: string[];
+    deleteAll: string[];
+    fcmPurge: string[];
+}
+
+/**
+ * Swap both collaborators for recorders, run [body], and always put them back.
+ *
+ * `throwOn` makes the named registry call reject, which is how the isolation
+ * tests prove one store failing cannot skip the other.
+ */
+async function withDeviceStubs(
+    body: (calls: RegistryCalls) => Promise<void>,
+    throwOn?: 'registry' | 'fcm',
+): Promise<void> {
+    const calls: RegistryCalls = { bind: [], release: [], releaseAll: [], deleteAll: [], fcmPurge: [] };
+    const registry = DeviceRegistryService as any;
+    const fcm = UserFcmTokenService as any;
+    const saved = {
+        bindUid: registry.bindUid,
+        releaseUid: registry.releaseUid,
+        releaseAllForUid: registry.releaseAllForUid,
+        deleteAllForUid: registry.deleteAllForUid,
+        purgeAllForUid: fcm.purgeAllForUid,
+    };
+
+    const boom = async () => { throw new Error('firestore unavailable'); };
+    registry.bindUid = async (deviceId: string, uid: string) => {
+        if (throwOn === 'registry') return boom();
+        calls.bind.push({ deviceId, uid });
+    };
+    registry.releaseUid = async (deviceId: string) => {
+        if (throwOn === 'registry') return boom();
+        calls.release.push(deviceId);
+    };
+    registry.releaseAllForUid = async (uid: string) => {
+        if (throwOn === 'registry') return boom();
+        calls.releaseAll.push(uid); return 1;
+    };
+    registry.deleteAllForUid = async (uid: string) => {
+        if (throwOn === 'registry') return boom();
+        calls.deleteAll.push(uid); return 1;
+    };
+    fcm.purgeAllForUid = async (uid: string) => {
+        if (throwOn === 'fcm') return boom();
+        calls.fcmPurge.push(uid); return 2;
+    };
+
+    try {
+        await body(calls);
+    } finally {
+        Object.assign(registry, {
+            bindUid: saved.bindUid,
+            releaseUid: saved.releaseUid,
+            releaseAllForUid: saved.releaseAllForUid,
+            deleteAllForUid: saved.deleteAllForUid,
+        });
+        fcm.purgeAllForUid = saved.purgeAllForUid;
+    }
+}
+
+test('logout releases THIS device from the registry', async () => {
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('uid-1', 'device-A', false);
+        assert.deepStrictEqual(calls.release, ['device-A']);
+        assert.deepStrictEqual(calls.releaseAll, [], 'one device signing out must not release the others');
+    });
+});
+
+test('the FCM purge fires ONLY when the last device signs out', async () => {
+    // All-or-nothing by necessity: fcm_tokens is keyed by the token, so the
+    // backend cannot tell which document belongs to the device that just left.
+    // Purging on any single logout would mute push on the user's other phones.
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('uid-1', 'device-A', false);
+        assert.deepStrictEqual(calls.fcmPurge, [], 'another device is still signed in');
+
+        await DeviceLifecycleService.release('uid-1', 'device-B', true);
+        assert.deepStrictEqual(calls.fcmPurge, ['uid-1']);
+    });
+});
+
+test('sign-out-everywhere releases every row for the account', async () => {
+    // No deviceId is how a legacy client, and deleteAccount, reach this path.
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('uid-1', undefined, true);
+        assert.deepStrictEqual(calls.releaseAll, ['uid-1']);
+        assert.deepStrictEqual(calls.release, []);
+        assert.deepStrictEqual(calls.fcmPurge, ['uid-1']);
+    });
+});
+
+test('a registry failure still purges the FCM tokens, and never throws', async () => {
+    // The two stores are independent. Before they were unified, a failure in
+    // one simply meant the other was never attempted — which is how a phone
+    // ended up signed out of the session map but still in the push audience.
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('uid-1', 'device-A', true);
+        assert.deepStrictEqual(calls.fcmPurge, ['uid-1'], 'FCM purge must not be skipped');
+    }, 'registry');
+});
+
+test('an FCM failure still releases the registry, and never throws', async () => {
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('uid-1', 'device-A', true);
+        assert.deepStrictEqual(calls.release, ['device-A'], 'registry release must not be skipped');
+    }, 'fcm');
+});
+
+test('release is a no-op without a uid', async () => {
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.release('', 'device-A', true);
+        assert.deepStrictEqual(calls, { bind: [], release: [], releaseAll: [], deleteAll: [], fcmPurge: [] });
+    });
+});
+
+test('bind points the device at the account, and tolerates a missing row', async () => {
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.bind('uid-2', 'device-A');
+        assert.deepStrictEqual(calls.bind, [{ deviceId: 'device-A', uid: 'uid-2' }]);
+
+        // Android has no registry row at all, so a failure here is the normal
+        // case rather than an error — it must never surface to the login.
+        await DeviceLifecycleService.bind('uid-2', '');
+        assert.strictEqual(calls.bind.length, 1, 'a blank device id is not a write');
+    });
+
+    await withDeviceStubs(async () => {
+        await DeviceLifecycleService.bind('uid-2', 'device-A');   // throws internally
+    }, 'registry');
+});
+
+test('account deletion removes the device rows and swallows a failure', async () => {
+    await withDeviceStubs(async calls => {
+        await DeviceLifecycleService.purgeForUid('uid-3');
+        assert.deepStrictEqual(calls.deleteAll, ['uid-3']);
+    });
+
+    // Best-effort: the account is already half-deleted by this point, and
+    // throwing would abandon the rest of the teardown.
+    await withDeviceStubs(async () => {
+        await DeviceLifecycleService.purgeForUid('uid-3');
+    }, 'registry');
 });
 
 main();
