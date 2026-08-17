@@ -98,6 +98,15 @@ const HOSTS: Record<ApnsEnvironment, string> = {
  *  20-minute minimum refresh interval. */
 const TOKEN_TTL_MS = 45 * 60 * 1000;
 
+/**
+ * The bundle id every environment's topic is composed from.
+ *
+ * Mirrors `STATIONLY_BUNDLE_BASE` in the iOS `Base.xcconfig`; the per-environment
+ * suffix is applied in [ApnsService.bundleId]. Keep the two in step — they are a
+ * hand-kept contract across two repositories, and a mismatch is silent.
+ */
+const BUNDLE_BASE = 'com.stationly.mobile';
+
 /** Reasons that mean "this token will never work again" as opposed to "try
  *  later". Only these prune the registry — treating a transient 503 as a dead
  *  token would quietly unregister a working device. */
@@ -126,9 +135,42 @@ export class ApnsService {
 
     private static keyId(): string { return process.env.APNS_KEY_ID ?? ''; }
     private static teamId(): string { return process.env.APNS_TEAM_ID ?? ''; }
-    /** The app's bundle id — the base for every `apns-topic`. */
+    /**
+     * The app's bundle id — the base for every `apns-topic`.
+     *
+     * ## Derived from the environment, not configured per deployment
+     * An APNs topic IS the bundle id, and since the environment split the two
+     * apps have different ones (`…mobile` and `…mobile.staging`) so they can sit
+     * on a phone side by side. A push addressed to the wrong one is rejected per
+     * device as `DeviceTokenNotForTopic` — which reads, from the device, as
+     * nothing happening at all.
+     *
+     * That is not hypothetical. Between the split (2026-08-15) and 2026-08-17
+     * staging inherited the production topic from `.env.defaults`, and **every**
+     * app-targeted push to a staging device failed for two days: `policy.update`,
+     * `boost.*`, `user.sync`, and the widget push type that derives its own topic
+     * from this value. Nothing surfaced it, because a push nobody receives looks
+     * exactly like a push nobody sent.
+     *
+     * So it is no longer something a deployment has to remember to set. It
+     * follows `APP_ENV`, which every environment already sets correctly and
+     * which nothing else works without, mirroring how the iOS side composes the
+     * same id from `STATIONLY_BUNDLE_BASE` + a per-config suffix. A new
+     * environment gets the right topic by existing.
+     *
+     * `APNS_BUNDLE_ID` still wins when set, for the case this rule does not
+     * anticipate — a TestFlight-only id, or a rename in flight.
+     *
+     * Only the exact string `staging` diverts; anything else, including an unset
+     * `APP_ENV`, resolves to production. That is the safe direction to be wrong
+     * in: a misconfigured staging box fails loudly against every device it
+     * targets, whereas production silently addressing a staging topic would
+     * take push down for real users.
+     */
     static bundleId(): string {
-        return process.env.APNS_BUNDLE_ID ?? 'com.stationly.mobile';
+        const explicit = process.env.APNS_BUNDLE_ID?.trim();
+        if (explicit) return explicit;
+        return process.env.APP_ENV === 'staging' ? `${BUNDLE_BASE}.staging` : BUNDLE_BASE;
     }
 
     /**
