@@ -105,6 +105,7 @@ const TIER_RUSH = 'P1';
 const TIER_DAY = 'P2';
 const TIER_NIGHT = 'P3';
 const TIER_WEEKEND = 'P4';
+const TIER_PREDAWN = 'P5';
 
 const WEEKDAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
 const WEEKEND = ['SAT', 'SUN'];
@@ -113,7 +114,16 @@ export class RefreshPolicyService {
     static getRefreshPolicy(): RefreshPolicy {
         return {
             id: 'widget_refresh_policy',
-            version: 3,
+            // Held at 1 deliberately while the app is pre-launch: there are no
+            // clients in the field to be stale, so a monotonic counter is
+            // bookkeeping with nobody to serve. Nothing reads it today either —
+            // `devicePushService` puts it on the wire and no client compares it.
+            //
+            // START INCREMENTING IT AT LAUNCH. The moment real devices hold a
+            // cached copy, this is what lets a `policy.update` push say "you are
+            // stale" without carrying the whole document, and a version that
+            // silently stopped moving would make every such push a no-op.
+            version: 1,
             timezone: 'Europe/London',
 
             tiers: [
@@ -142,7 +152,13 @@ export class RefreshPolicyService {
                     denseMinutes: 15,
                     sparseStepMinutes: 5,
                     horizonMinutes: 60,
-                    backgroundTaskMinutes: 60,
+                    // Was 60, i.e. slower than the display cadence it feeds, so
+                    // an off-peak board could be asked to redraw at 45 minutes
+                    // with data already an hour old. The background wake draws
+                    // on a SEPARATE budget from the widget timeline, so matching
+                    // it to `intervalMinutes` costs no reloads at all — it just
+                    // means every redraw has something new to show.
+                    backgroundTaskMinutes: 45,
                 },
                 {
                     // ── Saturday and Sunday daytime ──
@@ -177,6 +193,9 @@ export class RefreshPolicyService {
                     // rather than merely slowing it — waking a phone at 03:00
                     // to fetch a board nobody will look at spends battery to
                     // change nothing.
+                    //
+                    // This band now ENDS at 05:00 rather than 06:30, with P5
+                    // covering the gap. See that tier for why.
                     id: TIER_NIGHT,
                     label: 'Night',
                     intervalMinutes: 180,
@@ -185,13 +204,48 @@ export class RefreshPolicyService {
                     horizonMinutes: 45,
                     backgroundTaskMinutes: 0,
                 },
+                {
+                    // ── The quiet hour before anyone looks ──
+                    //
+                    // The problem this fixes: P3 asks for 180 minutes AND
+                    // switches the background wake off, so nothing whatsoever
+                    // refreshed between 23:00 and 06:30. A commuter's first
+                    // glance of the day landed on a board whose data could be
+                    // three hours old — the single highest-value moment on the
+                    // clock, served by the staleset data of the day.
+                    //
+                    // The fix is deliberately lopsided. `intervalMinutes` is 90,
+                    // i.e. about ONE timeline reload across the whole band,
+                    // because reloads are the metered resource and nobody is
+                    // watching the screen at 05:20 anyway. `backgroundTaskMinutes`
+                    // is 20, which is dense — but that layer draws on a separate
+                    // budget and only fetches DATA. So the phone quietly brings
+                    // the board up to date in the dark and spends almost none of
+                    // the widget's quota doing it, and 06:30 opens on numbers
+                    // that are minutes old rather than hours.
+                    //
+                    // Battery: three or four fetches in the ninety minutes before
+                    // the alarm goes off, against none at all between 23:00 and
+                    // 05:00. That is the trade, and it is the right way round.
+                    id: TIER_PREDAWN,
+                    label: 'Pre-dawn',
+                    intervalMinutes: 90,
+                    denseMinutes: 10,
+                    sparseStepMinutes: 15,
+                    horizonMinutes: 60,
+                    backgroundTaskMinutes: 20,
+                },
             ],
 
             // Priority ascending so the peaks win any overlap with the bands
             // laid under them. Nothing here overlaps today; the ordering is
             // what keeps a hand-edited policy predictable.
             windows: [
-                { from: '23:00', to: '06:30', tierId: TIER_NIGHT, priority: 0 },
+                { from: '23:00', to: '05:00', tierId: TIER_NIGHT, priority: 0 },
+                // Butts against both neighbours exactly, so the day is still
+                // covered end to end and nothing falls through to
+                // `defaultTierId`.
+                { from: '05:00', to: '06:30', tierId: TIER_PREDAWN, priority: 0 },
                 { days: WEEKDAYS, from: '09:30', to: '16:00', tierId: TIER_DAY, priority: 1 },
                 { days: WEEKDAYS, from: '19:30', to: '23:00', tierId: TIER_DAY, priority: 1 },
                 // Butts directly against the night band rather than starting
