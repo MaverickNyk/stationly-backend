@@ -175,9 +175,16 @@ export class StationStreamHub {
         const id = this.normalise(naptanId);
         if (!id) return 0;
 
-        // Store first. The cache owns ordering: a `false` here means a NEWER
-        // payload is already held, so re-broadcasting this one would make
-        // clients flicker backwards.
+        // Store first, for TWO reasons now.
+        //
+        // 1. Ordering. The cache owns it: a `false` here means a NEWER payload
+        //    is already held, so re-broadcasting this one would make clients
+        //    flicker backwards.
+        // 2. `PredictionCache.set` stamps each departure's `viaKey` IN PLACE,
+        //    and the frame below is serialised from this same object. Moving the
+        //    store after the send would ship unstamped departures to every
+        //    streaming client while the cached copy had them — the board and the
+        //    live stream would filter differently. Keep this line first.
         const accepted = PredictionCache.set(id, payload as any, source);
         if (!accepted) return -1;
 

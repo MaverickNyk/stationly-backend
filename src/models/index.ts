@@ -47,6 +47,27 @@ export interface PredictionItem {
     platform: string;
     eta: string; // ISO-8601
     displayName: string;
+    /**
+     * Which branch this service takes, when TfL labels one ("Morden via Bank"
+     * → `bank`). See utils/viaKey.ts.
+     *
+     * ## ABSENT means "no branch", and absent is the normal case
+     * The field is omitted entirely rather than sent as null. Only the Northern
+     * and Central lines ever produce a value — they are the only two that split,
+     * rejoin, AND get labelled by TfL — so an explicit null would ride on every
+     * departure of every other line, on every stream frame, to say nothing.
+     *
+     * Clients must treat absent exactly as they treat any unrecognised value:
+     * FAIL OPEN, and show the train. Reading a missing branch as "not on my
+     * branch" would hide services on the whole rest of the network.
+     *
+     * Stamped for every producer at `PredictionCache.set`, not in the sources.
+     * There are two producers — our own TypeScript sources and the Java Syncer,
+     * whose payloads are stored verbatim — and deriving it in a source covered
+     * only the first, so the same station answered differently depending on who
+     * wrote last.
+     */
+    viaKey?: string;
 }
 
 export interface DirectionPredictions {

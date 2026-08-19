@@ -176,6 +176,25 @@ export interface BoardFilter {
      */
     viaIds?: string[];
     viaNames?: string[];
+    /**
+     * Branch tokens a departure's own `viaKey` must be one of ("bank",
+     * "charingcross") — part of the RESOLUTION, re-derived on every re-resolve.
+     *
+     * Without this a board that says "through Bank" cannot exclude the Charing
+     * Cross train, because both report the same destination naptan. See
+     * `docs/BRANCH_VIA_KEYS.md`.
+     */
+    viaKeys?: string[];
+    /**
+     * Whole services taken from the map's terminus chips, by pattern id
+     * ("940GZZLUMDN:bank"), with their display names index-aligned.
+     *
+     * The INTENT behind a branch pick, kept beside [viaIds] because they answer
+     * different questions: a pattern says where a train GOES, a via stop says
+     * where it PASSES.
+     */
+    patternIds?: string[];
+    patternNames?: string[];
     /** Epoch millis [destinationIds] was last resolved from route data. */
     resolvedAt?: number;
 }
@@ -1006,6 +1025,16 @@ export class UserService {
                             destinationNames: sel.filter?.destinationNames ?? [],
                             viaIds: sel.filter?.viaIds ?? [],
                             viaNames: sel.filter?.viaNames ?? [],
+                            // ⚠️ This is an ALLOW-LIST, not a pass-through. A
+                            // filter field missing from here is silently dropped
+                            // on every sync, so the device that saved it keeps
+                            // working and every OTHER device — and the same
+                            // device after a reinstall — gets the board back
+                            // with that half of the filter gone. Add new filter
+                            // fields HERE as well as to the client model.
+                            viaKeys: sel.filter?.viaKeys ?? [],
+                            patternIds: sel.filter?.patternIds ?? [],
+                            patternNames: sel.filter?.patternNames ?? [],
                             resolvedAt: typeof sel.filter?.resolvedAt === 'number' ? sel.filter.resolvedAt : 0,
                         },
                     })),
