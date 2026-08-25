@@ -2,8 +2,11 @@ import admin from 'firebase-admin';
 import { db, auth } from '../config/firebase';
 import { SubscriptionService } from './subscriptionService';
 import { EmailService } from './emailService';
-import { UserSyncNotifier } from './userSyncNotifier';
+import { UserSyncNotifier, UserSyncReason } from './userSyncNotifier';
 import { DeviceLifecycleService } from './deviceLifecycleService';
+import { UserRevLedger } from './userRevLedger';
+import { UserDeviceService } from './userDeviceService';
+import { UserWatchIndex } from './userWatchIndex';
 
 const FieldValue = admin.firestore.FieldValue;
 
@@ -28,8 +31,15 @@ export interface UserProfile {
     email: string;
     displayName: string;
     photoURL?: string;
-    address?: string;
-    phoneNumber?: string;
+    // `address` and `phoneNumber` were declared here and NEVER written or read
+    // by any backend path, and no client ever sent them. Removed rather than
+    // left: this product does not collect either, and a declared field is an
+    // invitation to start. §3.1 of the design.
+    //
+    // Safe for the frozen APK: its `UserProfileResponse` models `address` as
+    // `String? = null`, an OPTIONAL with a default, so an absent key decodes
+    // fine. The four fields it cannot survive losing are uid, email,
+    // displayName and stations — see the ANDROID CONTRACT tests.
     signInProvider?: string;
     createdAt?: string;
     updatedAt?: string;
@@ -45,7 +55,13 @@ export interface UserProfile {
     // the 0→1 transition (first device in) and decrement on 1→0 (last device
     // out) — so 5 devices on one account still contribute exactly +1 to each
     // saved station's count.
-    sessions?: Record<string, DeviceSession>;
+    // NO `sessions` map. It moved to `users/{uid}/devices/{deviceId}`, where the
+    // row's EXISTENCE is the session — see [UserDeviceService]. Removed from the
+    // type rather than merely stopped being written, because a readable
+    // superseded store is still a store: while this field was declared and
+    // frozen, one login guard went on consulting it and the device row was
+    // never recreated after a sign-out. Nothing errored.
+
     // Authoritative copy of Firebase Auth's email_verified claim, mirrored on every
     // sync so callers can gate on the user doc instead of hitting Admin SDK each time.
     emailVerified?: boolean;
@@ -71,6 +87,25 @@ export interface UserProfile {
     boards?: SavedBoard[];
     /** Epoch millis of the last accepted [boards] write — the LWW guard. */
     boardsUpdatedAt?: number;
+    /**
+     * Monotonic counter, bumped by one on every CONTENT write and never on
+     * session or device churn.
+     *
+     * It is the whole of the client's "do I need to refetch?" decision: a client
+     * holds the rev it last applied and fetches only when an observed rev
+     * exceeds it. That is what takes an app open on an unchanged account from
+     * one Firestore read to zero.
+     *
+     * Bumped with `FieldValue.increment(1)` so it never needs a read-modify-write
+     * and is correct under any concurrency. Mirrored into SQLite by
+     * [UserRevLedger] — which reads it back rather than guessing it, for reasons
+     * that file explains at length.
+     *
+     * ⚠️ It bumps on CONTENT ONLY. Bumping it on login/logout would wake every
+     * one of the user's devices into a fetch that finds nothing changed, on
+     * every session event, which is the exact cost this field exists to remove.
+     */
+    stateRev?: number;
     /**
      * There is deliberately NO `preferences` field.
      *
@@ -225,14 +260,148 @@ export interface DeviceSession extends DeviceInfo {
  * account document by posting them through the profile sync, which is exactly
  * how they would come back.
  */
-const PROTECTED_PROFILE_FIELDS = new Set([
+export const PROTECTED_PROFILE_FIELDS = new Set([
     'uid', 'stations', 'boards', 'boardsUpdatedAt', 'preferences',
     'sessions', 'loggedIn', 'lastLoggedInTime', 'emailVerified', 'welcomeSent',
     'createdAt', 'updatedAt',
+    // Not merely "the client has no business setting this": the profile sync
+    // spreads unknown body keys straight onto the document, so a client posting
+    // `stateRev: 0` would RESET the account's counter. Every device holding a
+    // higher localRev would then stop fetching until the counter climbed back
+    // past where it had been — a silent, self-inflicted staleness across every
+    // device at once.
+    'stateRev',
 ]);
 
 export class UserService {
     private static collection = db.collection('users');
+
+    /**
+     * The tail of every content write: mirror the new rev, then tell the other
+     * devices, with the rev riding along.
+     *
+     * Always called inside a `setImmediate`, never awaited by the request. The
+     * user's write has already been acknowledged by the time this runs, which is
+     * what lets it afford the one Firestore read that keeps the ledger exact
+     * ([UserRevLedger] explains why a guessed value is not good enough).
+     *
+     * Both halves are best-effort by design. A failed refresh answers 0 and a
+     * failed push is already swallowed by the notifier — neither can turn a
+     * successful edit into a failed request, because there is no request left to
+     * fail.
+     */
+    /**
+     * The rev this write is about to produce, from the snapshot it already read.
+     *
+     * Returned to the WRITER only, never stored in the ledger. Under a
+     * concurrent write it undershoots — two writers both reading N both compute
+     * N+1 while the truth reaches N+2 — and undershooting is the safe direction:
+     * the writer's next rev check sees the (exact) ledger ahead of it and
+     * fetches, which is correct, because there genuinely is a change it does not
+     * have.
+     */
+    private static nextRevOf(data: Record<string, any> | undefined): number {
+        const current = Number(data?.stateRev ?? 0);
+        return (Number.isFinite(current) ? current : 0) + 1;
+    }
+
+    /**
+     * Re-derive this account's station/line audience index from the master.
+     *
+     * One document read, and it is the same one `UserRevLedger.refreshFromMaster`
+     * takes — so on a busy account this is two reads per content write rather
+     * than one. Kept separate rather than threaded through the ledger because
+     * the two answer different questions and a combined helper would have to
+     * return both, which is how a helper becomes a god function.
+     *
+     * Best-effort: [UserWatchIndex] swallows its own failures, and a stale index
+     * costs a missed or spurious disruption push until the account's next
+     * content write — never data.
+     */
+    private static async refreshWatchIndex(uid: string): Promise<void> {
+        try {
+            const doc = await this.collection.doc(uid).get();
+            if (!doc.exists) { await UserWatchIndex.forget(uid); return; }
+            const data = doc.data() ?? {};
+            await UserWatchIndex.replaceForUid(
+                uid,
+                this.effectiveStationIds(data),
+                this.effectiveLineIds(data),
+            );
+        } catch (err) {
+            console.warn(`USER_WATCH: ⚠️ refresh failed for ${uid}`, err);
+        }
+    }
+
+    private static afterContentWrite(
+        uid: string,
+        reason?: UserSyncReason,
+        excludeDeviceId?: string,
+    ): void {
+        setImmediate(() => {
+            void (async () => {
+                const rev = await UserRevLedger.refreshFromMaster(uid);
+                // Refresh the push-audience index off the SAME document read the
+                // rev refresh just paid for. Content changed, so the set of
+                // stations and lines this account watches may have changed with
+                // it — and this is the only path that maintains it.
+                await this.refreshWatchIndex(uid);
+                // No reason means "the content changed but nobody needs telling"
+                // — the diff-gated profile write that touched something no client
+                // redraws for. The ledger still has to learn the new rev, or the
+                // next rev check serves a stale one and suppresses a real fetch.
+                if (reason) await UserSyncNotifier.notify(uid, reason, { excludeDeviceId, rev });
+            })().catch(err => {
+                // Belt and braces. Nothing above is supposed to reject —
+                // UserRevLedger swallows by contract and the notifier swallows
+                // per transport — but this runs detached on a timer with no
+                // request to fail, so an escaped rejection would be an unhandled
+                // promise. That is the hazard the P0 route handlers were wrapped
+                // for, and it can take a pm2 worker down over a push nobody was
+                // waiting on.
+                console.error(`USER_SYNC: ❌ post-write tail failed for ${uid}`, err);
+            });
+        });
+    }
+
+    /**
+     * Does the device row still need what only the LOGIN transaction writes?
+     *
+     * ## One predicate, because there were two and they drifted the same day
+     * `startSession` asks this to decide whether to write the row, and
+     * `createOrUpdateUser` asks it to decide whether to run `startSession` at
+     * all. They were two separate expressions saying the same thing, and the
+     * cost of that showed up immediately: a fix applied to the copy inside the
+     * transaction had NO EFFECT, because the copy in the caller short-circuited
+     * first and the transaction never ran. Measured on the connected iPhone —
+     * the row came back without `firstSeen` or `model` twice in a row, once
+     * before the fix and once after it.
+     *
+     * That is the same shape as the bug the whole redesign exists to remove
+     * ("this fact has three implementations, so a fix to one is silently absent
+     * from the others"), reproduced in miniature inside a single file.
+     *
+     * ## Why `firstSeen` is the marker
+     * Freshness alone is the wrong question. `/device/register` also writes this
+     * row — tokens, environment, `lastSeen` — and now runs at sign-in, so it can
+     * CREATE the row before login gets there. A row it made looks perfectly
+     * fresh while missing every field only login supplies, and asking "is
+     * `lastSeen` recent" answers yes forever, because the path that keeps
+     * refreshing it is the one that cannot fill the gaps.
+     *
+     * This transaction is the only writer of `firstSeen`, so its absence is an
+     * exact answer to "has login ever written this row", in one field read.
+     *
+     * @param row the existing device row, or undefined when there is none
+     * @param now epoch ms, passed in so the caller and the transaction agree
+     */
+    static rowNeedsLoginWrite(row: Record<string, any> | undefined | null, now: number): boolean {
+        if (!row) return true;
+        if (typeof row.firstSeen !== 'number') return true;   // login has never written it
+        const seenAt = typeof row.lastSeen === 'number' ? row.lastSeen : NaN;
+        if (Number.isNaN(seenAt)) return true;
+        return now - seenAt > this.SESSION_REFRESH_MS;
+    }
 
     // A device idle this long (no login/refresh) is treated as gone and pruned.
     // Matches the FCM-token dormancy threshold. A device logged in but unopened
@@ -282,7 +451,7 @@ export class UserService {
      * were incremented — is the one that takes a live station away from other
      * users, and this can never do it.
      */
-    private static effectiveStationIds(data: Record<string, any> | undefined): string[] {
+    static effectiveStationIds(data: Record<string, any> | undefined): string[] {
         const legacy = (data?.stations ?? []) as SubscribedStation[];
         const ids = legacy.map(s => s?.id).filter((id): id is string => !!id);
 
@@ -300,6 +469,31 @@ export class UserService {
             }
         }
         return Array.from(new Set(ids));
+    }
+
+    /**
+     * The lines this account watches, from both board lists.
+     *
+     * The companion to [effectiveStationIds], and it exists for the same reason:
+     * the disruption audience is scoped by line, and after §3.1 took `lines[]`
+     * off the device row this is the only place that answer is derived.
+     *
+     * Lower-cased on the way out. TfL line ids arrive in mixed case across the
+     * two lists and a case-sensitive index would silently split one line into
+     * two audiences, each getting half the notifications.
+     */
+    static effectiveLineIds(data: Record<string, any> | undefined): string[] {
+        const out = new Set<string>();
+        for (const s of (data?.stations ?? []) as SubscribedStation[]) {
+            if (s?.line) out.add(String(s.line).toLowerCase());
+        }
+        const boards = Array.isArray(data?.boards) ? (data!.boards as SavedBoard[]) : [];
+        for (const board of boards) {
+            for (const selection of board?.selections ?? []) {
+                if (selection?.line) out.add(String(selection.line).toLowerCase());
+            }
+        }
+        return [...out];
     }
 
     /**
@@ -374,43 +568,22 @@ export class UserService {
         }));
     }
 
-    /**
-     * Build/refresh a device-session entry, preserving firstSeen if it exists.
-     *
-     * Every optional field is omitted rather than set to `undefined`. Firestore
-     * REJECTS undefined anywhere in a write — the Admin SDK is initialised
-     * without `ignoreUndefinedProperties` — so a client that sent a `deviceId`
-     * with no `deviceInfo` (the field is optional on the wire, and defaults to
-     * null on both clients) produced an entry of four undefined values and threw
-     * inside the session transaction, failing `/user/sync/profile`. That is the
-     * login path: the whole sign-in would have 500'd on a metadata field nothing
-     * reads. The same hazard is why `sanitiseBoards` runs [stripUndefined].
-     */
-    private static buildSessionEntry(
-        existing: DeviceSession | undefined,
-        info: DeviceInfo | undefined,
-        timestamp: string
-    ): DeviceSession {
-        return this.stripUndefined({
-            platform: info?.platform ?? existing?.platform,
-            osVersion: info?.osVersion ?? existing?.osVersion,
-            model: info?.model ?? existing?.model,
-            appVersion: info?.appVersion ?? existing?.appVersion,
-            firstSeen: existing?.firstSeen ?? timestamp,
-            lastSeen: timestamp,
-        });
-    }
+    // [buildSessionEntry] was deleted here — it built an entry for the
+    // `users.sessions` map, which no longer exists. Its merge rules (prefer the
+    // incoming DeviceInfo, keep the original firstSeen, stamp lastSeen now) live
+    // on inside `startSession`'s row write.
 
-    /** Drop sessions whose lastSeen is older than the TTL (uninstalled / abandoned devices). */
-    private static pruneStaleSessions(sessions: Record<string, DeviceSession>): Record<string, DeviceSession> {
-        const cutoff = Date.now() - this.SESSION_TTL_MS;
-        const out: Record<string, DeviceSession> = {};
-        for (const [id, s] of Object.entries(sessions)) {
-            const seen = Date.parse(s?.lastSeen ?? '');
-            if (!Number.isNaN(seen) && seen >= cutoff) out[id] = s;
-        }
-        return out;
-    }
+    // [isSessionLive] and [pruneStaleSessions] were deleted here.
+    //
+    // They answered "is this map entry inside the 90-day TTL?" against ISO
+    // strings in `users.sessions`. The merged device row stores epoch ms, so the
+    // predicate is `UserDeviceService.isRowLive` — a separate function on
+    // purpose: one accepting either shape would have to GUESS, and guessing
+    // permissively pins an account's subscription holds open forever.
+    //
+    // The detached-receiver trap survives the move and still has a test:
+    // callers pass the predicate to `.some`/`.filter`, which supply no `this`,
+    // so it reads its TTL through the class name.
 
     /**
      * Register/refresh a device session ATOMICALLY (Firestore transaction so
@@ -421,83 +594,157 @@ export class UserService {
      */
     static async startSession(uid: string, deviceId: string, deviceInfo?: DeviceInfo): Promise<void> {
         const ref = this.collection.doc(uid);
+
         let didActivate = false;
-        let sessionChanged = false;
         let stationIds: string[] = [];
+        /** Accounts this login signed OUT of this device, and their held stations. */
+        let deactivated: Array<{ uid: string; stationIds: string[] }> = [];
+
         await db.runTransaction(async (tx) => {
             // ── Reset on every attempt ──
             //
-            // Firestore RETRIES this callback on contention, and these flags
-            // live outside it. Only ever setting them to true made a retry
-            // permanently inherit the first attempt's answer: attempt 1 reads
-            // `loggedIn: false` and sets didActivate; another device wins the
-            // race; attempt 2 reads `loggedIn: true` and correctly decides not
-            // to activate — but didActivate is still true from attempt 1, so
-            // BOTH devices increment, and every saved station on the account
-            // ends up counted twice for one logical activation.
+            // Firestore RETRIES this callback on contention and these live
+            // outside it. Only ever setting them to true made a retry inherit
+            // the first attempt's answer: attempt 1 reads `loggedIn: false` and
+            // sets didActivate; another device wins the race; attempt 2 reads
+            // `loggedIn: true` and correctly decides not to activate — but the
+            // flag is still true, so BOTH increment and every saved station on
+            // the account is counted twice for one logical activation.
             //
             // An inflated count is not self-correcting: `updateCount` releases a
             // station only at 0, so it stays in the registry and the Syncer polls
-            // TfL for it forever. The transaction callback has to be idempotent —
-            // that is Firestore's contract for it, not a nicety.
+            // TfL for it forever. Idempotence is Firestore's contract for this
+            // callback, not a nicety. `deactivated` is the more dangerous one
+            // now — a stale entry decrements an account that is still signed in.
             didActivate = false;
-            sessionChanged = false;
             stationIds = [];
+            deactivated = [];
 
+            // ══ ALL READS FIRST ══
+            // Firestore forbids a read after a write inside a transaction, and
+            // the steal needs to read documents whose identity is only known
+            // after the collection-group query returns. So every read is
+            // gathered here, before the first write below.
             const doc = await tx.get(ref);
             if (!doc.exists) return;
             const data = doc.data() || {};
-            const ts = new Date().toISOString();
-            const prevLoggedIn = data.loggedIn === true;
-            const before = { ...(data.sessions || {}) };
-            const sessions = this.pruneStaleSessions({ ...before });
-            const hadDevice = !!sessions[deviceId];
-            const prunedStale = Object.keys(sessions).length !== Object.keys(before).length;
-            sessions[deviceId] = this.buildSessionEntry(sessions[deviceId], deviceInfo, ts);
 
-            // Write ONLY on a real session change — logged-out→in, a NEW device,
-            // or pruned stale sessions. A plain re-open on an already-active
-            // device writes NOTHING (kills the per-open heartbeat). Cross-device
-            // state (new device / logout) still propagates immediately.
-            // lastLoggedInTime/updatedAt are write-only metadata nothing reads,
-            // so we never write them for their own sake — they just piggyback on
-            // these real-change writes.
+            const mineSnap = await tx.get(UserDeviceService.devices(uid));
+
+            // Who else currently holds a session on THIS device?
             //
-            // ...with ONE exception, or the TTL above is a lie. Eliding the
-            // write means `lastSeen` never advances, so it is really "when this
-            // install first ran" and never "when we last heard from it". Two
-            // things follow, and both are wrong in opposite directions: a
-            // device in DAILY use for 90 days is pruned as abandoned, and a
-            // ghost left by a reinstall looks exactly as fresh as a real one.
-            //
-            // Refreshing at most once per [SESSION_REFRESH_MS] restores the
-            // meaning while keeping the optimisation where it pays: an ordinary
-            // re-open still writes nothing.
-            const seenAt = Date.parse(before[deviceId]?.lastSeen ?? '');
-            const sessionStale =
-                hadDevice && (Number.isNaN(seenAt) || Date.now() - seenAt > this.SESSION_REFRESH_MS);
-            const needWrite = !prevLoggedIn || !hadDevice || prunedStale || sessionStale;
-            if (needWrite) {
-                tx.update(ref, { sessions, loggedIn: true, lastLoggedInTime: ts, updatedAt: ts });
+            // ⚠️ The parent filter is load-bearing. A collection GROUP matches
+            // every collection of that name at any depth, INCLUDING the root
+            // `devices` collection this design retires. A stale root row read as
+            // a live session would make this "steal" a session that does not
+            // exist — signing a real user out of a device they are still using.
+            // Verified against staging data: the raw query returns the root row
+            // alongside the real one.
+            const othersSnap = await tx.get(
+                db.collectionGroup('devices').where('deviceId', '==', deviceId),
+            );
+            const victimUids = new Set<string>();
+            for (const d of othersSnap.docs) {
+                const account = d.ref.parent.parent;
+                if (!account) continue;          // a root-collection row, not a session
+                if (account.id === uid) continue; // our own row is not a theft
+                victimUids.add(account.id);
             }
+
+            // Each victim's document and remaining devices, so the last-out
+            // transition can be decided for them inside the same transaction.
+            const victims: Array<{ uid: string; data: any; others: string[] }> = [];
+            for (const v of victimUids) {
+                const vDoc = await tx.get(this.collection.doc(v));
+                const vDevs = await tx.get(UserDeviceService.devices(v));
+                victims.push({
+                    uid: v,
+                    data: vDoc.exists ? (vDoc.data() ?? {}) : null,
+                    others: vDevs.docs.map(d => d.id).filter(id => id !== deviceId),
+                });
+            }
+
+            // ══ DECIDE ══
+            const ts = new Date().toISOString();
+            const now = Date.now();
+            const prevLoggedIn = data.loggedIn === true;
+            const mine = new Map(mineSnap.docs.map(d => [d.id, d.data()]));
+            const existing = mine.get(deviceId);
+
+            // The write-elision survives the move, judged now on the ROW's
+            // lastSeen rather than the map entry's. Without it `lastSeen` never
+            // advances and the TTL becomes a lie in both directions: a device in
+            // daily use for 90 days is pruned as abandoned, and a reinstall ghost
+            // looks exactly as fresh as a real device.
+            const rowStale = this.rowNeedsLoginWrite(existing, now);
+
+            // Lazy TTL prune, one store over from where it used to live.
+            const staleMine = mineSnap.docs
+                .filter(d => d.id !== deviceId && !UserDeviceService.isRowLive(d.data()));
+
+            // ══ WRITES ══
+            const needUserWrite = !prevLoggedIn || !existing || staleMine.length > 0 || rowStale;
+            if (needUserWrite) {
+                tx.update(ref, { loggedIn: true, lastLoggedInTime: ts, updatedAt: ts });
+            }
+
+            if (rowStale) {
+                // MERGE, and never a token field.
+                //
+                // Only `/device/register` supplies tokens. A login that invented
+                // one — or wrote `undefined` into one — would put a token-less
+                // phantom into the broadcast audience, which is precisely the
+                // trap the old root-collection `bind` was bitten by. The rule
+                // survives the move; only its subject narrowed from the row to
+                // the tokens on it.
+                const row = this.stripUndefined({
+                    deviceId,
+                    platform: deviceInfo?.platform ?? existing?.platform ?? 'ios',
+                    model: deviceInfo?.model ?? existing?.model,
+                    osVersion: deviceInfo?.osVersion ?? existing?.osVersion,
+                    appVersion: deviceInfo?.appVersion ?? existing?.appVersion,
+                    firstSeen: typeof existing?.firstSeen === 'number' ? existing.firstSeen : now,
+                    lastSeen: now,
+                });
+                tx.set(UserDeviceService.devices(uid).doc(deviceId), row, { merge: true });
+            }
+
+            for (const d of staleMine) tx.delete(d.ref);
+
+            // ── The steal ──
+            //
+            // This is the piece the old system lacked entirely. Sign out of A
+            // while offline, sign in as B: today A's registry hold and push
+            // binding linger until a TTL, or forever. Here the transaction that
+            // creates B's row sees A still holds one for the same device,
+            // deletes it, and runs A's last-out transition atomically. The
+            // abandoned-switch hole closes at its root rather than by a
+            // compensating job.
+            for (const v of victims) {
+                tx.delete(UserDeviceService.devices(v.uid).doc(deviceId));
+                if (v.data && v.others.length === 0 && v.data.loggedIn === true) {
+                    tx.update(this.collection.doc(v.uid), { loggedIn: false, updatedAt: ts });
+                    deactivated.push({ uid: v.uid, stationIds: this.effectiveStationIds(v.data) });
+                }
+            }
+
             if (!prevLoggedIn) { didActivate = true; stationIds = this.effectiveStationIds(data); }
-            sessionChanged = needWrite;
         });
-        // Both board lists, deduplicated — an iOS board and an Android board are
+
+        // ══ POST-TRANSACTION — best-effort, cron-healed ══
+        // Both board lists, deduplicated: an iOS board and an Android board are
         // equally real subscriptions. See [effectiveStationIds].
         if (didActivate) this.applySubscriptionDelta([], stationIds);
+        for (const v of deactivated) {
+            console.log(`SESSION: 🔄 stole ${deviceId.slice(0, 8)} from ${v.uid} — last device out`);
+            this.applySubscriptionDelta(v.stationIds, []);
+        }
 
-        // Point the device registry at this account, so `user.sync` over APNs
-        // reaches it. Gated on the same "something actually changed" answer the
-        // transaction computed, because the elision above exists precisely to
-        // make a plain re-open free and an unconditional write here would hand
-        // that saving straight back.
-        //
-        // Fire-and-forget: the session is established, and a registry row that
-        // is one foreground behind is corrected by the client's own
-        // re-registration. Failing the login over it would be far worse.
-        if (sessionChanged) {
-            setImmediate(() => DeviceLifecycleService.bind(uid, deviceId));
+        // The legacy FCM store still has to be released for a stolen account:
+        // it is keyed by TOKEN and carries no device id, so it cannot be
+        // attributed per device and only the last-device-out gate can clear it.
+        for (const v of deactivated) {
+            setImmediate(() => { void DeviceLifecycleService.release(v.uid, undefined, true); });
         }
     }
 
@@ -516,35 +763,73 @@ export class UserService {
      * being delivered to a device whose user had signed out. The intended
      * behaviour has always been that a logged-out device is inactive.
      *
-     * [DeviceLifecycleService.release] applies that across all three stores from
-     * one place, using the transition computed INSIDE this transaction so the
-     * all-or-nothing FCM purge can never fire while another device is still
-     * signed in.
+     * ## Now a DELETE, and that reverses the old rule
+     * This used to clear a field on a row that survived, because the row
+     * outlived the session. It does not any more: **the row IS the session**, a
+     * signed-out device receives nothing, and leaving its tokens addressable is
+     * the bug rather than the safeguard.
+     *
+     * Nothing worth keeping is lost. `/device/register` runs on every foreground
+     * and on every APNs token callback, so the next sign-in rebuilds the row
+     * from the client's own state within a second of the app opening.
+     *
+     * ## Replay safety comes free from the path
+     * This addresses `users/{uid}/devices/{deviceId}` — a path that NAMES the
+     * account. If B has since signed in on that device, B's row lives under
+     * `users/{B}`, so A's replayed logout cannot see it, let alone delete it;
+     * A's own transition already ran, via B's steal in [startSession]. A queued
+     * logout can therefore be replayed as often as you like, years late, with no
+     * conditional check to get wrong. Under the old shape that was true by
+     * construction of a QUERY; here it is true by construction of a PATH, which
+     * is both stronger and cheaper to review.
      */
     static async endSession(uid: string, deviceId?: string): Promise<void> {
         const ref = this.collection.doc(uid);
         let didDeactivate = false;
         let stationIds: string[] = [];
+
         await db.runTransaction(async (tx) => {
-            // Reset on every attempt — see the same note in [startSession]. This
-            // direction is the more dangerous of the two: a retry that inherited
-            // a stale `didDeactivate` decrements stations the account still
-            // holds, and `updateCount` deletes a station at 0, so it can take a
-            // live station away from every OTHER user watching it.
+            // Reset on every attempt — see [startSession]. This direction is the
+            // more dangerous of the two: a retry inheriting a stale
+            // `didDeactivate` decrements stations the account still holds, and
+            // `updateCount` deletes a station at 0, so it can take a live
+            // station away from every OTHER user watching it.
             didDeactivate = false;
             stationIds = [];
 
+            // ── reads ──
             const doc = await tx.get(ref);
             if (!doc.exists) return;
             const data = doc.data() || {};
+            const mineSnap = await tx.get(UserDeviceService.devices(uid));
+
             const ts = new Date().toISOString();
             const prevLoggedIn = data.loggedIn === true;
-            let sessions = this.pruneStaleSessions({ ...(data.sessions || {}) });
-            if (deviceId) delete sessions[deviceId]; else sessions = {};
-            const nowLoggedIn = Object.keys(sessions).length > 0;
-            tx.update(ref, { sessions, loggedIn: nowLoggedIn, updatedAt: ts });
-            if (prevLoggedIn && !nowLoggedIn) { didDeactivate = true; stationIds = this.effectiveStationIds(data); }
+
+            // Targets: the named device, or ALL of them for "sign out
+            // everywhere". Stale rows go in the same pass, which is the lazy TTL
+            // prune one store over from where it used to live.
+            const targets = mineSnap.docs.filter(d =>
+                (deviceId ? d.id === deviceId : true) || !UserDeviceService.isRowLive(d.data()),
+            );
+            const remaining = mineSnap.docs.filter(d => !targets.some(t => t.id === d.id));
+
+            // ── writes ──
+            for (const d of targets) tx.delete(d.ref);
+
+            const nowLoggedIn = remaining.length > 0;
+            // Self-heal included: `loggedIn` true with zero rows deactivates
+            // even when this call deleted nothing, which repairs the
+            // `loggedIn:true, sessions:{}` artefact the old shape could produce.
+            if (prevLoggedIn !== nowLoggedIn) {
+                tx.update(ref, { loggedIn: nowLoggedIn, updatedAt: ts });
+            }
+            if (prevLoggedIn && !nowLoggedIn) {
+                didDeactivate = true;
+                stationIds = this.effectiveStationIds(data);
+            }
         });
+
         if (didDeactivate) this.applySubscriptionDelta(stationIds, []);
 
         // Awaited, unlike the subscription delta: the caller is `logOut`, whose
@@ -552,6 +837,11 @@ export class UserService {
         // matters". Returning before the audience is actually updated leaves a
         // window in which the phone that just logged out can still be woken by
         // the account it left.
+        //
+        // The device ROW is already gone — deleted in the transaction above —
+        // so what is left for this call is the legacy `fcm_tokens` store, which
+        // is keyed by token, carries no device id, and therefore can only be
+        // cleared on the last-device-out gate.
         await DeviceLifecycleService.release(uid, deviceId, didDeactivate);
     }
 
@@ -721,18 +1011,21 @@ export class UserService {
                 email,
                 displayName,
                 photoURL: data.photoURL || '',
-                address: data.address || '',
-                phoneNumber: data.phoneNumber || '',
+                // No `address` / `phoneNumber`: this was the ONLY writer of
+                // either, and it only ever wrote an empty string. Seeding a
+                // field nothing reads is how a field nobody wanted survives.
                 signInProvider: data.signInProvider || 'email',
                 createdAt: timestamp,
                 updatedAt: timestamp,
                 loggedIn: true,
                 lastLoggedInTime: timestamp,
-                // Seed the device-session map with this first device. New users
-                // have no saved stations yet, so there's nothing to increment.
-                sessions: deviceId
-                    ? { [deviceId]: this.buildSessionEntry(undefined, deviceInfo, timestamp) }
-                    : {},
+                // No session seeded HERE. The device row is written by
+                // `startSession`, called explicitly after the document exists —
+                // so the session is created in exactly one place for a new
+                // account and a returning one. Seeding it here as well was how
+                // the `loggedIn: true, sessions: {}` artefact was born: a signup
+                // with no deviceId wrote an empty map beside a true flag, and
+                // every later reader had to special-case it.
                 emailVerified,
                 welcomeSent: sendWelcome,
                 stations: [],
@@ -746,14 +1039,30 @@ export class UserService {
                 boardsUpdatedAt: 0,
             };
             await userRef.set(newUser);
-            // This branch seeds `sessions` directly instead of going through
-            // `startSession`, so it is also the one place the device binding
-            // would be missed. It matters for a signup that happens in a process
-            // that has ALREADY registered the device while signed out: the
-            // client elides a `/device/register` whose body is unchanged, and
-            // the uid is not part of that body, so nothing else would attach the
-            // new account to the row until the next cold launch.
-            if (deviceId) setImmediate(() => DeviceLifecycleService.bind(uid, deviceId));
+
+            // ── The signup path needs its device row too, and used to go without ──
+            //
+            // AWAITED, and not `DeviceLifecycleService.bind` — that is a named
+            // no-op now (the row IS the session, written inside the transaction
+            // below), so this branch was creating an account with `loggedIn: true`
+            // and NO device rows at all. Every invariant downstream reads that as
+            // an account whose every session has ended: `check_session_state`
+            // reports it as a violation, and the nightly sweep releases the
+            // account's subscription holds and purges its FCM tokens — at 3am,
+            // one account at a time, in complete silence.
+            //
+            // The window was real rather than theoretical: it closed only on the
+            // account's SECOND app open, or on a `/device/register` that happened
+            // to land first. Sign up in the evening, save a station, close the
+            // app, and the sweep took the station back before morning.
+            //
+            // After `userRef.set`, so the transaction's `if (!doc.exists) return`
+            // guard sees the document this branch just created. `prevLoggedIn` is
+            // true on that document, so no subscription delta fires — correct, a
+            // new account holds nothing yet. What it DOES do is write the row and
+            // run the steal, so signing up on a phone another account still holds
+            // releases that account atomically, exactly as a sign-in does.
+            if (deviceId) await this.startSession(uid, deviceId, deviceInfo);
             if (sendWelcome) {
                 // Fire-and-forget — never block signup on email delivery
                 EmailService.sendWelcomeEmail(email, displayName);
@@ -794,16 +1103,32 @@ export class UserService {
                 typeof data.displayName === 'string' &&
                 data.displayName.trim().length > 0 &&
                 data.displayName !== existingData?.displayName;
-            if (nameChanged) {
-                setImmediate(() => UserSyncNotifier.notify(uid, 'profile'));
-            }
 
             // Only write when something genuinely changed — `updatedAt` rides
-            // along only then (never as a standalone per-open heartbeat).
-            if (Object.keys(updateData).length > 0) {
+            // along only then (never as a standalone per-open heartbeat). The
+            // rev moves on exactly the same condition, which is what keeps a
+            // plain re-open (identical profile, no write) from waking every
+            // other device: no write, no bump, no fetch.
+            //
+            // Note the bump is gated on the WRITE, not on [nameChanged]. Any
+            // profile field the client can change is content a client can read
+            // back, so a photo URL changing has to move the rev too; gating on
+            // the display name alone would leave the others invisible to a
+            // rev-gated client. The push still fires only for the name, because
+            // that is the only one anything currently redraws for.
+            const wrote = Object.keys(updateData).length > 0;
+            if (wrote) {
                 updateData.updatedAt = timestamp;
+                updateData.stateRev = FieldValue.increment(1);
                 await userRef.update(updateData);
             }
+
+            // Ordered after the write so the ledger refresh reads a document
+            // that already has the new value. Fired when the name changed (the
+            // other devices need telling) OR when anything else was written (the
+            // ledger needs to learn the new rev, even with nobody to push to).
+            if (nameChanged) this.afterContentWrite(uid, 'profile');
+            else if (wrote) this.afterContentWrite(uid);
 
             // Register this device's session (atomic; increments saved-station
             // subscriptions only on this user's first active device).
@@ -814,17 +1139,39 @@ export class UserService {
             // transition needs the atomic path. (Stale-session pruning is
             // deferred to the next real write; harmless at the 90-day TTL.)
             if (deviceId) {
-                const session = existingData?.sessions?.[deviceId];
-                // A session whose `lastSeen` has aged past the refresh window
-                // must go through the transaction even though nothing else has
-                // changed — otherwise this short-circuit cancels the refresh
-                // that keeps SESSION_TTL_MS honest, and `lastSeen` is frozen at
-                // the first launch of the install forever.
-                const seenAt = Date.parse(session?.lastSeen ?? '');
-                const needsRefresh =
-                    !!session && (Number.isNaN(seenAt) || Date.now() - seenAt > this.SESSION_REFRESH_MS);
+                // ⚠️ Reads the device ROW, never `existingData.sessions`.
+                //
+                // This is where the cutover bit, and it is worth keeping the
+                // scar. The guard used to read the legacy sessions map — which
+                // P2c stopped WRITING but has not yet DELETED. So after a
+                // sign-out deleted the device row, the frozen map still showed
+                // the device as active, this short-circuit concluded there was
+                // nothing to do, `startSession` never ran, and **the row was
+                // never recreated on sign-in**. The device silently vanished
+                // from its own account's push audience while `loggedIn` stayed
+                // true on the strength of the account's OTHER devices.
+                //
+                // Caught on the connected iPhone, not by a test: nothing errored
+                // and every request returned 200.
+                //
+                // The general rule this illustrates: while a superseded store is
+                // still readable, "stopped writing it" is not the same as
+                // "nothing reads it". Grep for every reader before flipping the
+                // writer, and prefer deleting the old store early.
+                //
+                // One read on a known path, which is what the elision is buying:
+                // `startSession`'s transaction reads the user doc, the whole
+                // subcollection AND a collection-group query, so skipping it
+                // when nothing has changed matters more after the move, not less.
+                // THE SAME predicate the transaction uses — see
+                // [rowNeedsLoginWrite]. Two copies of it is exactly how a fix
+                // inside `startSession` came to have no effect at all: this
+                // short-circuit answered first and the transaction never ran.
+                const row = await UserDeviceService.get(uid, deviceId);
                 const deviceAlreadyActive =
-                    existingData?.loggedIn === true && !!session && !needsRefresh;
+                    existingData?.loggedIn === true
+                    && !!row
+                    && !this.rowNeedsLoginWrite(row, Date.now());
                 if (!deviceAlreadyActive) {
                     await this.startSession(uid, deviceId, deviceInfo);
                 }
@@ -835,10 +1182,32 @@ export class UserService {
                 EmailService.sendWelcomeEmail(email, displayName);
             }
 
+            // ⚠️ NEVER spread `updateData` raw into a response.
+            //
+            // It carries Firestore SENTINELS — `stateRev: FieldValue.increment(1)`
+            // — which are write instructions, not values. Serialised into JSON
+            // they become an opaque object, and a client that types the field
+            // (iOS declares `stateRev: Long`) throws on deserialisation.
+            //
+            // This shipped, and the symptom was worth recording because it looks
+            // nothing like the cause: the login POST returned **200**, the server
+            // state was correct, and the app bounced straight back to the login
+            // screen. `LoginViewModel` catches any exception in the sync block,
+            // rolls the session back and signs the user out — so a response the
+            // client could not parse presented as "we couldn't reach our
+            // servers". It was also intermittent in exactly the way that misleads:
+            // it only fired when a profile field had ACTUALLY changed (making
+            // `updateData` non-empty), so the retry immediately afterwards wrote
+            // nothing, carried no sentinel, and succeeded.
+            const { stateRev: _sentinel, ...safeUpdate } = updateData;
             return {
                 stations: [], // Default fallback
                 ...existingData,
-                ...updateData
+                ...safeUpdate,
+                // The optimistic next revision, as a NUMBER. Same rule as the two
+                // sync endpoints: it can only ever undershoot the truth, and an
+                // undershoot costs at most one extra fetch.
+                stateRev: wrote ? this.nextRevOf(existingData) : Number(existingData?.stateRev ?? 0),
             } as unknown as UserProfile;
         }
     }
@@ -861,8 +1230,25 @@ export class UserService {
             throw new Error('User not found');
         }
         const data = doc.data() as UserProfile;
+
+        // Free ledger repair. This read already happened for the caller's own
+        // reasons, so mirroring what it saw costs nothing and means every real
+        // client fetch drags the watermark back onto the truth.
+        //
+        // Not awaited: the caller is waiting on a profile, not on a cache write,
+        // and [UserRevLedger.observe] never rejects by contract — so detaching
+        // it here cannot leak an unhandled promise.
+        const rev = Number(data.stateRev ?? 0);
+        void UserRevLedger.observe(uid, Number.isFinite(rev) ? rev : 0);
+
         return {
             ...data,
+            // Explicit rather than left to the spread: a document written before
+            // this field existed has no `stateRev`, and `undefined` would reach
+            // the client as a missing key. Zero is the honest answer for "this
+            // account has never had a content write since the field shipped",
+            // and a client comparing against it simply fetches once.
+            stateRev: Number.isFinite(rev) ? rev : 0,
             stations: data.stations ?? [],
             // Never an empty array where the user has an Android board — see
             // [deriveBoardsFromLegacy]. `boards` present-but-empty is a real
@@ -896,6 +1282,9 @@ export class UserService {
         await userRef.update({
             stations,
             updatedAt: new Date().toISOString(),
+            // Content changed, so the account's revision moves. Same write, no
+            // extra cost, and atomic under concurrency — see [UserProfile.stateRev].
+            stateRev: FieldValue.increment(1),
             // Android's write path sweeps it too, so an account that never
             // touches iOS still sheds the dead field. Free — same write.
             ...DROP_LEGACY_PREFERENCES,
@@ -905,9 +1294,20 @@ export class UserService {
         // a station an iOS board still holds.
         this.applySubscriptionDelta(before, this.effectiveStationIds({ ...data, stations }));
 
-        setImmediate(() => UserSyncNotifier.notify(uid, 'stations', { excludeDeviceId: deviceId }));
+        this.afterContentWrite(uid, 'stations', deviceId);
 
-        return { success: true, count: stations.length };
+        // The optimistic next rev, handed back so the WRITING device can stamp
+        // its own `localRev` and not refetch its own echo on the next
+        // foreground. `excludeDeviceId` only stops the push; without this the
+        // writer would still see the ledger move and go and read the profile it
+        // just wrote.
+        //
+        // Optimistic is safe HERE though it is not safe in the ledger: the true
+        // rev after this write is at least `read + 1`, never less, so this can
+        // only ever undershoot. An undershoot makes the device fetch when it did
+        // not strictly need to, which is the harmless direction. The ledger's
+        // problem is the opposite one — see [UserRevLedger].
+        return { success: true, count: stations.length, rev: this.nextRevOf(data) };
     }
 
     /**
@@ -983,6 +1383,10 @@ export class UserService {
             boards: clean,
             boardsUpdatedAt: updatedAt,
             updatedAt: new Date().toISOString(),
+            // Only on this branch. The two declined branches above returned a
+            // 200 having written nothing, and bumping there would tell every
+            // device to refetch a document that never moved.
+            stateRev: FieldValue.increment(1),
             ...DROP_LEGACY_PREFERENCES,
         });
 
@@ -990,9 +1394,10 @@ export class UserService {
         // The device that made the edit already has this state — see
         // [UserSyncOptions.excludeDeviceId]. A client that sends no device id
         // (every build shipped so far) is notified exactly as before.
-        setImmediate(() => UserSyncNotifier.notify(uid, 'boards', { excludeDeviceId: deviceId }));
+        this.afterContentWrite(uid, 'boards', deviceId);
 
-        return { success: true, applied: true, count: clean.length };
+        // See [syncStations] for why the writer gets an optimistic rev back.
+        return { success: true, applied: true, count: clean.length, rev: this.nextRevOf(data) };
     }
 
     /**
@@ -1071,7 +1476,8 @@ export class UserService {
 
         await userRef.update({
             stations: updatedStations,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            stateRev: FieldValue.increment(1),
         });
 
         // Diffed against the union so collapsing the LEGACY list to one board
@@ -1081,7 +1487,7 @@ export class UserService {
             this.effectiveStationIds({ ...userData, stations: updatedStations }),
         );
 
-        setImmediate(() => UserSyncNotifier.notify(uid, 'stations'));
+        this.afterContentWrite(uid, 'stations');
 
         return { ...userData, stations: updatedStations };
     }
@@ -1096,7 +1502,8 @@ export class UserService {
 
         await userRef.update({
             stations: updatedStations,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            stateRev: FieldValue.increment(1),
         });
 
         // Was an unconditional decrement, which was wrong the moment a station
@@ -1108,13 +1515,22 @@ export class UserService {
             this.effectiveStationIds({ ...userData, stations: updatedStations }),
         );
 
-        setImmediate(() => UserSyncNotifier.notify(uid, 'stations'));
+        this.afterContentWrite(uid, 'stations');
 
         return { ...userData, stations: updatedStations };
     }
 
     static async deleteAccount(uid: string) {
         const userRef = this.collection.doc(uid);
+
+        // Drop the rev watermark. Deliberately NOT a content bump — the document
+        // is going away, and `deleted` tells clients to log out rather than to
+        // fetch. Forgotten rather than left behind so that a uid which is ever
+        // reused starts from nothing: a stale high watermark against a fresh
+        // account would sit above every client's localRev and suppress the one
+        // fetch a new account most needs.
+        void UserRevLedger.forget(uid);
+        void UserWatchIndex.forget(uid);
 
         // Notify the user's other devices BEFORE we delete the doc + tokens,
         // so they can force-log-out instead of showing a ghost session.
@@ -1145,16 +1561,25 @@ export class UserService {
 
         // ── Device registry rows go BEFORE the session teardown ──
         //
-        // Ordering, not preference. `endSession` now RELEASES this account's
-        // device rows (clears their `uid`) as part of signing every device out,
-        // and those rows are found by querying on that very field. Purging
-        // afterwards would match nothing and leave a row per device behind for
-        // an account that no longer exists — the same class of orphan the
-        // subcollection sweep below was written to stop.
+        // ## The ordering trap is GONE, not reordered
         //
-        // Deleted rather than released here because the account is gone: a
-        // device that still has the app installed re-registers on its next
-        // foreground and gets a fresh row with no owner.
+        // This used to carry a careful note: "the device purge must precede the
+        // session teardown, because the teardown clears the `uid` the purge
+        // queries on". That constraint dissolved entirely when the rows moved
+        // inside the account, and it is the single clearest win of the nesting.
+        //
+        // There is no separate device purge left to order. The rows are INSIDE
+        // the subtree, so `purgeUserSubtree` removes them by walking
+        // `listCollections()` — which it already does, and which is exactly why
+        // it must keep DISCOVERING subcollections rather than naming them.
+        //
+        // `endSession` still runs first, but now only for its TRANSITION: the
+        // subscription decrement and the audience invalidation. Not for the
+        // deletion.
+        //
+        // The retired root collection is still purged for as long as it exists,
+        // so a rolled-back deploy does not leave orphans behind it. Delete this
+        // line with the collection.
         await DeviceLifecycleService.purgeForUid(uid);
 
         // Release this user's subscription hold ATOMICALLY via endSession: it
@@ -1169,10 +1594,10 @@ export class UserService {
         await this.endSession(uid);
 
         // Drop every subcollection before the document — see [purgeUserSubtree]
-        // for why Firestore makes this necessary and why they are enumerated
-        // rather than named. The device-registry half of that helper is a
-        // no-op here: those rows were already deleted above, before the session
-        // teardown cleared the `uid` the query needs.
+        // for why Firestore makes this necessary and why they are ENUMERATED
+        // rather than named. That enumeration is what now removes the device
+        // rows for free: they are a subcollection like any other, so nothing
+        // here has to know they exist.
         await this.purgeUserSubtree(userRef, uid);
 
         // Delete Firestore document

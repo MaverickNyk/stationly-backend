@@ -1,6 +1,7 @@
 import { messaging } from '../config/firebase';
 import { UserFcmTokenService } from './userFcmTokenService';
 import { DevicePushService } from './devicePushService';
+import { StationStreamHub } from './stationStreamHub';
 
 /**
  * Cross-device session sync, on every platform.
@@ -66,6 +67,24 @@ export interface UserSyncOptions {
      * exactly the previous behaviour.
      */
     excludeDeviceId?: string;
+
+    /**
+     * The account's `stateRev` AFTER the write that triggered this signal.
+     *
+     * Lets a receiving client decide whether to fetch by comparing two integers
+     * instead of reading the profile to find out nothing changed. A client that
+     * has already applied this rev — because it made the write, or because a
+     * duplicate push arrived, or because the socket tier got there first — does
+     * nothing at all.
+     *
+     * Resolved from a real read of the master before this is called (see
+     * `UserService.afterContentWrite`), so it is exact rather than guessed.
+     *
+     * Optional throughout: `deleted` carries no rev because there is nothing
+     * left to fetch, and a caller that does not know one gets exactly the
+     * previous behaviour.
+     */
+    rev?: number;
 }
 
 export class UserSyncNotifier {
@@ -79,10 +98,56 @@ export class UserSyncNotifier {
         // Both transports, independently: a failure or an empty audience on one
         // must not stop the other. Historically the FCM path returning early on
         // "no tokens" is exactly what would have skipped every iOS device.
+        // The socket tier goes FIRST, and synchronously.
+        //
+        // It is the only one that is instant, and it is a write to a connection
+        // that already exists — so a foregrounded device has usually applied the
+        // change before either push has left the process. Awaiting the two
+        // network transports ahead of it would delay the cheap, fast tier behind
+        // the slow, best-effort ones for no reason.
+        //
+        // It also cannot throw: `sendToUid` swallows per-socket write failures
+        // and returns a count, so this needs no guard of its own.
+        const sockets = this.notifySockets(uid, reason, opts?.rev);
+
         await Promise.all([
-            this.notifyFcm(uid, reason),
-            this.notifyApns(uid, reason, opts?.excludeDeviceId),
+            this.notifyFcm(uid, reason, opts?.rev),
+            this.notifyApns(uid, reason, opts?.excludeDeviceId, opts?.rev),
         ]);
+
+        if (sockets > 0) {
+            console.log(`USER_SYNC: 🔌 socket reason='${reason}' → ${sockets} live connection(s) for ${uid}`);
+        }
+    }
+
+    /**
+     * Foregrounded devices, over the live-departures WebSocket they already hold.
+     *
+     * The fastest and cheapest of the three tiers: no APNs round trip, no poll,
+     * and no Firestore read on either side. `StationStreamHub` already records
+     * each socket's uid at registration, so this needed no new bookkeeping.
+     *
+     * The frame reuses the `user_sync` vocabulary the push transports use, so a
+     * client can route all three signals through one handler and one rev gate.
+     * `type` rather than `kind` because that is what every other frame on this
+     * socket is keyed by (`snapshot`, `update`, `error`) and the client's
+     * dispatch already switches on it.
+     *
+     * Note this is the one tier that is NOT best-effort in the same way: a
+     * failure to send is a dead socket, which the close handler cleans up, and
+     * the device will pick the change up from its foreground rev check anyway.
+     */
+    private static notifySockets(uid: string, reason: UserSyncReason, rev?: number): number {
+        try {
+            const frame: Record<string, unknown> = { type: 'user_sync', reason, uid, ts: Date.now() };
+            // Present only when known. A client must be able to tell "no rev in
+            // this signal" (go and look) from "rev 0", which is a real value.
+            if (typeof rev === 'number' && Number.isFinite(rev)) frame.rev = rev;
+            return StationStreamHub.sendToUid(uid, frame);
+        } catch (err) {
+            console.error(`USER_SYNC: ❌ socket notify failed for ${uid} (reason=${reason})`, err);
+            return 0;
+        }
     }
 
     /** iOS (and anything else in the device registry), over APNs. */
@@ -90,6 +155,7 @@ export class UserSyncNotifier {
         uid: string,
         reason: UserSyncReason,
         excludeDeviceId?: string,
+        rev?: number,
     ): Promise<void> {
         try {
             const outcome = await DevicePushService.send({
@@ -97,6 +163,7 @@ export class UserSyncNotifier {
                 uid,
                 reason,
                 excludeDeviceId,
+                rev,
             });
             if (outcome.devicesTargeted > 0) {
                 console.log(
@@ -109,7 +176,7 @@ export class UserSyncNotifier {
     }
 
     /** Android, over FCM. Wire format unchanged — existing clients keep working. */
-    private static async notifyFcm(uid: string, reason: UserSyncReason): Promise<void> {
+    private static async notifyFcm(uid: string, reason: UserSyncReason, rev?: number): Promise<void> {
         try {
             const tokens = await UserFcmTokenService.listForUid(uid);
             if (tokens.length === 0) return;
@@ -123,6 +190,16 @@ export class UserSyncNotifier {
                 uid,
                 ts: Date.now().toString(),
             };
+
+            // Additive, and stringly-typed because an FCM data payload carries
+            // nothing else — every value in the dictionary must be a string.
+            // The frozen APK's Ktor JSON is `ignoreUnknownKeys`, and `boards` /
+            // `boardsUpdatedAt` already proved in production that a new key
+            // lands harmlessly there. Omitted rather than sent as "0" when
+            // absent, so a client can tell "no rev in this signal" from "rev 0".
+            if (typeof rev === 'number' && Number.isFinite(rev)) {
+                data.rev = String(rev);
+            }
 
             // FCM multicast caps at 500 tokens. A single user realistically
             // has a handful of devices, but chunk defensively anyway.

@@ -3,6 +3,7 @@ import { UserService, SubscribedStation, SavedBoard } from '../services/userServ
 import { SduiService } from '../services/sduiService';
 import { UserFcmTokenService } from '../services/userFcmTokenService';
 import { UserActivityService } from '../services/userActivityService';
+import { UserRevLedger } from '../services/userRevLedger';
 
 /**
  * A `deviceId` from a request body, or undefined when absent or unusable.
@@ -102,6 +103,51 @@ export class UserController {
      *       400:
      *         description: Missing UID or stations
      */
+    /**
+     * @swagger
+     * /user/state/rev:
+     *   get:
+     *     summary: Current account revision
+     *     description: |
+     *       The account's `stateRev` — a counter bumped by one on every CONTENT
+     *       write (boards, stations, profile fields) and never on session or
+     *       device churn.
+     *
+     *       Clients hold the rev they last applied and call this on foreground.
+     *       If the answer is not greater than what they hold, there is nothing
+     *       to fetch and they make no further request. That is the whole point:
+     *       the common case — an app open on an account nobody has touched — is
+     *       answered from this server's SQLite mirror and costs **zero**
+     *       Firestore reads.
+     *     tags: [User]
+     *     responses:
+     *       200:
+     *         description: The current revision
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: object
+     *               properties:
+     *                 uid: { type: string }
+     *                 rev: { type: integer }
+     */
+    static async getStateRev(req: Request, res: Response) {
+        // From the validated bearer, never from the query string. There is no
+        // `?uid=` on this route on purpose: it would be one more place to get
+        // the cross-account check wrong, and the caller can only ever want its
+        // own account's revision.
+        const uid = (req as any).user?.uid;
+        if (!uid) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        try {
+            return res.json({ uid, rev: await UserRevLedger.resolve(uid) });
+        } catch (error: any) {
+            return res.status(500).json({ error: error.message });
+        }
+    }
+
     static async syncStations(req: Request, res: Response) {
         const { uid, stations, deviceId } = req.body;
 

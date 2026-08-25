@@ -155,4 +155,108 @@ export class SubscriptionService {
             console.error(`SUBSCRIPTION: ❌ Transaction failed for ${naptanId}:`, e);
         }
     }
+
+    /**
+     * Rewrite the registry to match a freshly recomputed target.
+     *
+     * The safety net under every ref-count hazard in the system. Each failure
+     * mode in [incrementSubscription]/[decrementSubscription] errs toward
+     * OVER-counting, which is the safe direction only because nothing repairs
+     * it; this makes "never over-decrement" a property that heals itself
+     * rather than one maintained by hand across four call sites.
+     *
+     * Lives here, beside [updateCount], rather than in the maintenance service
+     * that calls it: this document's read/write shape has one owner, and a
+     * second file reaching into [registryRef] would be exactly the pattern the
+     * session redesign keeps deleting.
+     *
+     * ## The race this guards, which is worse than the drift it fixes
+     * `target` is a snapshot computed over the wall-clock span of a full
+     * `users` scan, while this document is written by every ordinary login,
+     * logout and board edit. Diffing a stale snapshot against a live value can
+     * UNDO a legitimate concurrent increment — a user who signed in mid-scan
+     * gets their brand-new entry deleted by a run that began before they
+     * existed in the target. That is not drift that self-heals tomorrow; it is
+     * this job CAUSING a fresh silent-empty-board outage of exactly the kind
+     * the registry exists to prevent, which is strictly worse than doing
+     * nothing.
+     *
+     * So: the caller settles its own writes first and stamps `guardBaseline`
+     * immediately before calling. If the document moved after that instant,
+     * somebody else wrote it during the scan, the snapshot is stale, and this
+     * writes NOTHING and reports why. The correction is not urgent — it waits
+     * for tomorrow rather than paying a second full collection scan to shave a
+     * day off a non-urgent repair.
+     */
+    static async reconcileCounts(
+        target: Record<string, number>,
+        guardBaseline: number,
+    ): Promise<{ changed: number; deleted: number; skippedDueToRace: boolean }> {
+        let changed = 0;
+        let deleted = 0;
+        let skippedDueToRace = false;
+
+        await db.runTransaction(async (transaction) => {
+            // Reset on EVERY attempt. Firestore re-runs this callback on
+            // contention, and a tally inherited from a losing attempt would be
+            // reported as fact. This is new transaction code rather than a
+            // delegation, so the rule has to be applied here explicitly.
+            changed = 0;
+            deleted = 0;
+            skippedDueToRace = false;
+
+            const doc = await transaction.get(this.registryRef);
+            const current = (doc.exists ? doc.data()?.stationCounts : {}) || {};
+            const currentStamp = doc.exists ? (doc.data()?.lastUpdatedTime || 0) : 0;
+
+            if (currentStamp > guardBaseline) {
+                skippedDueToRace = true;
+                console.warn(
+                    'SUBSCRIPTION: ⏭️  reconcile skipped — registry moved during the scan ' +
+                    `(stamp ${currentStamp} > baseline ${guardBaseline}). Retrying tomorrow.`,
+                );
+                return;
+            }
+
+            // An empty target against a non-empty registry is far more likely a
+            // failed or partial scan than a genuine "nobody subscribes to
+            // anything". Draining the whole registry on that basis would stop
+            // the Syncer polling every station in the system, silently. Refuse.
+            if (Object.keys(target).length === 0 && Object.keys(current).length > 0) {
+                console.error(
+                    'SUBSCRIPTION: ⚠️  reconcile target is EMPTY against a non-empty ' +
+                    'registry — refusing to write. This is a scan failure, not a result.',
+                );
+                return;
+            }
+
+            const updates: Record<string, unknown> = {};
+            for (const naptanId of new Set([...Object.keys(current), ...Object.keys(target)])) {
+                const have = current[naptanId] || 0;
+                const want = target[naptanId] || 0;
+                if (have === want) continue;
+
+                // Field paths and FieldValue.delete() at zero — a set(merge)
+                // deep-merges maps and ignores absent keys, so a removal
+                // expressed by omission simply vanishes. Already bitten once.
+                updates[`stationCounts.${naptanId}`] = want <= 0 ? FieldValue.delete() : want;
+                want <= 0 ? deleted++ : changed++;
+
+                // Loudly: drift is a bug signal, not dirt to sweep quietly.
+                console.warn(
+                    `SUBSCRIPTION: 🔧 reconcile ${naptanId}: ${have} → ${want <= 0 ? 'removed' : want}`,
+                );
+            }
+
+            if (Object.keys(updates).length === 0) return;
+            updates.lastUpdatedTime = nowMs();
+
+            // Mirrors updateCount's branch: .update() throws NOT_FOUND against a
+            // document that does not exist yet.
+            if (doc.exists) transaction.update(this.registryRef, updates);
+            else transaction.set(this.registryRef, { stationCounts: target, lastUpdatedTime: nowMs() });
+        });
+
+        return { changed, deleted, skippedDueToRace };
+    }
 }

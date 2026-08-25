@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { DeviceRegistryService } from '../services/deviceRegistryService';
+import { UserDeviceService } from '../services/userDeviceService';
 import { DevicePushService, PushSignalKind, DevicePushRequest } from '../services/devicePushService';
 import { ApnsService } from '../services/apnsService';
 import { auth } from '../config/firebase';
@@ -9,36 +9,54 @@ const PUSH_KINDS: PushSignalKind[] = [
 ];
 
 /**
- * The signed-in uid, if the caller happens to be signed in.
+ * The signed-in uid, or undefined.
  *
- * Deliberately non-fatal: this route must keep working for a signed-out device
- * (widgets run and want disruption pushes either way), so a missing or invalid
- * token yields `undefined` rather than a 401. Verifying rather than reading a
- * body field is what stops a client claiming someone else's account and
- * receiving their `user.sync` signals.
+ * Returns undefined rather than throwing so the caller decides what a missing
+ * session means; both callers here answer 401, because after P2 there is no row
+ * to write without a uid. Verifying rather than reading a body field is what
+ * stops a client claiming someone else's account and receiving their
+ * `user.sync` signals.
+ *
+ * ## `checkRevoked` is not optional here, and this route is why
+ * `verifyIdToken(token)` on its own is an OFFLINE check: it validates the
+ * signature and the expiry and asks Firebase nothing. An ID token stays
+ * signature-valid for about an hour after it is minted, and `deleteAccount`
+ * revokes REFRESH tokens, which does nothing to one already in a client's hand.
+ *
+ * That hour is enough to resurrect a deleted account. `/device/register` runs
+ * on every foreground, and the iOS client gates it on `Auth.auth().currentUser`
+ * — still populated locally for a while after the account is deleted on another
+ * device. Accepting that token writes `users/{deletedUid}/devices/{id}`, live
+ * APNs tokens and all, UNDER A DOCUMENT THAT NO LONGER EXISTS.
+ *
+ * Nothing can then clean it up. The sweep queries `users where loggedIn == true`
+ * and the reconcile scans `users` documents; a deleted account appears in
+ * neither. `ref.parent.parent` is non-null, so the collection-group parent
+ * filter does not exclude it either, and the row sits in the broadcast audience
+ * permanently. This is the same phantom-parent trap `purgeUserSubtree`'s comment
+ * describes for `fcm_tokens`, reached from the other direction.
+ *
+ * The second argument costs one Firebase round trip on a route that already
+ * makes a network call, and it is what `validateUserToken` on `/user/*` has done
+ * all along (design §10). This route was the one place the rule was not applied.
  */
 async function resolveUid(req: Request): Promise<string | undefined> {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) return undefined;
     try {
-        return (await auth.verifyIdToken(header.split('Bearer ')[1])).uid;
+        // checkRevoked: rejects a revoked token AND a deleted auth user.
+        return (await auth.verifyIdToken(header.split('Bearer ')[1], true)).uid;
     } catch {
-        return undefined;   // expired/invalid token — register the device anyway
+        // Expired, revoked, or the account is gone. All three mean the same
+        // thing to this route: there is no account to file a device row under.
+        return undefined;
     }
 }
 
-/**
- * A request field that must reach Firestore as an array of non-empty strings.
- *
- * Both scoping arrays get the same treatment, from one place: they are written
- * straight into documents that push audiences are queried against, so a stray
- * number or null in the array is a row that silently never matches.
- */
-function asStringList(value: unknown): string[] {
-    return Array.isArray(value)
-        ? value.filter((v: unknown): v is string => typeof v === 'string' && v.length > 0)
-        : [];
-}
+// [asStringList] was deleted here. Its only callers normalised the `stations`
+// and `lines` arrays into the device row, and P2 removed both fields — the
+// audiences come from `UserWatchIndex` now. The trigger route below does its own
+// filtering inline on a differently-shaped field.
 
 /**
  * A body field that must reach Firestore as a string, or not at all.
@@ -62,21 +80,27 @@ export class DevicePushController {
      *     summary: Register this iOS device's APNs tokens
      *     description: >
      *       Upserts the widget-extension push token (iOS 26+) and/or the app's
-     *       APNs token, plus the stations and lines this device's widgets show.
-     *       Idempotent; the client calls it on cold launch, on token rotation,
-     *       and whenever the board list changes.
+     *       APNs token onto `users/{uid}/devices/{deviceId}`. Requires a Firebase
+     *       bearer — the account comes from the token, never from the body.
+     *       Idempotent; the client calls it on cold launch, on sign-in and on
+     *       token rotation.
      *
-     *       `stations` scopes station-targeted refreshes; `lines` scopes
-     *       disruption pushes, which TfL reports by line rather than by station.
-     *       Both default to an empty array, which means "matches no scoped
-     *       send" — a device that registers without them receives only
-     *       unscoped broadcasts and its own account's `user.sync`.
+     *       `stations` and `lines` are NO LONGER accepted. They described the
+     *       ACCOUNT rather than the device and were removed from the row by P2;
+     *       the disruption and station audiences are now resolved from the
+     *       backend's `user_watch` index, which re-derives from the synced
+     *       boards. A client that still sends them is not rejected — they are
+     *       simply ignored — but nothing reads them.
      *     tags: [Widget Push]
      */
     static async register(req: Request, res: Response) {
+        // `stations` / `lines` are deliberately NOT destructured any more. Pulling
+        // them out of the body and then not using them is how a field keeps
+        // looking supported: the next reader sees the name, assumes a consumer,
+        // and wires something to it. See the description above.
         const {
             deviceId, widgetToken, appToken, environment,
-            iosVersion, appVersion, stations, lines,
+            iosVersion, appVersion,
         } = req.body ?? {};
 
         // Normalise BEFORE validating, so the presence check below sees what will
@@ -96,48 +120,47 @@ export class DevicePushController {
             return res.status(400).json({ error: 'environment must be production or sandbox' });
         }
 
+        // ⚠️ NOW BEARER-GATED. This is a genuine behaviour change, not an
+        // additive one, and it is the only non-additive change in the whole
+        // migration.
+        //
+        // Registration used to be API-key-only, on the reasoning that a
+        // signed-out device still runs widgets and still wants disruption
+        // pushes. Under the merged shape there is no row to write without a uid
+        // — the row lives at `users/{uid}/devices/{deviceId}` and its existence
+        // IS the session — so an unauthenticated registration has nowhere to go.
+        //
+        // The matching client rule: iOS must not attempt registration until it
+        // holds a session, and must treat signed-out as SKIP rather than as a
+        // failure to retry. Android never calls this endpoint (it registers push
+        // through `/user/fcm/register`), so the frozen APK is untouched.
+        const uid = await resolveUid(req);
+        if (!uid) {
+            return res.status(401).json({
+                error: 'Sign-in required to register a device',
+                code: 'no_session',
+            });
+        }
+
         try {
-            await DeviceRegistryService.register({
+            await UserDeviceService.upsert(uid, {
                 deviceId,
-                // Optional: a signed-out device still runs widgets and still
-                // wants disruption pushes, so registration is not gated on auth.
-                //
-                // But when the caller IS signed in we must capture the uid, or
-                // `user.sync` — which targets by uid — reaches no iOS device at
-                // all. That is exactly what happened when this route moved out
-                // from under `/user/*` to stop it 401'ing: `req.user` stopped
-                // being populated and the uid silently vanished from every
-                // registration.
-                //
-                // Verified here rather than trusted from the body: a
-                // self-asserted uid would let any client subscribe itself to
-                // another account's sync signals.
-                uid: await resolveUid(req),
+                // ONLY this endpoint writes token fields. Login creates and
+                // merges the row — that is what a session is now — but a login
+                // that wrote a token, or wrote `undefined` into one, would put a
+                // token-less phantom into the broadcast audience. The old root
+                // collection was bitten by exactly that in `bind`; the rule
+                // survives the move, only its subject narrowed to the tokens.
                 widgetToken: widget,
                 appToken: app,
                 environment,
-                iosVersion: asString(iosVersion),
+                osVersion: asString(iosVersion),
                 appVersion: asString(appVersion),
-                stations: asStringList(stations),
-                // ── `lines` was destructured nowhere and forwarded nowhere ──
-                //
-                // The client has always sent it (`DevicePushCoordinator.register`
-                // posts stations AND lines), and the registry has always had a
-                // column for it, but this controller silently dropped it — so
-                // every row in `devices` was written with `lines: []`.
-                //
-                // That is not a cosmetic gap. TfL reports disruption BY LINE, so
-                // `DisruptionTriggerService` scopes its pushes with
-                // `listForLines`, which is an `array-contains-any` over exactly
-                // this field. Against an empty array it matches nothing: the
-                // audience resolved to zero devices, the send reported success,
-                // and the automatic disruption push — the entire feature —
-                // delivered to nobody without a single error anywhere.
-                //
-                // The registry's own doc comment warned about this precise
-                // failure. The warning was written; the wiring was not.
-                lines: asStringList(lines),
+                platform: 'ios' as const,
+                lastSeen: Date.now(),
             });
+
+// (The retired root `devices` collection is gone — see UserDeviceService.)
             return res.json({ success: true, apnsConfigured: ApnsService.isConfigured() });
         } catch (error: any) {
             return res.status(500).json({ error: error?.message ?? 'Register failed' });
@@ -155,7 +178,12 @@ export class DevicePushController {
         const { deviceId } = req.body ?? {};
         if (!deviceId) return res.status(400).json({ error: 'Missing deviceId' });
         try {
-            await DeviceRegistryService.unregister(deviceId);
+            // Unregistering means dropping this device's TOKENS, not its
+            // session: the row IS the session, so deleting it here would sign
+            // the user out of a device they are still using. Tokens only.
+            const uid = await resolveUid(req);
+            if (!uid) return res.status(401).json({ error: 'Sign-in required', code: 'no_session' });
+            await UserDeviceService.clearTokens(uid, deviceId);
             return res.json({ success: true });
         } catch (error: any) {
             return res.status(500).json({ error: error?.message ?? 'Unregister failed' });
@@ -213,7 +241,7 @@ export class DevicePushController {
      */
     static async status(_req: Request, res: Response) {
         try {
-            const devices = await DeviceRegistryService.listAll();
+            const devices = (await UserDeviceService.listAll()).map(d => d.row);
             return res.json({
                 apnsConfigured: ApnsService.isConfigured(),
                 bundleId: ApnsService.bundleId(),

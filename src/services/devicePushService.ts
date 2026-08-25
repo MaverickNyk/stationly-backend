@@ -1,5 +1,10 @@
 import { ApnsService, ApnsSendResult } from './apnsService';
-import { RegisteredDevice, DeviceRegistryService } from './deviceRegistryService';
+import { UserDeviceService, AddressableDevice } from './userDeviceService';
+
+/** An [AddressableDevice] proven to have both a token and the host it belongs to. */
+type ReachableDevice = AddressableDevice & { environment: NonNullable<AddressableDevice['environment']> };
+import { UserWatchIndex } from './userWatchIndex';
+import { db } from '../config/firebase';
 import { RefreshPolicyService } from './refreshPolicyService';
 
 /**
@@ -82,6 +87,15 @@ export interface DevicePushRequest {
     /** Qualifies the signal. For `user.sync`: "stations" | "profile" | "deleted".
      *  Otherwise free text carried into the device trace ("match:wembley"). */
     reason?: string;
+    /**
+     * `user.sync` only: the account's `stateRev` after the write that caused it.
+     *
+     * A receiving client compares it against the rev it last applied and does
+     * nothing when they match, which is what makes a duplicate push — or a push
+     * that loses a race to the foreground check — free instead of a Firestore
+     * read. Exact rather than guessed; see `UserService.afterContentWrite`.
+     */
+    rev?: number;
 }
 
 export interface DevicePushOutcome {
@@ -157,6 +171,10 @@ export class DevicePushService {
         if (request.tierId) stationly.tierId = request.tierId;
         if (request.minutes) stationly.minutes = request.minutes;
         if (request.reason) stationly.reason = request.reason;
+        // `typeof`, not truthiness: rev 0 is a legitimate value (an account
+        // whose content has not changed since the field shipped) and `if (0)`
+        // would silently drop it.
+        if (typeof request.rev === 'number') stationly.rev = request.rev;
 
         return widgetPush
             // `content-changed` is what tells WidgetKit this is a timeline
@@ -178,17 +196,131 @@ export class DevicePushService {
      *    needs the app, so it goes as a background push — a widget reload alone
      *    cannot store anything.
      */
+    /**
+     * Turn a trigger's scope into the device rows it should reach.
+     *
+     * Three scopes, and after P2 they take three different shapes:
+     *
+     * | scope | how |
+     * |---|---|
+     * | one account (`user.sync`) | `users/{uid}/devices` — a read on a KNOWN PATH |
+     * | a station or line (disruption) | **two hops**: the SQLite index says which accounts watch it, then each account's rows supply the tokens |
+     * | everything (broadcast) | `collectionGroup('devices')` |
+     *
+     * The per-account path is the one worth understanding. It was
+     * `devices where uid == X`, a single-field query on an auto-indexed field
+     * returning the same document count. The gain is not fewer reads — it is
+     * that **a query stops existing**: a read on a known path needs no index,
+     * cannot fail for want of one, and cannot return somebody else's row.
+     *
+     * The two-hop disruption path is not a regression either. Billing is per
+     * document RETURNED and the same devices come back either way; at steady
+     * state the first hop is SQLite and costs nothing at all. What it removes is
+     * the reason the device row was carrying account data in the first place
+     * (§3.1) — and with it the rewrite-every-device cost of a single board edit.
+     */
+    private static async resolveAudience(request: DevicePushRequest): Promise<ReachableDevice[]> {
+        // Narrowest first. A uid scope beats a station scope because `user.sync`
+        // is about an ACCOUNT — sending it to every device showing a station
+        // would push one user's profile change at strangers.
+        if (request.uid) return this.rowsForUids([request.uid]);
+
+        if (request.lines?.length) {
+            return this.rowsForUids(await UserWatchIndex.uidsForLines(request.lines));
+        }
+        if (request.stations?.length) {
+            return this.rowsForUids(await UserWatchIndex.uidsForStations(request.stations));
+        }
+
+        // Broadcast. The unfiltered collection group needs no index of its own —
+        // verified against staging rather than assumed, by
+        // `check_device_indexes.cjs`.
+        const snap = await db.collectionGroup('devices').get();
+        const out: ReachableDevice[] = [];
+        for (const doc of snap.docs) {
+            const account = doc.ref.parent.parent;
+            // ⚠️ Skips the RETIRED root `devices` collection, which a collection
+            // group also matches until it is gone. Including it would push to
+            // rows whose account association is stale.
+            if (!account) continue;
+            const row = this.asRegistered(account.id, doc.data());
+            if (this.isReachable(row)) out.push(row);
+        }
+        return out;
+    }
+
+    /**
+     * The device rows for a set of accounts, each a read on a known path.
+     *
+     * Reads run in parallel: a disruption on a busy line resolves a few hundred
+     * accounts, and doing that sequentially would put the round-trip latency of
+     * each read on the critical path of a notification that is already late by
+     * the time it is triggered.
+     */
+    private static async rowsForUids(uids: string[]): Promise<ReachableDevice[]> {
+        if (uids.length === 0) return [];
+        const snaps = await Promise.all(
+            uids.map(uid => UserDeviceService.devices(uid).get().then(s => ({ uid, s }))),
+        );
+        const out: ReachableDevice[] = [];
+        for (const { uid, s } of snaps) {
+            for (const doc of s.docs) {
+                const row = this.asRegistered(uid, doc.data());
+                if (this.isReachable(row)) out.push(row);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Present a device row in the shape the send path already speaks.
+     *
+     * `uid` is restored from the PARENT here. The row deliberately does not
+     * store it — the path already names the account, and a second copy is a
+     * second thing that can drift — but everything downstream (the trace, the
+     * token pruner) still wants to know whose device it is.
+     */
+    private static asRegistered(uid: string, row: any): AddressableDevice {
+        return { ...row, uid } as AddressableDevice;
+    }
+
+    /**
+     * Can this row actually receive an APNs push?
+     *
+     * ## Why this filter did not exist before, and must now
+     * Under the old root collection a row was CREATED by `/device/register`, so
+     * having a row implied having a token. Under the merged shape the row is the
+     * SESSION: login creates it, and login deliberately never writes a token
+     * field (that rule protects against a different bug — see the write in
+     * `startSession`). So a signed-in device that has not yet registered for
+     * push, or one that never will, now has a row with no way to reach it.
+     *
+     * Without this filter those rows join every audience. Observed on staging
+     * immediately after the cutover: `APNs → 0/2 device(s)` where the honest
+     * count was 1 — two token-less rows had been added to the audience for an
+     * account with a single reachable device.
+     *
+     * That is not merely a wrong metric. `devicesTargeted` is what the
+     * verification advice in the design leans on — "assert push audiences are
+     * NON-EMPTY, verify the audience, never the send" — so an audience padded
+     * with unreachable rows makes exactly the check that is supposed to catch a
+     * silent push failure report success.
+     */
+    private static isReachable(row: AddressableDevice): row is ReachableDevice {
+        // An `environment` is as necessary as a token. An APNs token is valid
+        // against EXACTLY ONE host, so a row that does not say which is a row we
+        // cannot deliver to — and guessing is the trap the field exists to
+        // prevent: a sandbox token sent to the production gateway is rejected as
+        // BadDeviceToken, which looks exactly like a dead token and gets the
+        // device pruned from its own audience.
+        return !!(row.appToken || row.widgetToken) && !!row.environment;
+    }
+
     static async send(request: DevicePushRequest): Promise<DevicePushOutcome> {
         // Audience, narrowest first. A uid scope beats a station scope because
         // `user.sync` is about an ACCOUNT — sending it to every device showing
         // a station would push one user's profile change at strangers.
-        const resolved = request.uid
-            ? await DeviceRegistryService.listForUid(request.uid)
-            : request.lines?.length
-                ? await DeviceRegistryService.listForLines(request.lines)
-                : request.stations?.length
-                    ? await DeviceRegistryService.listForStations(request.stations)
-                    : await DeviceRegistryService.listAll();
+        const resolved = await this.resolveAudience(request);
 
         // Applied after resolution rather than in the query: Firestore has no
         // "!=" that composes with the scoping filters without another index, and
@@ -222,8 +354,8 @@ export class DevicePushService {
         // session itself.
         const widgetOnly = request.kind === 'widget.refresh';
 
-        const widgetTargets: Array<{ token: string; environment: RegisteredDevice['environment'] }> = [];
-        const appTargets: Array<{ token: string; environment: RegisteredDevice['environment'] }> = [];
+        const widgetTargets: Array<{ token: string; environment: ReachableDevice['environment'] }> = [];
+        const appTargets: Array<{ token: string; environment: ReachableDevice['environment'] }> = [];
 
         for (const device of devices) {
             if (device.widgetToken) {
@@ -298,7 +430,7 @@ export class DevicePushService {
         // is queried on every disruption, and a device that reinstalled months
         // ago would otherwise be pushed at forever.
         if (prunable.length) {
-            await Promise.all(prunable.map(t => DeviceRegistryService.pruneToken(t)));
+            await Promise.all(prunable.map(t => UserDeviceService.pruneToken(t)));
             outcome.pruned = prunable.length;
         }
 

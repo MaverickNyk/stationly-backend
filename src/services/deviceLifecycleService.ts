@@ -1,4 +1,3 @@
-import { DeviceRegistryService } from './deviceRegistryService';
 import { UserFcmTokenService } from './userFcmTokenService';
 
 /**
@@ -51,34 +50,18 @@ import { UserFcmTokenService } from './userFcmTokenService';
  */
 export class DeviceLifecycleService {
 
-    /**
-     * This device is now signed in as [uid].
-     *
-     * Only ever updates a device row that already exists — see
-     * [DeviceRegistryService.bindUid] for why creating one here would poison the
-     * broadcast audience with token-less Android phantoms.
-     *
-     * ## The re-bind case is the one that matters, and the client cannot fix it
-     * `/device/register` resolves the uid from the bearer token, so an account
-     * switch on the same phone SHOULD rewrite the row on the next foreground.
-     * It does not: the client skips a POST whose body is unchanged since the
-     * last one, and the uid is not in the body — it is derived server-side from
-     * the header. Signing out of A and into B leaves every field the signature
-     * covers identical, so the request is elided and the row goes on naming A.
-     *
-     * The account that is no longer signed in then keeps waking the phone with
-     * its board changes, and `reason=deleted` on A would tear down B's session.
-     * Binding at session start is the only point that reliably observes the
-     * switch.
-     */
-    static async bind(uid: string, deviceId: string): Promise<void> {
-        if (!uid || !deviceId) return;
-        try {
-            await DeviceRegistryService.bindUid(deviceId, uid);
-        } catch (err) {
-            console.error(`DEVICE_LIFECYCLE: ⚠️ bind failed for ${deviceId}`, err);
-        }
-    }
+    // [bind] was deleted here.
+    //
+    // It was kept as a named no-op so its call site would still read as "and now
+    // associate the device". That call site is gone: the signup path used to
+    // invoke it and now calls `UserService.startSession`, which writes the row
+    // inside its own transaction — the same one place a returning user's session
+    // is created.
+    //
+    // The rule it was kept for ("delete both no-ops together or not at all")
+    // applied while both had call sites. `purgeForUid` still has two, in
+    // `deleteAccount` and `purgeUserSubtree`, so it stays; a no-op with NO caller
+    // documents nothing and only invites someone to call it again.
 
     /**
      * A session has ended.
@@ -104,24 +87,19 @@ export class DeviceLifecycleService {
     ): Promise<void> {
         if (!uid) return;
 
-        // Independent, and independently failure-isolated: an FCM purge that
-        // throws must not leave the device registry still pointing at an
-        // account nobody is signed into, and neither may fail the logout.
-        await Promise.all([
-            this.releaseRegistry(uid, deviceId),
-            this.releaseFcmTokens(uid, lastDeviceOut),
-        ]);
-    }
-
-    private static async releaseRegistry(uid: string, deviceId?: string): Promise<void> {
-        try {
-            if (deviceId) await DeviceRegistryService.releaseUid(deviceId);
-            // No device id means every session was just cleared, so every row
-            // this account owns has to go with them.
-            else await DeviceRegistryService.releaseAllForUid(uid);
-        } catch (err) {
-            console.error(`DEVICE_LIFECYCLE: ⚠️ registry release failed for ${uid}`, err);
-        }
+        // ONLY the legacy FCM store is left to release here.
+        //
+        // The device row was already deleted inside `endSession`'s transaction —
+        // the row IS the session, so ending the session removes the push
+        // address with it, atomically. There is no second store to keep in step
+        // any more, which is the point of the merge.
+        //
+        // `fcm_tokens` cannot follow it, and that is not an oversight: the store
+        // is keyed by TOKEN and carries no device id (the frozen APK's
+        // `/user/fcm/register` never sent one and never will), so a token cannot
+        // be attributed to the device that is leaving. Only the last-device-out
+        // gate can clear it safely.
+        await this.releaseFcmTokens(uid, lastDeviceOut);
     }
 
     private static async releaseFcmTokens(uid: string, lastDeviceOut: boolean): Promise<void> {
@@ -147,16 +125,22 @@ export class DeviceLifecycleService {
      * is not under the user document at all.
      */
     static async purgeForUid(uid: string): Promise<void> {
-        if (!uid) return;
-        try {
-            const removed = await DeviceRegistryService.deleteAllForUid(uid);
-            if (removed > 0) {
-                console.log(`DEVICE_LIFECYCLE: 🧹 removed ${removed} device registry row(s) for ${uid}`);
-            }
-        } catch (err) {
-            // Best-effort: a failure here must not abort a deletion the user
-            // asked for and the rest of which has already happened.
-            console.error(`DEVICE_LIFECYCLE: ⚠️ device registry purge failed for ${uid}`, err);
-        }
+        // Nothing left to do, deliberately kept as a named no-op.
+        //
+        // This used to delete the account's rows from the ROOT `devices`
+        // collection — the one store `purgeUserSubtree`'s `listCollections()`
+        // walk could not reach, because it was not under the user document.
+        // That collection is gone: the rows live at `users/{uid}/devices` and
+        // the generic subtree sweep removes them for free.
+        //
+        // With it goes the old ordering trap, which was the single clearest win
+        // of nesting: "the device purge must precede the session teardown,
+        // because the teardown clears the `uid` the purge queries on". There is
+        // no purge left to order.
+        //
+        // Kept rather than deleted so the call site in `deleteAccount` keeps
+        // documenting that device cleanup was CONSIDERED and is handled
+        // elsewhere. Delete both together, or not at all.
+        void uid;
     }
 }

@@ -59,14 +59,22 @@ router.get(
     StationController.getSubscribedStationIds
 );
 
-// --- DEVICE PUSH REGISTRY (API key only — deliberately no Firebase auth) ---
+// --- DEVICE PUSH REGISTRY (API key + Firebase bearer, gated in the handler) ---
 //
-// Mounted BEFORE the /user/* middleware on purpose. This keys on the app's own
-// device id, and a signed-out device still runs widgets and still wants
-// disruption pushes — gating it on a user token 401s exactly those devices
-// (measured: the first on-device registration died here). The uid is recorded
-// only when the client happens to send a validated bearer token, and is never
-// read from the body. Global API-key check above still applies.
+// ⚠️ These routes REQUIRE a bearer as of P2, and the comment that used to sit
+// here said the opposite. It described the pre-P2 rule — API-key-only, because a
+// signed-out device still runs widgets and still wants disruption pushes — which
+// stopped being true when the device row moved to `users/{uid}/devices/{deviceId}`
+// and its existence became the session. There is nowhere to file a registration
+// that names no account, so `DevicePushController` answers 401 `no_session`.
+//
+// Still mounted BEFORE the `/user` prefix below, and that is deliberate: the gate
+// is inlined in the handler rather than applied as middleware, so the route can
+// tell "no session" (a client-side SKIP, not a retry) apart from the generic
+// rejection `validateUserToken` would produce. The client half is the matching
+// rule in DevicePushCoordinator: signed out is a skip, never a failure to retry.
+//
+// The uid is always taken from the verified bearer, never from the body.
 router.post('/device/register',   DevicePushController.register);
 router.post('/device/unregister', DevicePushController.unregister);
 
@@ -75,6 +83,11 @@ router.use('/user', AuthMiddleware.validateUserToken);
 router.use('/user', RateLimitMiddleware.strict);
 
 router.get('/user/sync/profile', UserController.getUserProfile);
+// The rev gate's server half. Answered from SQLite, so an app open on an
+// unchanged account costs zero Firestore reads — which is the single largest
+// item in the read budget (§7 of DESIGN_SESSIONS_AND_SYNC.md). Deliberately
+// takes no `?uid=`: the account is whichever one the bearer names.
+router.get('/user/state/rev', UserController.getStateRev);
 // Returns a user's profile rendered as SDUI — must be user-auth gated (and the
 // :uid is checked against the token by validateUserToken) so it can't leak one
 // user's profile to anyone holding the shared app key.
