@@ -196,7 +196,7 @@ export interface SupportMoneyStatusView {
    SUPPORT_MONEY_ENABLED=true
 
    # Webhook signing secret from Step 1.3
-   STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   STRIPE_WEBHOOK_SECRET=whsec_your_webhook_signing_secret_here
 
    # Stripe live Payment Link URLs from Step 1.1
    # (Do NOT manually add ?client_reference_id={uid}; the backend appends it automatically)

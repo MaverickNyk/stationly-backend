@@ -983,7 +983,7 @@ test('stateRev is protected from the profile sync', () => {
 // stripeSignature.ts), so every branch is pinned here — a bug in this file is a
 // bug that lets a forged event mint Supporter status or credit the wrong uid.
 
-const SUP_SECRET = 'whsec_testsecret_0123456789';
+const SUP_SECRET = 'mock_webhook_secret_for_unit_testing_only';
 const SUP_BODY = JSON.stringify({ id: 'evt_1', type: 'checkout.session.completed' });
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -1020,7 +1020,7 @@ test('stripe sig: a tampered body is rejected', () => {
 
 test('stripe sig: the wrong secret is rejected', () => {
     const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec());
-    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, 'whsec_other').ok, false);
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, 'wrong_mock_secret').ok, false);
 });
 
 test('stripe sig: a missing header is rejected', () => {
