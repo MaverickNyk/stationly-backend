@@ -1,4 +1,5 @@
 import { getWebUrl, isStaging } from '../utils/formatters';
+import { SupportMoneyConfigService } from './supportMoneyConfigService';
 
 export interface SduiValidation {
     required?: boolean;
@@ -581,7 +582,16 @@ export class SduiService {
                 "profile.delete_account.bullets":    "All your saved stations and boards,Your notification preferences,Your profile and account data",
                 "profile.delete_account.footer":     "You\u2019ll need to create a new account to use Stationly again.",
                 "profile.delete_account.confirm":    "Delete Permanently",
-                "profile.delete_account.cancel":     "Keep Account"
+                "profile.delete_account.cancel":     "Keep Account",
+
+                // ── Support / contributions ──────────────────────────────────
+                // `support_money.card.json` is the whole SupportMoneyCardConfig as a JSON
+                // string (one key, so the flat Record<string,string> contract
+                // both platforms consume is unchanged). `home.promo.support_money.*`
+                // drives the "after you add a board" contextual card, same
+                // shape and `show` switch as the widget/dream promos above.
+                // All owned by SupportMoneyConfigService; `SUPPORT_MONEY_ENABLED` gates it.
+                ...SupportMoneyConfigService.homeConfigKeys(),
             }
         };
     }

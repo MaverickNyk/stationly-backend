@@ -147,6 +147,15 @@ export class LocalDbService {
                 email TEXT,
                 joinedAt INTEGER
             )`,
+            // Idempotency ledger for Stripe webhook deliveries. Stripe is
+            // at-least-once; a redelivered event id is a no-op that still has to
+            // answer 2xx. Rows are tiny and never swept — a payment webhook
+            // fires a handful of times a day at most.
+            `CREATE TABLE IF NOT EXISTS stripe_events (
+                event_id TEXT PRIMARY KEY,
+                type TEXT,
+                processed_at INTEGER
+            )`,
             // Indexes for speed
             `CREATE INDEX IF NOT EXISTS idx_stations_naptan ON stations(naptanId)`,
             `CREATE INDEX IF NOT EXISTS idx_stations_name ON stations(commonName)`,

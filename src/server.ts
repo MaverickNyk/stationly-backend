@@ -14,6 +14,8 @@ import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
 import { getWebUrl, getBaseUrl } from './utils/formatters';
 import internalRoutes from './routes/internalRoutes';
+import { StripeWebhookController } from './controllers/stripeWebhookController';
+import { SupportMoneyReturnController } from './controllers/supportMoneyReturnController';
 import { attachStationStream } from './services/stationStreamServer';
 import { StationStreamHub } from './services/stationStreamHub';
 import { LineStatusStreamHub } from './services/lineStatusStreamHub';
@@ -45,6 +47,28 @@ app.use(morgan('dev'));
 // `req._body` is already set, so the first one to match wins. Mounting it next
 // to the route (further down) would be too late.
 app.use('/internal', express.json({ limit: '5mb' }));
+
+// Stripe contribution webhook. Two ordering constraints put it HERE:
+//
+//  1. It needs the RAW request bytes for HMAC signature verification. A
+//     JSON.parse → JSON.stringify round-trip reorders keys and the signature
+//     stops matching. `express.raw()` as route middleware captures the body
+//     before the global `express.json()` below runs — body-parser no-ops once
+//     `req._body` is set, so the first parser to match wins (same rule as the
+//     `/internal` line above).
+//  2. Path is `/api/v1/*` so nginx proxies it (no catch-all `location /`), but
+//     mounted BEFORE `app.use('/api/v1', apiRoutes)` so it skips that router's
+//     `validateApiKey` — Stripe sends no `X-Stationly-Key`. Same pattern as the
+//     admin routes and the waitlist POST.
+//
+// Every guard (rate limit, secret configured, signature, replay window, JSON
+// parse, livemode fence) lives in StripeWebhookController.
+app.post(
+    '/api/v1/webhooks/stripe',
+    RateLimitMiddleware.webhook,
+    express.raw({ type: '*/*', limit: '1mb' }),
+    StripeWebhookController.handle,
+);
 
 app.use(express.json());
 
@@ -625,7 +649,22 @@ Stationly provides a high-performance middleware for transport data, specializin
                                 'their board without writing back over Android\'s list.',
                             items: { $ref: '#/components/schemas/SavedBoard' }
                         },
-                        boardsUpdatedAt: { type: 'number', description: 'LWW guard for `boards`, epoch millis' }
+                        boardsUpdatedAt: { type: 'number', description: 'LWW guard for `boards`, epoch millis' },
+                        supportMoney: {
+                            type: 'object',
+                            description:
+                                'Voluntary-contribution status. Present ONLY when the account has ' +
+                                'contributed at least once. Status only, never a history — see ' +
+                                '`UserService.normaliseSupportMoneyForClient`. Written server-side off a ' +
+                                'signature-verified payment webhook; the client cannot set it.',
+                            properties: {
+                                status: { type: 'string', enum: ['active', 'none'], description: 'Recomputed from `until` on every read' },
+                                tier:   { type: 'string', enum: ['tip', 'supporter'] },
+                                since:  { type: 'number', description: 'Epoch millis of the most recent contribution' },
+                                until:  { type: 'number', description: 'Epoch millis the Supporter badge stops showing' },
+                                count:  { type: 'number', description: 'Lifetime contribution count — powers copy, never shown as a list' }
+                            }
+                        }
                         // No `preferences`. Client settings — expanded, rows, pin,
                         // order, layout — are DEVICE-LOCAL, kept per account on the
                         // device and restored when the same person signs back in
@@ -839,6 +878,12 @@ app.get('/', (req, res) => {
 
 // Public — no API key required (website waitlist form)
 app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController.join);
+
+// Public — post-checkout browser return. Stripe's redirect only accepts https,
+// so this branded page bounces into the app's `<scheme>://support-money/thanks` deep
+// link (falling back to a button + the website). Under `/api/v1/*` for nginx,
+// mounted here so it skips `validateApiKey` — the browser arrives with no key.
+app.get('/api/v1/support-money/return', SupportMoneyReturnController.render);
 
 // Admin routes — mounted BEFORE `apiRoutes` so they bypass the
 // client `X-Stationly-Key` middleware that apiRoutes installs at

@@ -35,7 +35,12 @@ import { TflApiClient, UnknownStationError, TflUnavailableError } from '../clien
 import { StationPredictionResponse } from '../models';
 import { DeviceLifecycleService } from '../services/deviceLifecycleService';
 import { UserFcmTokenService } from '../services/userFcmTokenService';
-import { UserService, PROTECTED_PROFILE_FIELDS } from '../services/userService';
+import { UserService, PROTECTED_PROFILE_FIELDS, projectSupportMoneyForClient, readSupportMoneyEntries } from '../services/userService';
+import { verifyStripeSignature, signPayloadForTest } from '../utils/stripeSignature';
+import { SupportMoneyConfigService, SupportMoneyCardConfig } from '../services/supportMoneyConfigService';
+import {
+    SupportMoneyService, StripeEventLedger, txnIdFor, isUsableUid,
+} from '../services/supportMoneyService';
 import { SubscriptionService } from '../services/subscriptionService';
 import { UserRevLedger } from '../services/userRevLedger';
 import { UserDeviceService } from '../services/userDeviceService';
@@ -967,10 +972,950 @@ test('stateRev is protected from the profile sync', () => {
 
     // The rest of the guard list, so a careless edit to it is caught here
     // rather than by a user losing their boards to a display-name update.
-    for (const f of ['boards', 'boardsUpdatedAt', 'stations', 'sessions', 'loggedIn']) {
+    for (const f of ['boards', 'boardsUpdatedAt', 'stations', 'sessions', 'loggedIn', 'supportMoney']) {
         assert.ok(PROTECTED_PROFILE_FIELDS.has(f), `${f} must stay protected`);
     }
 });
+
+// ─── SUPPORT_MONEY: Stripe signature verification ─────────────────────────────────
+//
+// The gate on every pound of contribution money. Hand-rolled (see the header of
+// stripeSignature.ts), so every branch is pinned here — a bug in this file is a
+// bug that lets a forged event mint Supporter status or credit the wrong uid.
+
+const SUP_SECRET = 'whsec_testsecret_0123456789';
+const SUP_BODY = JSON.stringify({ id: 'evt_1', type: 'checkout.session.completed' });
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+test('stripe sig: a correctly signed body verifies', () => {
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec());
+    const r = verifyStripeSignature(SUP_BODY, header, SUP_SECRET);
+    assert.strictEqual(r.ok, true);
+});
+
+test('stripe sig: verifies against a Buffer body identically to a string', () => {
+    const ts = nowSec();
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, ts);
+    assert.strictEqual(verifyStripeSignature(Buffer.from(SUP_BODY, 'utf8'), header, SUP_SECRET).ok, true);
+});
+
+test('stripe sig: a multibyte (unicode) body still verifies', () => {
+    const body = JSON.stringify({ note: 'thank you ☕ — £5' });
+    const header = signPayloadForTest(body, SUP_SECRET, nowSec());
+    assert.strictEqual(verifyStripeSignature(body, header, SUP_SECRET).ok, true);
+});
+
+test('stripe sig: multiple v1 entries pass if ANY matches', () => {
+    const ts = nowSec();
+    const good = signPayloadForTest(SUP_BODY, SUP_SECRET, ts).split(',')[1]; // "v1=<hex>"
+    const header = `t=${ts},v1=${'0'.repeat(64)},${good}`;
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, SUP_SECRET).ok, true);
+});
+
+test('stripe sig: a tampered body is rejected', () => {
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec());
+    const r = verifyStripeSignature(SUP_BODY + ' ', header, SUP_SECRET);
+    assert.strictEqual(r.ok, false);
+});
+
+test('stripe sig: the wrong secret is rejected', () => {
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec());
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, 'whsec_other').ok, false);
+});
+
+test('stripe sig: a missing header is rejected', () => {
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, undefined, SUP_SECRET).ok, false);
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, '', SUP_SECRET).ok, false);
+});
+
+test('stripe sig: an unconfigured secret is rejected (fail closed)', () => {
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec());
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, undefined).ok, false);
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, '').ok, false);
+});
+
+test('stripe sig: a header with no timestamp is rejected', () => {
+    const v1 = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec()).split(',')[1];
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, v1, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: a header with no v1 is rejected', () => {
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, `t=${nowSec()}`, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: a non-numeric timestamp is rejected', () => {
+    const v1 = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec()).split(',')[1];
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, `t=abc,${v1}`, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: a stale timestamp is rejected (replay protection)', () => {
+    const old = nowSec() - 600; // 10 min > 300s default tolerance
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, old);
+    const r = verifyStripeSignature(SUP_BODY, header, SUP_SECRET);
+    assert.strictEqual(r.ok, false);
+    assert.ok(!r.ok && /tolerance/.test(r.reason));
+});
+
+test('stripe sig: a far-future timestamp is rejected too', () => {
+    const future = nowSec() + 600;
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, future);
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: a stale timestamp passes when tolerance is widened', () => {
+    const old = nowSec() - 600;
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, old);
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, SUP_SECRET, { toleranceSec: 1200 }).ok, true);
+});
+
+test('stripe sig: a v0 scheme signature does not satisfy the v1 requirement', () => {
+    const header = signPayloadForTest(SUP_BODY, SUP_SECRET, nowSec(), 'v0');
+    assert.strictEqual(verifyStripeSignature(SUP_BODY, header, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: an empty body is rejected', () => {
+    const header = signPayloadForTest('', SUP_SECRET, nowSec());
+    assert.strictEqual(verifyStripeSignature('', header, SUP_SECRET).ok, false);
+});
+
+test('stripe sig: a non-hex v1 value is rejected, not thrown', () => {
+    const header = `t=${nowSec()},v1=not-hex-at-all`;
+    const r = verifyStripeSignature(SUP_BODY, header, SUP_SECRET);
+    assert.strictEqual(r.ok, false);
+});
+
+// ─── SUPPORT_MONEY: config service ───────────────────────────────────────────────
+
+test('support config: disabled by default (no SUPPORT_MONEY_ENABLED)', () => {
+    const saved = process.env.SUPPORT_MONEY_ENABLED;
+    delete process.env.SUPPORT_MONEY_ENABLED;
+    try {
+        assert.strictEqual(SupportMoneyConfigService.enabled(), false);
+        assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().enabled, false);
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys()['home.promo.support_money.show'], 'false');
+    } finally {
+        if (saved === undefined) delete process.env.SUPPORT_MONEY_ENABLED;
+        else process.env.SUPPORT_MONEY_ENABLED = saved;
+    }
+});
+
+test('support config: SUPPORT_MONEY_ENABLED=true flips both switches', () => {
+    const saved = process.env.SUPPORT_MONEY_ENABLED;
+    process.env.SUPPORT_MONEY_ENABLED = 'true';
+    try {
+        assert.strictEqual(SupportMoneyConfigService.enabled(), true);
+        assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().enabled, true);
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys()['home.promo.support_money.show'], 'true');
+    } finally {
+        if (saved === undefined) delete process.env.SUPPORT_MONEY_ENABLED;
+        else process.env.SUPPORT_MONEY_ENABLED = saved;
+    }
+});
+
+test('support config: badge duration defaults to 30 days and is env-overridable', () => {
+    const saved = process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS;
+    delete process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS;
+    try {
+        assert.strictEqual(SupportMoneyConfigService.badgeDurationDays(), 30);
+        assert.strictEqual(SupportMoneyConfigService.badgeDurationMs(), 30 * 86_400_000);
+        process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS = '14';
+        assert.strictEqual(SupportMoneyConfigService.badgeDurationDays(), 14);
+        process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS = 'garbage';
+        assert.strictEqual(SupportMoneyConfigService.badgeDurationDays(), 30, 'garbage falls back to the default');
+    } finally {
+        if (saved === undefined) delete process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS;
+        else process.env.SUPPORT_MONEY_BADGE_DURATION_DAYS = saved;
+    }
+});
+
+test('support config: home-config carries support_money.card.json that round-trips', () => {
+    const keys = SupportMoneyConfigService.homeConfigKeys();
+    assert.ok(typeof keys['support_money.card.json'] === 'string');
+    const parsed = JSON.parse(keys['support_money.card.json']) as SupportMoneyCardConfig;
+    assert.deepStrictEqual(parsed, SupportMoneyConfigService.getSupportMoneyConfig());
+    assert.strictEqual(parsed.type, 'support_money_card');
+});
+
+test('support config: every home-config key is a string (the flat-map contract)', () => {
+    for (const [k, v] of Object.entries(SupportMoneyConfigService.homeConfigKeys())) {
+        assert.strictEqual(typeof v, 'string', `${k} must be a string`);
+    }
+});
+
+test('support config: every tier has an integer amount_minor and the default id exists', () => {
+    const cfg = SupportMoneyConfigService.getSupportMoneyConfig();
+    assert.ok(cfg.tiers.length >= 1);
+    for (const t of cfg.tiers) {
+        assert.ok(Number.isInteger(t.amount_minor) && t.amount_minor > 0, `${t.id} amount`);
+    }
+    assert.ok(cfg.tiers.some(t => t.id === cfg.default_tier_id), 'default_tier_id must name a real tier');
+});
+
+test('support config: every tier carries its own checkout url field', () => {
+    // Stripe prices a Payment Link, not a request — so each fixed amount needs
+    // its own link. The field must always be a string (unset = "", which the
+    // client falls back to cta.url_oneoff for), never undefined.
+    const cfg = SupportMoneyConfigService.getSupportMoneyConfig();
+    for (const t of cfg.tiers) {
+        assert.strictEqual(typeof t.url, 'string', `${t.id} must carry a url string`);
+    }
+    const ids = cfg.tiers.map(t => t.id);
+    assert.strictEqual(new Set(ids).size, ids.length, 'tier ids must be unique');
+});
+
+test('support config: the voice rules hold across every user-visible string', () => {
+    // Three rules the owner set, and all three had already been broken once by
+    // copy that read fine in isolation:
+    //
+    //  1. No "buy me a coffee". The metaphor made a request to cover running
+    //     costs sound like a novelty purchase, and it put a drink between the
+    //     reader and what the money is actually for.
+    //  2. No "donation" or "donate". Stationly is not a registered charity and
+    //     the word carries a legal meaning it cannot claim.
+    //  3. No en or em dashes. House voice for this surface is plain sentences;
+    //     a dash is where a sentence that should have been two gets stitched
+    //     into one, and this is the one place in the app that has to read like
+    //     a person wrote it rather than a product did.
+    //
+    // Asserted over the WHOLE payload plus the flat keys, because the copy is
+    // spread over a structured card and eighteen loose strings and a rule that
+    // only covers half of them is a rule that gets broken in the other half.
+    const strings = [
+        JSON.stringify(SupportMoneyConfigService.getSupportMoneyConfig()),
+        ...Object.entries(SupportMoneyConfigService.homeConfigKeys())
+            // The card key is the JSON above; re-checking it would double-count
+            // and its escaping would hide nothing.
+            .filter(([k]) => k !== 'support_money.card.json')
+            .map(([, v]) => v),
+    ];
+    for (const raw of strings) {
+        assert.ok(!/coffee/i.test(raw), `no "coffee" in support copy: ${raw.slice(0, 120)}`);
+        assert.ok(!/donat(e|ion)/i.test(raw), `no "donation" in support copy: ${raw.slice(0, 120)}`);
+        assert.ok(!/[\u2013\u2014]/.test(raw), `no en/em dash in support copy: ${raw.slice(0, 120)}`);
+    }
+});
+
+test('support config: every tier says what that amount does, and thanks you for it', () => {
+    // The ladder is £4 / £8 / £12 and the numbers alone say nothing. Each rung
+    // names something REAL the money does, because "why is this one more than
+    // that one" is the question a chip with only a price on it leaves the reader
+    // holding. And each carries its own thank-you, because gratitude lands
+    // harder when it names the specific thing the specific amount paid for.
+    const cfg = SupportMoneyConfigService.getSupportMoneyConfig();
+    for (const t of cfg.tiers) {
+        assert.ok(t.label.trim().length > 0, `${t.id} needs a chip label`);
+        assert.ok(t.hint.trim().length > 20, `${t.id} needs a real sentence, not a category`);
+        assert.ok(t.thanks.trim().length > 20, `${t.id} needs its own thank-you`);
+        assert.ok(t.thanks.includes('{amount}'), `${t.id} thanks must name the amount`);
+    }
+});
+
+test('support config: nobody is named, and nobody is a lone hero', () => {
+    // Two things the appeal must never lean on. A NAME turns a thank-you from
+    // the app into a note from a stranger, and makes the whole feature read as a
+    // favour to a person rather than as keeping a thing the reader uses alive.
+    // "Built by one person" is the same move in the other direction: asking for
+    // sympathy for the maker instead of for the product.
+    const strings = [
+        JSON.stringify(SupportMoneyConfigService.getSupportMoneyConfig()),
+        ...Object.entries(SupportMoneyConfigService.homeConfigKeys())
+            .filter(([k]) => k !== 'support_money.card.json')
+            .map(([, v]) => v),
+    ];
+    for (const raw of strings) {
+        assert.ok(!/\bNikhil\b|\bNick\b/i.test(raw), `no personal name in support copy: ${raw.slice(0, 120)}`);
+        assert.ok(!/one person|single developer|solo dev/i.test(raw),
+            `no lone-maker appeal in support copy: ${raw.slice(0, 120)}`);
+    }
+});
+
+test('support config: the reward screen carries no status label', () => {
+    // A SUPPORTER pill and a "for the next 30 days" line is a label where a
+    // thank-you belongs. Someone who has just given money does not need to be
+    // told what they now count as.
+    const keys = SupportMoneyConfigService.homeConfigKeys();
+    assert.strictEqual(keys['support_money.thanks.supporter'], undefined);
+    assert.strictEqual(keys['support_money.thanks.dismiss'], undefined, 'the way out is an icon, not a worded button');
+    assert.ok(keys['support_money.thanks.close'], 'but the close control still needs a label for screen readers');
+});
+
+test('support config: the badge names the app and thanks the person', () => {
+    // "Supporter" alone could be a supporter of anything.
+    const badge = SupportMoneyConfigService.getSupportMoneyConfig().badge;
+    assert.ok(/Stationly/i.test(badge.label), 'the badge names the app');
+    assert.ok(/\p{Extended_Pictographic}/u.test(badge.label), 'and carries the thank-you glyph');
+});
+
+test('support config: the thank-you says something, and says nothing meaningless', () => {
+    // `board_lines` used to read "The board stays lit / +1 day" and
+    // "Supporter / 30 days" — a receipt for something nobody bought. The
+    // reward screen's job is a sentence about what the money does, which is
+    // `note`; if a future operator puts figures back they must be real, so the
+    // field survives while the default is empty.
+    const thanks = SupportMoneyConfigService.getSupportMoneyConfig().thanks;
+    assert.deepStrictEqual(thanks.board_lines, [], 'no invented figures on the reward screen');
+    assert.ok(thanks.title_lines.length >= 1, 'the reward screen needs a headline');
+    assert.ok(thanks.note.length > 80, 'the thank-you has to be a real note, not a label');
+    assert.strictEqual(thanks.confetti, true);
+});
+
+test('support config: the badge window is NOT served to the client', () => {
+    // The client does not decide who is a supporter — `supportMoney.isActiveSupporter`
+    // on the profile response does, computed server-side. Serving the window as
+    // well would hand out a second copy of a decision only one side makes, and
+    // the two would disagree the moment an operator moved it.
+    const raw = JSON.stringify(SupportMoneyConfigService.getSupportMoneyConfig());
+    assert.ok(!/duration_days/.test(raw), 'no badge window in the payload');
+    assert.ok(!/\{days\}/.test(raw), 'and no copy that would need one to interpolate');
+    for (const [k, v] of Object.entries(SupportMoneyConfigService.homeConfigKeys())) {
+        if (k === 'support_money.card.json') continue;
+        assert.ok(!/\{days\}/.test(v), `${k} must not interpolate a day count`);
+    }
+    // The env var still exists — it is what `isActiveSupporter` is measured
+    // against. It just never leaves the server.
+    assert.strictEqual(SupportMoneyConfigService.badgeDurationDays(), 30);
+});
+
+test('support config: the badge shows on home as well as profile', () => {
+    // One mark on the avatar the user already looks at. It is the only place
+    // the thank-you is visible without opening Profile, and it is a mark rather
+    // than a banner precisely so it can live there permanently.
+    assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().badge.show_on_home, true);
+});
+
+test('support config: the payment method token is platform-neutral', () => {
+    // A regression guard for the "platform flexible" requirement — the SDUI
+    // payload must never name an iOS-only mechanism.
+    const raw = JSON.stringify(SupportMoneyConfigService.getSupportMoneyConfig());
+    for (const banned of [/apple ?pay/i, /google ?pay/i, /face ?id/i, /touch ?id/i, /storekit/i]) {
+        assert.ok(!banned.test(raw), `no ${banned} literal in the payload`);
+    }
+    assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().cta.method, 'native_pay');
+});
+
+// ─── SUPPORT_MONEY: pure helpers ────────────────────────────────────────────────
+
+test('support: txnIdFor prefers the checkout session over the event', () => {
+    // The session is the unit of "a payment". One session can emit TWO
+    // crediting events (`completed` while a delayed method is unpaid, then
+    // `async_payment_succeeded` when it settles), so keying the ledger on the
+    // event id would let a single payment land twice.
+    assert.strictEqual(txnIdFor({ id: 'cs_test_abc' }, 'evt_1'), 'cs_test_abc');
+    assert.strictEqual(txnIdFor({ id: 'cs_test_abc' }, 'evt_2'), 'cs_test_abc',
+        'the same session under a different event is the same transaction');
+});
+
+test('support: txnIdFor falls back to the event id rather than an empty key', () => {
+    // An empty key would make every unidentifiable payment collide with every
+    // other one, so the SECOND unattributable payment would look like a
+    // duplicate of the first and be silently dropped.
+    assert.strictEqual(txnIdFor({}, 'evt_9'), 'evt_9');
+    assert.strictEqual(txnIdFor(undefined, 'evt_9'), 'evt_9');
+    assert.strictEqual(txnIdFor({ id: '' }, 'evt_9'), 'evt_9');
+});
+
+test('support: isUsableUid rejects the un-attributable', () => {
+    assert.strictEqual(isUsableUid('abc123'), true);
+    assert.strictEqual(isUsableUid(''), false);
+    assert.strictEqual(isUsableUid(undefined), false);
+    assert.strictEqual(isUsableUid(null), false);
+    assert.strictEqual(isUsableUid(123 as unknown), false);
+    assert.strictEqual(isUsableUid('x'.repeat(129)), false);
+});
+
+// ─── SUPPORT_MONEY: projectSupportMoneyForClient (the read projection) ───────
+
+const WINDOW = 30 * 86_400_000;
+
+test('support view: a contribution inside the window is an active supporter', () => {
+    const now = 2_000_000_000_000;
+    const view = projectSupportMoneyForClient(
+        [{ txnId: 'cs_1', atMs: now - 86_400_000, amountMinor: 800, currency: 'GBP' }],
+        now, WINDOW,
+    );
+    assert.strictEqual(view.isActiveSupporter, true);
+    assert.strictEqual(view.count, 1);
+    assert.strictEqual(view.entries.length, 1);
+    assert.strictEqual(view.entries[0].txnId, 'cs_1');
+});
+
+test('support view: the badge lapses on its own the instant the window passes', () => {
+    const now = 2_000_000_000_000;
+    const rows = [{ txnId: 'cs_1', atMs: now - WINDOW, amountMinor: 800, currency: 'GBP' }];
+    assert.strictEqual(projectSupportMoneyForClient(rows, now, WINDOW).isActiveSupporter, false);
+    assert.strictEqual(projectSupportMoneyForClient(rows, now - 1, WINDOW).isActiveSupporter, true,
+        'one millisecond earlier it is still active');
+    // Derived from the clock, so there is no expiry job and no stored state to
+    // go stale: a phone offline for the whole month comes back to the truth.
+});
+
+test('support view: only the NEWEST row is served, however many are stored', () => {
+    // The store keeps everything because reconciling against Stripe needs it.
+    // The client needs exactly one. Serving the rest would be building a
+    // transaction history by accident — the one thing this feature has said
+    // from the start it will never have.
+    const now = 2_000_000_000_000;
+    const view = projectSupportMoneyForClient([
+        { txnId: 'cs_old', atMs: now - 200 * 86_400_000, amountMinor: 400, currency: 'GBP' },
+        { txnId: 'cs_new', atMs: now - 86_400_000, amountMinor: 1200, currency: 'GBP' },
+        { txnId: 'cs_mid', atMs: now - 90 * 86_400_000, amountMinor: 800, currency: 'GBP' },
+    ], now, WINDOW);
+    assert.strictEqual(view.entries.length, 1, 'never more than the latest');
+    assert.strictEqual(view.entries[0].txnId, 'cs_new');
+    assert.strictEqual(view.count, 3, 'but the count still sees all of them');
+    assert.strictEqual(view.isActiveSupporter, true);
+});
+
+test('support view: the badge window can only move FORWARD, structurally', () => {
+    // The old model enforced this by hand as `until = max(existing, new)`. It
+    // is now impossible to violate: the window is measured from the LATEST row,
+    // and a later row is by definition later. A £4 top-up cannot shorten a
+    // badge a £12 contribution bought, because there is no stored `until` for
+    // it to shorten.
+    const now = 2_000_000_000_000;
+    const big = { txnId: 'cs_big', atMs: now - 10 * 86_400_000, amountMinor: 1200, currency: 'GBP' };
+    const topUp = { txnId: 'cs_small', atMs: now, amountMinor: 400, currency: 'GBP' };
+    const after = projectSupportMoneyForClient([big, topUp], now + 25 * 86_400_000, WINDOW);
+    assert.strictEqual(after.isActiveSupporter, true,
+        'the £4 top-up EXTENDED the badge past where the £12 alone would have ended');
+});
+
+test('support view: an absent, empty, or malformed record is a well-formed non-supporter', () => {
+    const now = Date.now();
+    const none = { isActiveSupporter: false, count: 0, entries: [] };
+    assert.deepStrictEqual(projectSupportMoneyForClient(undefined, now, WINDOW), none);
+    assert.deepStrictEqual(projectSupportMoneyForClient([], now, WINDOW), none);
+    // Never a fabricated £0 row: a sentinel would be a lie in the data, and
+    // `isActiveSupporter` already answers what it would have been invented for.
+    assert.deepStrictEqual(projectSupportMoneyForClient({ status: 'active' }, now, WINDOW), none,
+        'the OLD object shape reads as no contributions, rather than throwing');
+    assert.deepStrictEqual(projectSupportMoneyForClient('nonsense', now, WINDOW), none);
+});
+
+test('support view: rows missing a usable timestamp are dropped, not counted', () => {
+    // A row with no `atMs` cannot be dated, so it can neither hold the badge
+    // open nor be trusted as "the latest". Counting it would inflate the copy
+    // ("you have done this 3 times") off a row nothing else can use.
+    const now = 2_000_000_000_000;
+    const view = projectSupportMoneyForClient([
+        { txnId: 'cs_ok', atMs: now, amountMinor: 800, currency: 'GBP' },
+        { txnId: 'cs_broken', amountMinor: 800, currency: 'GBP' },
+        { txnId: 'cs_zero', atMs: 0, amountMinor: 800, currency: 'GBP' },
+        null,
+    ], now, WINDOW);
+    assert.strictEqual(view.count, 1);
+    assert.strictEqual(view.entries[0].txnId, 'cs_ok');
+});
+
+test('support view: stored rows are read newest-first regardless of stored order', () => {
+    const now = 2_000_000_000_000;
+    const rows = readSupportMoneyEntries([
+        { txnId: 'a', atMs: 100, amountMinor: 1, currency: 'gbp' },
+        { txnId: 'c', atMs: 300, amountMinor: 1, currency: 'gbp' },
+        { txnId: 'b', atMs: 200, amountMinor: 1, currency: 'gbp' },
+    ]);
+    assert.deepStrictEqual(rows.map(r => r.txnId), ['c', 'b', 'a']);
+    assert.strictEqual(rows[0].currency, 'GBP', 'currency is normalised uppercase');
+});
+
+// ─── SUPPORT_MONEY: SupportMoneyService event handling + idempotency ────────────────
+
+/** Run [body] with an in-memory `stripe_events` table behind LocalDbService. */
+async function withStripeEventLedger(body: (seen: Set<string>) => Promise<void>): Promise<void> {
+    const anyLocal = LocalDbService as any;
+    const savedGet = anyLocal.get;
+    const savedRun = anyLocal.run;
+    const seen = new Set<string>();
+    anyLocal.get = async (q: string, params: any[]) => {
+        if (/stripe_events/.test(q)) return seen.has(params[0]) ? { event_id: params[0] } : undefined;
+        return savedGet ? savedGet.call(LocalDbService, q, params) : undefined;
+    };
+    anyLocal.run = async (q: string, params: any[]) => {
+        if (/stripe_events/.test(q)) { seen.add(params[0]); return; }
+        return savedRun ? savedRun.call(LocalDbService, q, params) : undefined;
+    };
+    try { await body(seen); } finally {
+        anyLocal.get = savedGet;
+        anyLocal.run = savedRun;
+    }
+}
+
+/** Swap UserService.recordSupportMoney for a recorder that never touches Firestore. */
+async function withRecordSupportMoneySpy(
+    impl: (input: any) => Promise<{ recorded: boolean; reason?: string; count: number }>,
+    body: (calls: any[]) => Promise<void>,
+): Promise<void> {
+    const anyUS = UserService as any;
+    const saved = anyUS.recordSupportMoney;
+    const calls: any[] = [];
+    anyUS.recordSupportMoney = async (input: any) => { calls.push(input); return impl(input); };
+    try { await body(calls); } finally { anyUS.recordSupportMoney = saved; }
+}
+
+const checkoutEvent = (over: Record<string, unknown> = {}) => ({
+    id: 'evt_' + Math.random().toString(36).slice(2),
+    type: 'checkout.session.completed',
+    livemode: false,
+    data: { object: {
+        id: 'cs_test_1',
+        client_reference_id: 'uid-alice',
+        amount_total: 300,
+        currency: 'gbp',
+        mode: 'payment',
+        payment_status: 'paid',
+        ...over,
+    } },
+});
+
+test('support service: a delayed payment settling later still credits the account', async () => {
+    // Card / Apple Pay complete already `paid`. Bank debits and some wallets
+    // complete `unpaid` and settle minutes-to-days later, when Stripe sends
+    // `checkout.session.async_payment_succeeded`. Handling only `completed`
+    // took the money and never granted the badge.
+    await withStripeEventLedger(async seen => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const ev = checkoutEvent();
+                (ev as any).type = 'checkout.session.async_payment_succeeded';
+                const out = await SupportMoneyService.processStripeEvent(ev);
+                assert.strictEqual(out.status, 'recorded');
+                assert.strictEqual(calls.length, 1, 'the settled payment credited the account');
+                assert.ok(seen.has(ev.id));
+            },
+        );
+    });
+});
+
+test('support service: the unpaid half of a delayed payment is ignored, not credited', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const out = await SupportMoneyService.processStripeEvent(
+                    checkoutEvent({ payment_status: 'unpaid' }),
+                );
+                assert.strictEqual(out.status, 'ignored');
+                assert.strictEqual(calls.length, 0, 'nothing credited until it settles');
+            },
+        );
+    });
+});
+
+test('support service: a ledger read failure asks Stripe to retry rather than answering handled', async () => {
+    // The dangerous shape: if a SQLite read failure were treated as "already
+    // seen", the route would answer 200, Stripe would never redeliver, and a
+    // real contribution would be gone with no trace but a warning line.
+    const anyLocal = LocalDbService as any;
+    const savedGet = anyLocal.get;
+    anyLocal.get = async () => { throw new Error('sqlite unavailable'); };
+    try {
+        await assert.rejects(
+            () => SupportMoneyService.processStripeEvent(checkoutEvent()),
+            /sqlite unavailable/,
+            'the failure propagates, so the route can 500 and Stripe retries',
+        );
+    } finally {
+        anyLocal.get = savedGet;
+    }
+});
+
+test('support service: a payment for an account that no longer exists is unattributed, not duplicate', async () => {
+    // `recorded:false` used to mean both "Stripe redelivered" and "nobody was
+    // credited". The second is money on the floor and must be distinguishable.
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: false, reason: 'missing_account', count: 0 }),
+            async () => {
+                const out = await SupportMoneyService.processStripeEvent(checkoutEvent());
+                assert.strictEqual(out.status, 'unattributed');
+            },
+        );
+    });
+});
+
+test('support service: a genuine redelivery caught by the document guard is still a duplicate', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: false, reason: 'duplicate_txn', count: 0 }),
+            async () => {
+                const out = await SupportMoneyService.processStripeEvent(checkoutEvent());
+                assert.strictEqual(out.status, 'duplicate');
+            },
+        );
+    });
+});
+
+test('support config: every checkout url carries the {uid} attribution placeholder', () => {
+    // A checkout opened without `client_reference_id` reaches the webhook with
+    // nobody to credit and can only be fixed by hand. Serving the placeholder
+    // in the URL makes attribution the same `{uid}` substitution every other
+    // field uses, so no client can forget the parameter name.
+    const prev = { ...process.env };
+    process.env.SUPPORT_MONEY_PAYMENT_URL_T4 = 'https://buy.stripe.com/test_A';
+    process.env.SUPPORT_MONEY_PAYMENT_URL_T8 = 'https://buy.stripe.com/test_B?locale=en';
+    process.env.SUPPORT_MONEY_PAYMENT_URL_T12 = 'https://buy.stripe.com/test_C?client_reference_id={uid}';
+    process.env.SUPPORT_MONEY_PAYMENT_URL_ONEOFF = 'https://buy.stripe.com/test_D';
+    try {
+        const cfg = SupportMoneyConfigService.getSupportMoneyConfig();
+        const byId = Object.fromEntries(cfg.tiers.map(t => [t.id, t.url]));
+        assert.strictEqual(byId.t4, 'https://buy.stripe.com/test_A?client_reference_id={uid}');
+        assert.strictEqual(byId.t8, 'https://buy.stripe.com/test_B?locale=en&client_reference_id={uid}',
+            'an existing query string keeps its parameters');
+        assert.strictEqual(byId.t12, 'https://buy.stripe.com/test_C?client_reference_id={uid}',
+            'a link the operator already templated is left alone');
+        assert.strictEqual(cfg.cta.url_oneoff, 'https://buy.stripe.com/test_D?client_reference_id={uid}');
+    } finally {
+        process.env = prev;
+    }
+});
+
+test('support config: an unset checkout url stays empty rather than becoming a bare query string', () => {
+    const prev = { ...process.env };
+    for (const k of ['T4', 'T8', 'T12', 'ONEOFF', 'MONTHLY']) delete process.env[`SUPPORT_MONEY_PAYMENT_URL_${k}`];
+    try {
+        const cfg = SupportMoneyConfigService.getSupportMoneyConfig();
+        for (const t of cfg.tiers) assert.strictEqual(t.url, '', `${t.id} is inert, not broken`);
+        assert.strictEqual(cfg.cta.url_oneoff, '');
+        assert.strictEqual(cfg.cta.url_monthly, '');
+    } finally {
+        process.env = prev;
+    }
+});
+
+test('support service: a paid checkout records a contribution and marks the event', async () => {
+    await withStripeEventLedger(async seen => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const ev = checkoutEvent();
+                const out = await SupportMoneyService.processStripeEvent(ev);
+                assert.strictEqual(out.status, 'recorded');
+                assert.strictEqual(calls.length, 1);
+                assert.strictEqual(calls[0].uid, 'uid-alice');
+                assert.strictEqual(calls[0].txnId, 'cs_test_1', 'keyed on the checkout session');
+                assert.strictEqual(calls[0].amountMinor, 300);
+                assert.strictEqual(calls[0].currency, 'GBP');
+                assert.strictEqual(calls[0].tier, undefined, 'no tier is stored any more');
+                assert.ok(seen.has(ev.id), 'event id is in the ledger after processing');
+            },
+        );
+    });
+});
+
+test('support service: a redelivered event is a no-op duplicate (does not re-credit)', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const ev = checkoutEvent();
+                await SupportMoneyService.processStripeEvent(ev);
+                const second = await SupportMoneyService.processStripeEvent(ev);
+                assert.strictEqual(second.status, 'duplicate');
+                assert.strictEqual(calls.length, 1, 'recordSupportMoney called exactly once across two deliveries');
+            },
+        );
+    });
+});
+
+test('support service: a subscription checkout records the same row a one-off does', async () => {
+    // There is no tier distinction left to get wrong. Under the ledger model a
+    // renewal would simply be another row, so a recurring supporter keeps the
+    // badge by paying rather than by a subscription-shaped special case — which
+    // is what the old "grant a conservative 31 days" branch was standing in for.
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                await SupportMoneyService.processStripeEvent(
+                    checkoutEvent({ mode: 'subscription', amount_total: 249 }),
+                );
+                assert.strictEqual(calls[0].amountMinor, 249);
+                assert.strictEqual(calls[0].txnId, 'cs_test_1');
+            },
+        );
+    });
+});
+
+test('support service: a missing client_reference_id is unattributed, not credited', async () => {
+    await withStripeEventLedger(async seen => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const ev = checkoutEvent({ client_reference_id: undefined });
+                const out = await SupportMoneyService.processStripeEvent(ev);
+                assert.strictEqual(out.status, 'unattributed');
+                assert.strictEqual(calls.length, 0, 'no account was credited');
+                assert.ok(seen.has(ev.id), 'still marked so Stripe stops retrying a payment that can never attach');
+            },
+        );
+    });
+});
+
+test('support service: an unpaid completed session is ignored', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                const out = await SupportMoneyService.processStripeEvent(checkoutEvent({ payment_status: 'unpaid' }));
+                assert.strictEqual(out.status, 'ignored');
+                assert.strictEqual(calls.length, 0);
+            },
+        );
+    });
+});
+
+test('support service: subscription lifecycle events are acknowledged but not applied (Phase 2)', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: true, count: 1 }),
+            async calls => {
+                for (const t of ['customer.subscription.updated', 'customer.subscription.deleted']) {
+                    const out = await SupportMoneyService.processStripeEvent({ id: 'evt_' + t, type: t, livemode: false });
+                    assert.strictEqual(out.status, 'ignored');
+                }
+                assert.strictEqual(calls.length, 0);
+            },
+        );
+    });
+});
+
+test('support service: an unknown event type is ignored', async () => {
+    await withStripeEventLedger(async () => {
+        const out = await SupportMoneyService.processStripeEvent({ id: 'evt_x', type: 'invoice.paid', livemode: false });
+        assert.strictEqual(out.status, 'ignored');
+    });
+});
+
+test('support service: a genuine recordSupportMoney failure propagates (so the webhook 500s and Stripe retries)', async () => {
+    await withStripeEventLedger(async seen => {
+        await withRecordSupportMoneySpy(
+            async () => { throw new Error('firestore down'); },
+            async () => {
+                const ev = checkoutEvent();
+                await assert.rejects(() => SupportMoneyService.processStripeEvent(ev), /firestore down/);
+                assert.ok(!seen.has(ev.id), 'NOT marked processed — the retry must be able to apply it');
+            },
+        );
+    });
+});
+
+test('support service: recordSupportMoney returning {recorded:false} is treated as a duplicate', async () => {
+    await withStripeEventLedger(async () => {
+        await withRecordSupportMoneySpy(
+            async () => ({ recorded: false, count: 0 }),
+            async () => {
+                const out = await SupportMoneyService.processStripeEvent(checkoutEvent());
+                assert.strictEqual(out.status, 'duplicate');
+            },
+        );
+    });
+});
+
+// ─── SUPPORT_MONEY: UserService.recordSupportMoney (the Firestore transaction) ──────────
+
+/** Run [body] with `db.runTransaction` backed by one fake `users/{uid}` doc. */
+async function withSupportMoneyUserDoc(
+    stored: Record<string, unknown> | null,
+    body: (written: Record<string, unknown>[]) => Promise<void>,
+): Promise<void> {
+    const written: Record<string, unknown>[] = [];
+    const anyDb = db as any;
+    const savedTx = anyDb.runTransaction;
+    const anyUS = UserService as any;
+    const savedCollection = anyUS.collection;
+    const savedAfter = anyUS.afterContentWrite;
+    let afterCalls = 0;
+
+    anyUS.collection = { doc: () => ({}) };
+    anyUS.afterContentWrite = () => { afterCalls++; };
+    anyDb.runTransaction = async (fn: (tx: unknown) => Promise<unknown>) => {
+        return fn({
+            get: async () => ({ exists: stored !== null, data: () => stored ?? undefined }),
+            update: (_ref: unknown, patch: Record<string, unknown>) => { written.push(patch); },
+        });
+    };
+    try {
+        await body(written);
+        (body as any).afterCalls = afterCalls;
+    } finally {
+        anyDb.runTransaction = savedTx;
+        anyUS.collection = savedCollection;
+        anyUS.afterContentWrite = savedAfter;
+    }
+}
+
+test('recordSupportMoney: a first contribution appends a row, bumps stateRev, fans out', async () => {
+    const now = 3_000_000_000_000;
+    await withSupportMoneyUserDoc({ stateRev: 5 }, async written => {
+        const r = await UserService.recordSupportMoney({
+            uid: 'u', txnId: 'cs_a', amountMinor: 500, currency: 'gbp', nowMs: now,
+        });
+        assert.strictEqual(r.recorded, true);
+        assert.strictEqual(r.count, 1);
+        assert.strictEqual(written.length, 1);
+        const patch: any = written[0];
+        assert.deepStrictEqual(patch.supportMoney, [
+            { txnId: 'cs_a', atMs: now, amountMinor: 500, currency: 'GBP' },
+        ], 'four fields, nothing derived, nothing spare');
+        // stateRev bump is a FieldValue sentinel — present and not a plain number.
+        assert.ok(patch.stateRev && typeof patch.stateRev === 'object');
+    });
+});
+
+test('recordSupportMoney: a second contribution APPENDS rather than overwriting', async () => {
+    const now = 3_000_000_000_000;
+    const first = { txnId: 'cs_a', atMs: now - 5 * 86_400_000, amountMinor: 1200, currency: 'GBP' };
+    await withSupportMoneyUserDoc({ stateRev: 5, supportMoney: [first] }, async written => {
+        const r = await UserService.recordSupportMoney({
+            uid: 'u', txnId: 'cs_b', amountMinor: 300, nowMs: now,
+        });
+        const patch: any = written[0];
+        assert.strictEqual(r.count, 2);
+        assert.strictEqual(patch.supportMoney.length, 2);
+        assert.strictEqual(patch.supportMoney[0].txnId, 'cs_b', 'newest first, matching the read order');
+        assert.strictEqual(patch.supportMoney[1].txnId, 'cs_a', 'the older row is kept, for reconciliation');
+    });
+});
+
+test('recordSupportMoney: the SAME txnId already on the doc is a no-op', async () => {
+    const now = 3_000_000_000_000;
+    await withSupportMoneyUserDoc(
+        { supportMoney: [{ txnId: 'cs_dup', atMs: now - 1000, amountMinor: 800, currency: 'GBP' }] },
+        async written => {
+            const r = await UserService.recordSupportMoney({
+                uid: 'u', txnId: 'cs_dup', amountMinor: 800, nowMs: now,
+            });
+            assert.strictEqual(r.recorded, false);
+            assert.strictEqual(r.reason, 'duplicate_txn', 'a replay, not lost money');
+            assert.strictEqual(written.length, 0, 'no write on a replay');
+        },
+    );
+});
+
+test('recordSupportMoney: an OLD row still guards, which lastEventId could not do', async () => {
+    // The guard this replaces only ever remembered the most recent event, so a
+    // redelivery of anything older than the last one walked straight past it
+    // and credited the account twice. Every transaction is a guard now.
+    const now = 3_000_000_000_000;
+    await withSupportMoneyUserDoc(
+        {
+            supportMoney: [
+                { txnId: 'cs_recent', atMs: now - 1000, amountMinor: 400, currency: 'GBP' },
+                { txnId: 'cs_ancient', atMs: now - 400 * 86_400_000, amountMinor: 800, currency: 'GBP' },
+            ],
+        },
+        async written => {
+            const r = await UserService.recordSupportMoney({
+                uid: 'u', txnId: 'cs_ancient', amountMinor: 800, nowMs: now,
+            });
+            assert.strictEqual(r.recorded, false);
+            assert.strictEqual(r.reason, 'duplicate_txn');
+            assert.strictEqual(written.length, 0);
+        },
+    );
+});
+
+test('recordSupportMoney: the two crediting events of ONE session cannot double-credit', async () => {
+    // A delayed payment method completes `unpaid` and settles later, so Stripe
+    // sends `checkout.session.completed` and then
+    // `checkout.session.async_payment_succeeded` — different event ids, the
+    // same session, the same money. Keyed on the session, the second is a
+    // duplicate by construction.
+    const now = 3_000_000_000_000;
+    await withSupportMoneyUserDoc({ stateRev: 1 }, async written => {
+        await UserService.recordSupportMoney({ uid: 'u', txnId: 'cs_delayed', amountMinor: 800, nowMs: now });
+        assert.strictEqual(written.length, 1);
+    });
+    await withSupportMoneyUserDoc(
+        { supportMoney: [{ txnId: 'cs_delayed', atMs: now, amountMinor: 800, currency: 'GBP' }] },
+        async written => {
+            const r = await UserService.recordSupportMoney({
+                uid: 'u', txnId: 'cs_delayed', amountMinor: 800, nowMs: now + 60_000,
+            });
+            assert.strictEqual(r.recorded, false);
+            assert.strictEqual(written.length, 0);
+        },
+    );
+});
+
+test('recordSupportMoney: a payment for a deleted account writes nothing and does not throw', async () => {
+    await withSupportMoneyUserDoc(null, async written => {
+        const r = await UserService.recordSupportMoney({
+            uid: 'ghost', txnId: 'cs_ghost', amountMinor: 300,
+        });
+        assert.strictEqual(r.recorded, false);
+        assert.strictEqual(r.reason, 'missing_account',
+            'the caller must be able to tell this from a benign redelivery');
+        assert.strictEqual(written.length, 0);
+    });
+});
+
+test('recordSupportMoney: a missing amount writes 0 rather than undefined (Firestore rejects undefined)', async () => {
+    await withSupportMoneyUserDoc({ stateRev: 1 }, async written => {
+        await UserService.recordSupportMoney({ uid: 'u', txnId: 'cs_noamt' });
+        const row: any = (written[0] as any).supportMoney[0];
+        assert.strictEqual(row.amountMinor, 0);
+        assert.strictEqual(row.currency, 'GBP', 'and a default currency, never undefined');
+        for (const v of Object.values(row)) assert.notStrictEqual(v, undefined);
+    });
+});
+
+test('recordSupportMoney: a garbage stored field is replaced rather than crashing the write', async () => {
+    // The old OBJECT shape sitting on a document from before this model. There
+    // is no migration by design (pre-launch), so the read has to treat it as
+    // "no contributions" and the write has to leave a well-formed array.
+    await withSupportMoneyUserDoc(
+        { supportMoney: { status: 'active', until: 9_999_999_999_999, count: 7 } },
+        async written => {
+            const r = await UserService.recordSupportMoney({ uid: 'u', txnId: 'cs_new', amountMinor: 400 });
+            assert.strictEqual(r.recorded, true);
+            const rows: any = (written[0] as any).supportMoney;
+            assert.ok(Array.isArray(rows) && rows.length === 1);
+            assert.strictEqual(rows[0].txnId, 'cs_new');
+        },
+    );
+});
+
+test('LOGIN CONTRACT: the stored ledger is projected on the login response, not spread raw', async () => {
+    const now = Date.now();
+    await withSyncableUserDoc(
+        {
+            uid: 'u', email: 'a@b.c', displayName: 'NAME', stations: [], boards: [], stateRev: 3,
+            supportMoney: [
+                { txnId: 'cs_new', atMs: now - 1000, amountMinor: 500, currency: 'GBP' },
+                { txnId: 'cs_old', atMs: now - 400 * 86_400_000, amountMinor: 800, currency: 'GBP' },
+            ],
+        },
+        async () => {
+            const wire = JSON.parse(JSON.stringify(await UserService.createOrUpdateUser(
+                'u', 'a@b.c', {}, false, undefined, undefined,
+            )));
+            assert.ok(wire.supportMoney, 'supportMoney is on the login response');
+            assert.strictEqual(wire.supportMoney.isActiveSupporter, true);
+            assert.strictEqual(wire.supportMoney.count, 2, 'the count sees every row');
+            assert.strictEqual(wire.supportMoney.entries.length, 1, 'but only the newest is served');
+            assert.strictEqual(wire.supportMoney.entries[0].txnId, 'cs_new');
+            // The login response spreads the stored document, so without the
+            // projection the WHOLE ledger would ride out on it — every
+            // transaction the account has ever made, on every login.
+            assert.ok(!Array.isArray(wire.supportMoney), 'the raw array must not reach the client');
+        },
+    );
+});
+
+test('LOGIN CONTRACT: an account with no support record gets no support key', async () => {
+    await withSyncableUserDoc(
+        { uid: 'u', email: 'a@b.c', displayName: 'NAME', stations: [], boards: [], stateRev: 3 },
+        async () => {
+            const wire = JSON.parse(JSON.stringify(await UserService.createOrUpdateUser(
+                'u', 'a@b.c', {}, false, undefined, undefined,
+            )));
+            assert.ok(!('supportMoney' in wire), 'no new key for the current user base');
+        },
+    );
+});
+
 
 // ─── P4: the socket tier ─────────────────────────────────────────────────────
 //

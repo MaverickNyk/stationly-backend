@@ -161,4 +161,23 @@ export class RateLimitMiddleware {
         standardHeaders: true,
         legacyHeaders: false,
     });
+
+    /**
+     * Stripe webhook limiter — a safety net, not the gate.
+     *
+     * Signature verification already rejects anything not from Stripe before a
+     * single byte is trusted, so this only bounds the cost of a flood of
+     * unsigned junk at the endpoint. Generous — a real Stripe event storm
+     * (many rapid contributions, or a redelivery backlog) must never be
+     * throttled. Keyed per-IP (Stripe posts from a small, published range).
+     */
+    static webhook = rateLimit({
+        windowMs: 5 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByUidOrIp,
+        validate,
+        message: { error: "Too Many Requests", message: "Webhook rate limit exceeded." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
 }

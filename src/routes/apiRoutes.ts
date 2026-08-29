@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { SduiController } from '../controllers/sduiController';
+import { SupportMoneyController } from '../controllers/supportMoneyController';
 import { ThemeController } from '../controllers/themeController';
 import { UserController } from '../controllers/userController';
 import { AuthController } from '../controllers/authController';
@@ -37,6 +38,10 @@ router.get('/sdui/app/about', SduiController.getAboutLayout);
 router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
 router.get('/sdui/app/home-config', SduiController.getHomeConfig);
 router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
+// Structured support / contributions card config. Same content is also folded
+// into /sdui/app/home-config (key `support_money.card.json` + `home.promo.support_money.*`);
+// this endpoint serves it as a clean object for platforms that prefer that.
+router.get('/sdui/app/support-money-config', SupportMoneyController.getConfig);
 // Refresh cadence schedule. Clients cache this and evaluate it locally, so it
 // is read on a cold launch and after a `policy.update` push — not per refresh.
 router.get('/sdui/app/refresh-policy', SduiController.getRefreshPolicy);

@@ -7,6 +7,9 @@ import { DeviceLifecycleService } from './deviceLifecycleService';
 import { UserRevLedger } from './userRevLedger';
 import { UserDeviceService } from './userDeviceService';
 import { UserWatchIndex } from './userWatchIndex';
+// Only for the badge window. `supportMoneyConfigService` imports nothing from
+// here, so this direction adds no cycle.
+import { SupportMoneyConfigService } from './supportMoneyConfigService';
 
 const FieldValue = admin.firestore.FieldValue;
 
@@ -107,12 +110,194 @@ export interface UserProfile {
      */
     stateRev?: number;
     /**
+     * Voluntary contributions. Absent until the account's first one.
+     *
+     * Written ONLY by `recordSupportMoney`, off a verified Stripe webhook (or,
+     * later, an App Store / Play server notification). Never by the client — it
+     * is in [PROTECTED_PROFILE_FIELDS] so a profile sync cannot forge it.
+     *
+     * **Two different shapes, on purpose.** In the STORE it is the whole ledger:
+     * a `SupportMoneyEntry[]`, append-only, one row per transaction. On the WIRE
+     * it is [SupportMoneyView] — the single most recent row, the lifetime count,
+     * and the one boolean the UI actually renders from. See
+     * [projectSupportMoneyForClient].
+     */
+    supportMoney?: SupportMoneyEntry[] | SupportMoneyView;
+    /**
      * There is deliberately NO `preferences` field.
      *
      * Client settings are device-local — see [DROP_LEGACY_PREFERENCES] for why,
      * and for the sweep that removes it from documents that still carry one.
      * Declaring it here at all invited the next reader to write to it.
      */
+}
+
+/**
+ * One contribution. The whole stored record is an array of these.
+ *
+ * ## Why a ledger of facts rather than a status object
+ * The record used to be a nine-field object — `status`, `tier`, `since`,
+ * `until`, `count`, `source`, `lastEventId`, `lastAmountMinor`, `currency` — and
+ * most of those were **derived values frozen into the database**. `status` was a
+ * snapshot taken at write time and stale the moment the clock moved, which is
+ * precisely why every read had to recompute it before answering. `count` was a
+ * running total maintained by hand. `until` was a window the writer had to
+ * remember to extend rather than shorten.
+ *
+ * All of that is derivable from the one thing that is actually true: a payment
+ * happened, at a time, for an amount. So that is what is stored, and everything
+ * else is computed at read time by [projectSupportMoneyForClient].
+ *
+ * ## The invariant that stopped being an invariant
+ * "The badge window never goes backwards" used to be enforced as
+ * `until = max(existing.until, new)`. It is now structural: the window is
+ * measured from the LATEST entry, and a later entry is by definition later. A
+ * £4 top-up cannot shorten a badge a £12 contribution bought, because there is
+ * no stored `until` for it to shorten.
+ *
+ * ## Four fields, and why none of them is spare
+ * `tier` and `source` were dropped as unnecessary — nothing reads them, the
+ * subscription branch they served is unbuilt, and `txnId`'s own prefix already
+ * says which rail a row came from. `currency` stays: an amount without one is
+ * ambiguous the day a second Payment Link is not in pounds.
+ */
+export interface SupportMoneyEntry {
+    /**
+     * The Stripe **Checkout Session** id (`cs_...`).
+     *
+     * Two jobs, and it is the right value for both. It is what a human types
+     * into the Stripe dashboard to find this exact transaction, which is the
+     * whole point of keeping it. And it is a better idempotency key than the
+     * event id: ONE session can emit TWO crediting events (`completed` while a
+     * delayed payment is still unpaid, then `async_payment_succeeded` when it
+     * settles), so keying the ledger on the event would let one payment land
+     * twice. Keyed on the session, it cannot.
+     */
+    txnId: string;
+    /** Epoch ms the contribution landed. The badge window is measured from the newest of these. */
+    atMs: number;
+    /** Minor units (pence). */
+    amountMinor: number;
+    /** ISO currency, uppercase. */
+    currency: string;
+}
+
+/**
+ * What the client is given: the newest row, the count, and one boolean.
+ *
+ * ## Why the array is truncated on the way out
+ * The store keeps every contribution because reconciling against Stripe needs
+ * them. The client needs exactly one: the most recent, because that is what the
+ * badge window is measured from. Shipping the rest would be building a
+ * transaction history by accident — the one thing this feature has said from the
+ * start it will never have — and it would grow the profile response for every
+ * repeat supporter forever.
+ *
+ * ## Why `isActiveSupporter` is computed here and not there
+ * It is the only thing the UI renders from, and it is a comparison between a
+ * stored timestamp and a window the SERVER configures
+ * (`SUPPORT_MONEY_BADGE_DURATION_DAYS`). A client deciding it for itself would
+ * have to be told the window, then be trusted to apply it, and would disagree
+ * with the server the moment an operator changed it. One boolean, decided once,
+ * by the side that owns the number.
+ */
+export interface SupportMoneyView {
+    /** Is the Supporter badge showing right now? The only field the UI branches on. */
+    isActiveSupporter: boolean;
+    /** Lifetime contributions. Powers "you've done this {n} times" copy only — never a list. */
+    count: number;
+    /**
+     * The most recent contribution, or empty if there has never been one.
+     *
+     * An array rather than a nullable object so the shape is the same either
+     * way, and so a future client that wants the last few can be served them
+     * without the field changing type. Never more than one today. Deliberately
+     * NOT padded with a zero row when empty: a fabricated £0 contribution is a
+     * lie in the data, and `isActiveSupporter` already answers the question a
+     * sentinel row would have been invented to answer.
+     */
+    entries: SupportMoneyEntry[];
+}
+
+/**
+ * What {UserService.recordSupportMoney} reports back.
+ *
+ * `recorded:false` has two very different meanings and the caller must be able
+ * to tell them apart: `duplicate_txn` is Stripe redelivering something already
+ * applied (benign, expected, at-least-once delivery), while `missing_account` is
+ * money that arrived for a uid with no user document — nobody was credited and a
+ * human has to reconcile it. Collapsing both into one boolean hid the second
+ * inside the logs of the first.
+ */
+export interface RecordSupportMoneyResult {
+    recorded: boolean;
+    reason?: 'duplicate_txn' | 'missing_account';
+    /** Lifetime count after this write. 0 when nothing was recorded. */
+    count: number;
+}
+
+/**
+ * How many rows are kept on the document.
+ *
+ * Effectively "all of them" — nobody contributes five hundred times — while
+ * still bounding a field that would otherwise grow without any limit at all.
+ * A Firestore document caps at 1MB and a row is about a hundred bytes, so the
+ * real ceiling is ten thousand; stopping well short of it means the failure mode
+ * is "the oldest rows age out", not "the account can no longer be written to".
+ */
+const MAX_SUPPORT_MONEY_ENTRIES = 500;
+
+/** Coerce one stored row, dropping anything that is not a usable contribution. */
+function sanitiseSupportMoneyEntry(raw: unknown): SupportMoneyEntry | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    const atMs = Number(r.atMs);
+    if (!Number.isFinite(atMs) || atMs <= 0) return null;
+    const amountMinor = Number(r.amountMinor);
+    return {
+        txnId: typeof r.txnId === 'string' ? r.txnId : '',
+        atMs: Math.floor(atMs),
+        amountMinor: Number.isFinite(amountMinor) ? Math.floor(amountMinor) : 0,
+        currency: typeof r.currency === 'string' && r.currency ? r.currency.toUpperCase() : 'GBP',
+    };
+}
+
+/** Every stored row, newest first, with unusable ones dropped. */
+export function readSupportMoneyEntries(raw: unknown): SupportMoneyEntry[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map(sanitiseSupportMoneyEntry)
+        .filter((e): e is SupportMoneyEntry => e !== null)
+        .sort((a, b) => b.atMs - a.atMs);
+}
+
+/**
+ * The stored ledger, as the client sees it.
+ *
+ * Total by construction: a missing field, a field that is somehow not an array,
+ * and rows written by a newer backend all land on a well-formed view rather than
+ * on an exception in the middle of a profile read.
+ *
+ * @param windowMs how long one contribution keeps the badge. Passed in rather
+ *   than read from the environment here so the projection stays a pure function
+ *   the regression suite can pin against a fixed clock.
+ */
+export function projectSupportMoneyForClient(
+    raw: unknown,
+    nowMs: number,
+    windowMs: number,
+): SupportMoneyView {
+    const all = readSupportMoneyEntries(raw);
+    const latest = all[0];
+    return {
+        // `nowMs - atMs < windowMs` rather than a stored expiry, so the badge
+        // lapses on its own the instant the clock passes it: no expiry job, no
+        // state to go stale, and a phone that was offline for the whole month
+        // comes back to the right answer.
+        isActiveSupporter: !!latest && nowMs - latest.atMs < windowMs,
+        count: all.length,
+        entries: latest ? [latest] : [],
+    };
 }
 
 export interface SubscribedStation {
@@ -271,6 +456,11 @@ export const PROTECTED_PROFILE_FIELDS = new Set([
     // past where it had been — a silent, self-inflicted staleness across every
     // device at once.
     'stateRev',
+    // `supportMoney` is written ONLY by `recordSupportMoney`, off a
+    // signature-verified payment webhook. Without this membership a client could
+    // POST `supportMoney: { status: 'active', until: <far future> }` through
+    // `/user/sync/profile` and mint itself a permanent Supporter badge for free.
+    'supportMoney',
 ]);
 
 export class UserService {
@@ -1200,7 +1390,7 @@ export class UserService {
             // `updateData` non-empty), so the retry immediately afterwards wrote
             // nothing, carried no sentinel, and succeeded.
             const { stateRev: _sentinel, ...safeUpdate } = updateData;
-            return {
+            const response = {
                 stations: [], // Default fallback
                 ...existingData,
                 ...safeUpdate,
@@ -1208,7 +1398,20 @@ export class UserService {
                 // sync endpoints: it can only ever undershoot the truth, and an
                 // undershoot costs at most one extra fetch.
                 stateRev: wrote ? this.nextRevOf(existingData) : Number(existingData?.stateRev ?? 0),
-            } as unknown as UserProfile;
+            } as Record<string, unknown>;
+            // `...existingData` would spread the STORED ledger — every row the
+            // account has ever had. Project it exactly as `getUserProfile` does:
+            // newest row only, count, and the one boolean. Only when the field
+            // is present at all, so an account that never contributed carries no
+            // new key.
+            if (response.supportMoney) {
+                response.supportMoney = projectSupportMoneyForClient(
+                    response.supportMoney,
+                    Date.now(),
+                    SupportMoneyConfigService.badgeDurationMs(),
+                );
+            }
+            return response as unknown as UserProfile;
         }
     }
 
@@ -1263,6 +1466,19 @@ export class UserService {
             boards: data.boards === undefined
                 ? this.deriveBoardsFromLegacy(data.stations ?? [])
                 : (data.boards ?? []),
+            // Only present when the account has actually contributed. An account
+            // that never has sees no new key at all, so this is a zero-impact
+            // addition for every existing account, and the client reads
+            // `supportMoney.isActiveSupporter` off it.
+            ...(data.supportMoney
+                ? {
+                    supportMoney: projectSupportMoneyForClient(
+                        data.supportMoney,
+                        Date.now(),
+                        SupportMoneyConfigService.badgeDurationMs(),
+                    ),
+                }
+                : {}),
         };
     }
 
@@ -1398,6 +1614,99 @@ export class UserService {
 
         // See [syncStations] for why the writer gets an optimistic rev back.
         return { success: true, applied: true, count: clean.length, rev: this.nextRevOf(data) };
+    }
+
+    /**
+     * Append one contribution to `users/{uid}.supportMoney`.
+     *
+     * Called only by [SupportMoneyService], off a signature-verified payment
+     * webhook — never from a request the user controls. The uid has already been
+     * taken from the payment's `client_reference_id`, not from any client body.
+     *
+     * ## Why it lives here and not in SupportMoneyService
+     * Every `users/{uid}` write goes through `UserService` so the `stateRev`
+     * bump and the `user.sync` fan-out happen exactly once, the same way boards
+     * and stations do. This is `syncBoards` for one more field.
+     *
+     * ## Idempotency (the document layer)
+     * Runs in a transaction and checks whether any row already carries this
+     * `txnId`. That is strictly stronger than the `lastEventId` guard it
+     * replaces, which only ever remembered the MOST RECENT event: a redelivery
+     * of anything older than the last one slipped straight past it. Here every
+     * transaction the account has ever made is a guard, and the key is the
+     * checkout session, so the two crediting events one session can emit cannot
+     * land as two contributions.
+     *
+     * ## Append-only, and nothing to get wrong
+     * There is no counter to increment, no `status` to set, and no window to
+     * extend-but-never-shorten. The row is the fact; everything the client sees
+     * is derived from it on the way out. The only maintenance is the cap, and
+     * the newest rows are the ones kept.
+     *
+     * ## A payment for a deleted account
+     * `{ recorded: false, reason: 'missing_account' }`, logged. The webhook still
+     * answers 2xx (Stripe must not retry a payment that can never land) and a
+     * human reconciles from the Stripe dashboard.
+     */
+    static async recordSupportMoney(input: {
+        uid: string;
+        /** The Stripe Checkout Session id. See [SupportMoneyEntry.txnId]. */
+        txnId: string;
+        amountMinor?: number;
+        currency?: string;
+        nowMs?: number;
+    }): Promise<RecordSupportMoneyResult> {
+        const { uid, txnId, amountMinor, currency } = input;
+        const now = Number.isFinite(input.nowMs) ? (input.nowMs as number) : Date.now();
+        const userRef = this.collection.doc(uid);
+
+        const outcome = await db.runTransaction(async (tx) => {
+            const snap = await tx.get(userRef);
+            if (!snap.exists) {
+                console.error(`SUPPORT_MONEY: ❌ recordSupportMoney — no account ${uid} (payment for a deleted user, txn ${txnId})`);
+                return { recorded: false as const, reason: 'missing_account' as const, count: 0 };
+            }
+
+            const data = snap.data() ?? {};
+            const existing = readSupportMoneyEntries(data.supportMoney);
+
+            if (txnId && existing.some(e => e.txnId === txnId)) {
+                // Already applied — a redelivery the SQLite ledger missed.
+                return { recorded: false as const, reason: 'duplicate_txn' as const, count: existing.length };
+            }
+
+            const entry: SupportMoneyEntry = {
+                txnId,
+                atMs: Math.floor(now),
+                amountMinor: Number.isFinite(Number(amountMinor)) ? Math.floor(Number(amountMinor)) : 0,
+                currency: currency ? currency.toUpperCase() : 'GBP',
+            };
+
+            // Newest first, same order the projection reads in, so the stored
+            // array and the served one never disagree about which row is latest.
+            const next = [entry, ...existing].slice(0, MAX_SUPPORT_MONEY_ENTRIES);
+
+            tx.update(userRef, {
+                supportMoney: next,
+                // Same mechanism as every other content write — atomic, no
+                // read-modify-write. Bumps so the user's other devices refetch
+                // the profile and pick up the new Supporter status.
+                stateRev: FieldValue.increment(1),
+                updatedAt: new Date().toISOString(),
+            });
+
+            return { recorded: true as const, reason: undefined, count: next.length };
+        });
+
+        if (outcome.recorded) {
+            // Reuse the `profile` reason: the client already responds to it with
+            // a full `/user/sync/profile` fetch, which now carries `supportMoney`.
+            // No new `UserSyncReason` needed, so nothing on the client has to
+            // change for the cross-device badge to work.
+            this.afterContentWrite(uid, 'profile');
+        }
+
+        return { recorded: outcome.recorded, reason: outcome.reason, count: outcome.count };
     }
 
     /**
