@@ -22,6 +22,13 @@ import { LineStatusStreamHub } from './services/lineStatusStreamHub';
 import { DisruptionTriggerService } from './services/disruptionTriggerService';
 import { PredictionCache } from './services/predictionCache';
 
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// The café-trial web app is hosted inside this process for the duration of the
+// trial. This import and the mountTemporaryWebApp() call below are the ENTIRE
+// coupling; see web-temp/CAFE_KIOSK_DISPLAY.md.
+import { mountTemporaryWebApp, attachTemporaryKioskStream } from './tempWebHost';
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
+
 dotenv.config();
 
 const app = express();
@@ -71,6 +78,14 @@ app.post(
 );
 
 app.use(express.json());
+
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// Mounted here, after express.json() and BEFORE the /api/v1 router, so the
+// kiosk's own routes never pass through validateApiKey — the whole point is
+// that no key exists on a café screen. Same placement rule as the admin routes
+// and the waitlist POST.
+mountTemporaryWebApp(app);
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 // Serving icons from the public directory
 // Dynamic line-icon route — generates a TfL-roundel PNG for any known
@@ -912,6 +927,13 @@ app.use('/api/v1', apiRoutes);
 const server = http.createServer(app);
 
 attachStationStream(server);
+
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// The café display's read-only stream. Registered AFTER the real one so its
+// upgrade handler runs second; both return without destroying a socket whose
+// path is not theirs, so the two coexist. See web-temp/CAFE_KIOSK_DISPLAY.md.
+attachTemporaryKioskStream(server);
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 // Tuning knobs, env-overridable so `freshForMs` can be moved on a live box
 // without a code change — the whole point of watching `restHitRate` is being

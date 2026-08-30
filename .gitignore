@@ -60,3 +60,8 @@ staging_*.sh
 
 # Local dev/debug scripts
 .scripts/
+
+# Generated at runtime: `GET /icons/lines/:lineId.png` renders a TfL roundel on
+# first hit and caches it to disk here (see server.ts). Regenerates itself, so
+# it is a cache directory that happens to live under public/ - never committed.
+public/icons/lines/
