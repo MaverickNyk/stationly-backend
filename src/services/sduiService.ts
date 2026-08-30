@@ -1,5 +1,6 @@
 import { getWebUrl, isStaging } from '../utils/formatters';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { LineSeverityService } from './lineSeverityService';
 
 export interface SduiValidation {
     required?: boolean;
@@ -490,6 +491,223 @@ export class SduiService {
                 "board.fallback.lateNightStart":        "00:00",       // start of "ended for tonight" window (Europe/London)
                 "board.fallback.lateNightEnd":         "04:30",        // late night → early morning cutoff
                 "board.fallback.earlyMorningEnd":      "06:00",        // early morning → "no upcoming" cutoff
+
+                // ── Board policy ───────────────────────────────────────────────
+                //
+                // How the countdown behaves, as opposed to what it says. The
+                // client mirrors these in `core/config/BoardPolicy.kt`, which is
+                // also where each number is argued; it CLAMPS every one of them
+                // on read, so a typo here moves a value to the edge of a
+                // sensible range rather than to whatever was typed.
+                //
+                // These reach the iOS widget too — the app republishes them into
+                // its App Group alongside the fallback copy above, because the
+                // extension never calls the network.
+                //
+                // Two rules worth knowing before editing:
+                //  · `departedLabel` sizes the ETA column, which is what the
+                //    destination truncates against. Four characters is why it
+                //    reads "Gone" and not "Departed"; the client caps it at six.
+                //  · `freshMs` and `retentionMinAgeMs` are the same number on
+                //    purpose — the footer going grey and the rows going "Gone"
+                //    are one statement about one payload. Set `freshMs` alone
+                //    and the client moves retention with it. Set both to mean
+                //    them differently.
+                "board.tick.departedGraceMs":     "30000",   // ms a departed train stays up (tube dwell)
+                "board.tick.retentionMinAgeMs":   "60000",   // payload age before departed rows are HELD not dropped
+                "board.tick.departedLabel":       "Gone",    // what a held row reads
+                "board.tick.rowReserve":          "10",      // rows per platform written at ingest, not what is drawn
+                "board.stale.freshMs":            "60000",   // "ago" chronometer: amber → grey
+                "board.stale.staleMs":           "180000",   // "ago" chronometer: grey → red
+
+                // ── Explore, board hero, empty state, dream ───────────────────
+                //
+                // Restored 2026-08-30 after a regex edit removed them: the
+                // replacement that introduced `LineSeverityService` matched from a
+                // comment that sat ABOVE this whole block, so a `.*?` intended to
+                // span one key spanned thirty-seven.
+                //
+                // Values recovered from the deployed staging payload, which was the
+                // only remaining record — the file was uncommitted at the time. The
+                // `--check` guard in `scripts/sdui_keys.py` exists to catch exactly
+                // this and would have, had it not been run AFTER a regenerate, which
+                // makes it compare the payload against a record just written from
+                // that same payload. It now reads the COMMITTED inventory from git
+                // instead, so the order of the two commands no longer matters.
+                "board.hero.min_label": "min",
+                "board.hero.no_departures": "No departures reported yet",
+                "dream.settings.start": "Start screensaver",
+                "empty.hint": "Tube · Bus · DLR · Overground · Elizabeth line",
+                "explore.fares.offpeak.subtitle_short": "Until ",
+                "explore.fares.peak.subtitle_short": "Until ",
+                "explore.fares.sheet.heading": "Fares",
+                "explore.fares.sheet.note.offpeak": "Weekends and bank holidays stay off-peak all day, whatever the clock says.",
+                "explore.fares.sheet.note.peak": "Same trains either side of the window, just a few quid lighter once it passes.",
+                "explore.fares.sheet.title.offpeak": "You're riding cheap",
+                "explore.fares.sheet.title.peak": "You're paying peak",
+                "explore.fares.sheet.until": "Until {t}",
+                "explore.fares.sheet.window.am": "Morning peak",
+                "explore.fares.sheet.window.pm": "Evening peak",
+                "explore.fares.sheet.window.weekend": "Weekends",
+                "explore.fares.sheet.window.weekend_value": "Off-peak all day",
+                "explore.status.card.affected": "{n} lines affected",
+                "explore.status.card.loading": "Checking lines",
+                "explore.status.card.loading_sub": "Fetching from TfL",
+                "explore.status.count.blocked": "{n} closed",
+                "explore.status.count.delayed": "{n} delayed",
+                "explore.status.count.other": "{n} with notices",
+                "explore.status.dialog.body.disrupted": "Here's the live picture from TfL across the lines you follow.",
+                "explore.status.dialog.body.good": "Every line you're watching is on time. We'll flag changes the moment TfL does.",
+                "explore.status.dialog.dismiss": "Got it",
+                "explore.status.dialog.title.good": "All running normally",
+                "explore.status.sheet.body.empty": "Add a station and we'll keep an eye on its lines.",
+                "explore.status.sheet.body.good": "Good service on all {n} lines you follow. Nothing to do.",
+                "explore.status.sheet.good_count": "{n} more running normally",
+                "explore.status.sheet.heading": "Network status",
+                "explore.status.sheet.link": "See full status on TfL",
+                "explore.status.sheet.title.empty": "Nothing to watch yet",
+                "explore.status.sheet.title.good": "All clear.",
+                "explore.status.sheet.title.many": "{n} of your {total} lines are affected",
+                "explore.status.sheet.title.one": "One line needs a look",
+                "explore.status.tflUrl": "https://tfl.gov.uk/tube-dlr-overground/status/",
+
+                // TfL severity vocabulary — ORDER, TONE and DISPLAY NAMES, all
+                // generated from one table so the three can never disagree. See
+                // `lineSeverityService.ts`, which is also where the argument for
+                // each tone lives.
+                //
+                // This block used to be a hand-written order list here, a display
+                // map in the iOS client, and a red-set in shared Kotlin: three
+                // enumerations of one vocabulary, in two languages, that TfL could
+                // desynchronise at any time.
+                ...LineSeverityService.homeConfigKeys(),
+                // ── Auth: what the sign-in flow says when something fails ─────
+                //
+                // Seeded 2026-08-30 from the client's own fallbacks, so the first
+                // deploy of these renders identical words. See `AuthStrings.kt`.
+                //
+                // ## The wording is ours, the MAPPING is not
+                // Which Firebase code means "wrong password" is a fact about
+                // Firebase, and the client keeps that decision. Nothing here can
+                // re-point `wrong-password` at the "no such account" line, because
+                // a server able to do that could only make the app lie about what
+                // just happened. These keys change the sentence, never which
+                // sentence applies.
+                //
+                // ## Why these before any other copy
+                // Error text is the copy most likely to be wrong on the first
+                // guess and the only copy whose reader is already stuck. It was
+                // also the copy that needed an App Store release to fix.
+                //
+                // A blank value here is treated as ABSENT, not honoured — an empty
+                // error box on the screen where someone is already stuck is worse
+                // than wording nobody has got round to improving.
+                "auth.error.wrong_password":      "Incorrect email or password. Try again or reset your password.",
+                "auth.error.user_not_found":      "No account found with this email. Create an account to get started.",
+                "auth.error.email_in_use":        "This email is already registered. Sign in instead.",
+                "auth.error.weak_password":       "Please use a stronger password (at least 6 characters).",
+                "auth.error.too_many_requests":   "Too many failed attempts. Please wait a moment and try again.",
+                "auth.error.no_network":          "No internet connection. Check your connection and try again.",
+                "auth.error.generic":             "Something went wrong. Please try again.",
+
+                // Reaching us at all. `sync_rollback` is deliberately separate from
+                // `backend_unreachable`: the credentials were correct and the client
+                // has already signed back out, so telling someone "could not connect"
+                // alone invites them to retype a password that was never the problem.
+                "auth.error.backend_unreachable": "Could not connect to Stationly servers.",
+                "auth.error.sync_rollback":       "We couldn't reach our servers to finish signing you in. Please check your connection and try again.",
+
+                // Password reset
+                "auth.error.reset_email_required": "Enter your email to receive a reset link.",
+                "auth.error.reset_send_failed":    "Could not send reset link. Please try again.",
+                "auth.error.reset_link_invalid":   "Invalid reset link",
+                "auth.error.reset_link_expired":   "This reset link has expired. Please request a new one.",
+                "auth.error.reset_failed":         "Could not reset password. Please try again.",
+
+                // Email verification
+                "auth.error.session_expired":   "Your session expired. Please sign in again.",
+                "auth.error.still_unverified":  "Still not verified. Tap the link in the email and try again.",
+                "auth.error.resend_failed":     "Couldn't resend right now. Please try again in a minute.",
+
+                // Raised when an account was deleted from another device. Not an
+                // error the user caused, which is why it reads as an explanation.
+                "auth.notice.account_removed": "Your account was deleted on another device, so you've been signed out here.",
+
+                // The password RULE, not just its wording. `{n}` is substituted
+                // client-side from the value below, so the two can never disagree.
+                //
+                // The client floors this at six whatever is sent, because Firebase
+                // enforces six: a lower value here would have the form accept a
+                // password and the network then reject it as too short, which is the
+                // form contradicting itself in front of the user.
+                "auth.password.min_length":       "6",
+                "auth.error.password_too_short":  "Password must be at least {n} characters",
+
+                // ── Auth: the verify-your-email screen ────────────────────────
+                //
+                // Eight keys the client has read since it was written, through a
+                // local `str()` helper, and which nothing ever sent. They were
+                // missed by the first audit sweep for the same reason: a matcher
+                // looking for `strings["k"]` cannot see a key passed to a helper.
+                // See `scripts/sdui_keys.py`, which now looks for the key rather
+                // than the call.
+                //
+                // `{s}` is the live countdown, substituted client-side each second.
+                "auth.verify.title":            "Check your inbox",
+                "auth.verify.subtitle":         "We sent a verification link to",
+                "auth.verify.body":             "Tap the link in the email, then come back here and tap \"I've verified\".",
+                "auth.verify.open_email":       "Open email app",
+                "auth.verify.confirm":          "I've verified",
+                "auth.verify.resend":           "Resend email",
+                "auth.verify.resend_cooldown":  "Resend email in {s}s",
+                "auth.verify.different_email":  "Use a different email",
+
+                // How long the resend button stays disabled. A rate limit, not a
+                // feel decision: it exists to keep someone from hammering the send
+                // endpoint, and the right number is whatever the mail provider will
+                // tolerate — which is learned in production, not guessed here.
+                "auth.verify.resend_cooldown_sec": "60",
+
+                // ── Widget: the four "no board at all" states ─────────────────
+                //
+                // Distinct from the `board.fallback.*` family above. Those cover a
+                // board that EXISTS and is empty ("Service ended for tonight").
+                // These cover a widget with no board: signed out, no stations,
+                // never configured, or configured for a station since removed.
+                //
+                // They are the messages a CONFUSED user reads. Every other string
+                // on the widget is seen by someone whose widget works; these are
+                // seen by someone staring at a blank panel who has to be told, in
+                // about six words, which of four different things to do.
+                //
+                // The app republishes them into the App Group with the rest of the
+                // widget's table — the extension never fetches anything.
+                //
+                // Three rules produced this wording, and they are worth keeping if
+                // you retune it:
+                //  · No apology, no alarm. `needs_station` is a SETUP step, not an
+                //    error, and it can surface on several widgets at once (adding a
+                //    first station un-masks every stale configuration together),
+                //    which is exactly when alarmed wording reads as a broken app.
+                //  · Name the whole gesture. Touch-and-hold alone only opens the
+                //    jiggle menu; someone who has never configured a widget has no
+                //    reason to know there is a second step.
+                //  · Use the phone's words. "Touch and hold", not "long press";
+                //    "Edit Widget" exactly as the menu spells it.
+                //
+                // `removed.title` is a FALLBACK only: normally the removed
+                // station's own name takes that slot, because it is what tells the
+                // user which of several widgets needs attention without opening any
+                // of them.
+                "widget.state.signed_out.title":     "Signed out",
+                "widget.state.signed_out.detail":    "Open Stationly to sign in",
+                "widget.state.no_stations.title":    "No stations yet",
+                "widget.state.no_stations.detail":   "Open Stationly to add one",
+                "widget.state.needs_station.title":  "Choose a station",
+                "widget.state.needs_station.detail": "Touch and hold, then tap Edit Widget",
+                "widget.state.removed.title":        "Station removed",
+                "widget.state.removed.detail":       "Not in your stations. Touch and hold, then tap Edit Widget",
+
                 // ── Force-update gate ──────────────────────────────────────────
                 // Bump app.minVersion to block older clients immediately — no release needed.
                 "app.minVersion": "1.0",
