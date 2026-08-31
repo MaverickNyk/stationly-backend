@@ -1,6 +1,7 @@
 import { getWebUrl, isStaging } from '../utils/formatters';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
 import { LineSeverityService } from './lineSeverityService';
+import { LinePaletteService } from './linePaletteService';
 
 export interface SduiValidation {
     required?: boolean;
@@ -519,6 +520,12 @@ export class SduiService {
                 "board.tick.rowReserve":          "10",      // rows per platform written at ingest, not what is drawn
                 "board.stale.freshMs":            "60000",   // "ago" chronometer: amber → grey
                 "board.stale.staleMs":           "180000",   // "ago" chronometer: grey → red
+                "board.hero.urgency_min":          "1",      // minutes <= this triggers urgent hero border/pulse
+                "selection.dropdown.cache_ttl_ms": "86400000", // 24h dropdown options cache TTL
+                "station.route_text.max_age_ms":   "1209600000", // 14d route text cache max age before re-resolve
+                "support.fetch.min_interval_ms":   "60000",  // 60s min interval between support status fetches
+                "explore.fares.max_days_to_peak":  "14",     // 14d max forward walk for next peak fare window
+                "weather.refresh_interval_ms":     "1800000", // 30 min weather station poll interval
 
                 // ── Explore, board hero, empty state, dream ───────────────────
                 //
@@ -581,6 +588,19 @@ export class SduiService {
                 // enumerations of one vocabulary, in two languages, that TfL could
                 // desynchronise at any time.
                 ...LineSeverityService.homeConfigKeys(),
+
+                // ── TfL colour palette ────────────────────────────────────────
+                //
+                // Brand hex per line, per-theme legibility overrides, and the
+                // roundel tint per mode. One table in `linePaletteService.ts`,
+                // four key families out of it, replacing four hand-synced copies
+                // across two languages and two repos.
+                //
+                // `line.color.dark.northern` is the one worth understanding: the
+                // brand colour is pure black, which is invisible on a near-black
+                // departure board. Two surfaces wanting different answers is why
+                // this is a base palette plus overrides rather than one flat map.
+                ...LinePaletteService.homeConfigKeys(),
                 // ── Auth: what the sign-in flow says when something fails ─────
                 //
                 // Seeded 2026-08-30 from the client's own fallbacks, so the first

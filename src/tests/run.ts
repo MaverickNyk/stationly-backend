@@ -47,6 +47,8 @@ import { UserDeviceService } from '../services/userDeviceService';
 import { DevicePushService } from '../services/devicePushService';
 import { LocalDbService } from '../services/localDbService';
 import { EmailService } from '../services/emailService';
+import { LinePaletteService } from '../services/linePaletteService';
+import { LineIconService } from '../services/lineIconService';
 import { db, auth } from '../config/firebase';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -3346,6 +3348,56 @@ test('endSession: a missing account writes nothing and releases nothing', async 
         assert.deepStrictEqual(w.writes, []);
         assert.deepStrictEqual(w.deltas, []);
     });
+});
+
+// ─── SDUI: Line palette consolidation ────────────────────────────────────────
+
+test('LINE PALETTE CONTRACT: linePaletteService and lineIconService carry identical brand hex for every line', () => {
+    const brand = LinePaletteService.brand();
+    const lineIds = Object.keys(brand);
+    assert.strictEqual(lineIds.length, 21, 'brand palette must contain 21 lines');
+    for (const id of lineIds) {
+        const brandHex = brand[id];
+        const iconHex = LineIconService.colorFor(id);
+        assert.ok(iconHex !== null, `lineIconService must recognise line ${id}`);
+        assert.strictEqual(
+            brandHex.toUpperCase(),
+            iconHex!.toUpperCase(),
+            `linePaletteService and lineIconService must have identical hex for ${id} (palette=${brandHex}, icon=${iconHex})`,
+        );
+    }
+});
+
+test('LINE PALETTE CONTRACT: homeConfigKeys generates all key families with valid hex strings', () => {
+    const keys = LinePaletteService.homeConfigKeys();
+    const hexPattern = /^#[0-9A-Fa-f]{6}$/;
+
+    // Brand keys (21)
+    const brandKeys = Object.keys(keys).filter(k => k.startsWith('line.color.') && !k.startsWith('line.color.dark.') && !k.startsWith('line.color.light.'));
+    assert.strictEqual(brandKeys.length, 21, 'must have 21 brand keys');
+
+    // Dark override keys (9)
+    const darkKeys = Object.keys(keys).filter(k => k.startsWith('line.color.dark.'));
+    assert.strictEqual(darkKeys.length, 9, 'must have 9 dark override keys');
+
+    // Light override keys (3)
+    const lightKeys = Object.keys(keys).filter(k => k.startsWith('line.color.light.'));
+    assert.strictEqual(lightKeys.length, 3, 'must have 3 light override keys');
+
+    // Mode keys (8)
+    const modeKeys = Object.keys(keys).filter(k => k.startsWith('mode.color.') && k !== 'mode.color.default');
+    assert.strictEqual(modeKeys.length, 8, 'must have 8 mode keys');
+
+    // Mode default key (1)
+    assert.ok('mode.color.default' in keys, 'must have mode.color.default key');
+
+    // Total: 21 + 9 + 3 + 8 + 1 = 42 keys
+    assert.strictEqual(Object.keys(keys).length, 42, 'must have 42 total palette keys');
+
+    // All values must be valid #RRGGBB hex
+    for (const [k, v] of Object.entries(keys)) {
+        assert.ok(hexPattern.test(v), `key ${k} value ${v} must match #RRGGBB hex pattern`);
+    }
 });
 
 main();
