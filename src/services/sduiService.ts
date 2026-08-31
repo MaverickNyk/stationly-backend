@@ -728,10 +728,27 @@ export class SduiService {
                 "widget.state.removed.title":        "Station removed",
                 "widget.state.removed.detail":       "Not in your stations. Touch and hold, then tap Edit Widget",
 
-                // ── Force-update gate ──────────────────────────────────────────
-                // Bump app.minVersion to block older clients immediately — no release needed.
+                // ── Force-update gate (LEGACY — Android binary only) ───────────
+                //
+                // These two keys are read by the Android build that is already in
+                // the Play Store, so under the additive rule they can never be
+                // removed or given a new meaning. `app.storeUrl` is a Play URL
+                // and there is no platform branching on this endpoint, which is
+                // exactly the bug: an iPhone tapping "Update Now" landed on
+                // Google Play.
+                //
+                // The real policy now lives at GET /sdui/app/release-policy
+                // (AppReleaseService) — per platform, two thresholds, enforced
+                // server-side by versionGateMiddleware. New clients read that.
+                // These stay frozen at the floor so the shipped Android binary
+                // never sees a nudge it cannot act on.
                 "app.minVersion": "1.0",
                 "app.storeUrl":   "https://play.google.com/store/apps/details?id=com.stationly.mobile",
+                // Platform-correct store links, additive. Read by clients that
+                // predate the structured endpoint but postdate this key; also
+                // the offline fallback for the blocking screen's CTA.
+                "app.ios.storeUrl":    "itms-apps://apps.apple.com/app/id0000000000",
+                "app.ios.storeUrlWeb": "https://apps.apple.com/app/id0000000000",
                 "app.update.title":   "New update available",
                 "app.update.message": "Update Stationly for the latest features and improvements.",
                 "app.update.cta":     "Update Now",

@@ -10,12 +10,22 @@ import { StationController } from '../controllers/stationController';
 import { DevicePushController } from '../controllers/devicePushController';
 import { AuthMiddleware } from '../middleware/authMiddleware';
 import { RateLimitMiddleware } from '../middleware/rateLimitMiddleware';
+import { VersionGateMiddleware } from '../middleware/versionGateMiddleware';
 
 const router = Router();
 
 // --- GLOBAL SECURITY ---
 // Every single request to Stationly API now requires a valid X-Stationly-Key
 router.use(AuthMiddleware.validateApiKey);
+
+// --- CLIENT VERSION GATE ---
+// After the API-key check so "who are you" is answered before "how old are
+// you", and before every data route so a client the backend can no longer
+// serve is refused on ALL of them rather than on the one screen that happens to
+// read config. Exempts /auth/*, the release policy itself, and the two SDUI
+// documents the blocking screen is drawn from — see versionGateMiddleware.
+// Dormant unless VERSION_GATE_ENABLED=true.
+router.use(VersionGateMiddleware.enforce);
 
 // --- AUTH ROUTES (public — no Firebase token required) ---
 // Dedicated forgot-password limiter (3/15min per email) — tighter than the generic
@@ -45,6 +55,10 @@ router.get('/sdui/app/support-money-config', SupportMoneyController.getConfig);
 // Refresh cadence schedule. Clients cache this and evaluate it locally, so it
 // is read on a cold launch and after a `policy.update` push — not per refresh.
 router.get('/sdui/app/refresh-policy', SduiController.getRefreshPolicy);
+// Version floors + store links, per platform. Exempt from the version gate on
+// purpose: a blocked client must still be able to fetch the document that tells
+// it why it is blocked and where to go.
+router.get('/sdui/app/release-policy', SduiController.getReleasePolicy);
 
 // Metadata
 router.get('/modes', ModeController.getModes);

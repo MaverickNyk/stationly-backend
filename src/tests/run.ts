@@ -48,6 +48,13 @@ import { DevicePushService } from '../services/devicePushService';
 import { LocalDbService } from '../services/localDbService';
 import { EmailService } from '../services/emailService';
 import { LinePaletteService } from '../services/linePaletteService';
+import {
+    AppReleaseService, ReleasePolicy, compareVersions, isVersionBelow, parseClientIdentity,
+} from '../services/appReleaseService';
+import {
+    evaluateRequest, enforcementEnabled, EXEMPT_PREFIXES,
+} from '../middleware/versionGateMiddleware';
+import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
 import { db, auth } from '../config/firebase';
 
@@ -3398,6 +3405,252 @@ test('LINE PALETTE CONTRACT: homeConfigKeys generates all key families with vali
     for (const [k, v] of Object.entries(keys)) {
         assert.ok(hexPattern.test(v), `key ${k} value ${v} must match #RRGGBB hex pattern`);
     }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// App release policy / version gate
+//
+// The gate decides whether an app opens at all, and both of its failure
+// directions are silent: a floor that never fires looks exactly like a healthy
+// fleet, and a floor that fires wrongly looks exactly like an outage. Neither
+// is reproducible against the real backend without shipping a bad config, so
+// everything load-bearing is asserted here.
+// ──────────────────────────────────────────────────────────────────────────
+
+test('VERSION COMPARE: missing segments read as zero, so 1.2 == 1.2.0', () => {
+    assert.strictEqual(compareVersions('1.2', '1.2.0'), 0);
+    assert.strictEqual(compareVersions('1.2.0', '1.2'), 0);
+    assert.strictEqual(compareVersions('1', '1.0.0'), 0);
+});
+
+test('VERSION COMPARE: ordering is numeric per segment, not lexicographic', () => {
+    // The one every string-compare implementation gets wrong.
+    assert.ok(compareVersions('1.10.0', '1.9.0') > 0, '1.10 must be NEWER than 1.9');
+    assert.ok(compareVersions('2.0.0', '10.0.0') < 0);
+    assert.ok(compareVersions('1.0.1', '1.0.0') > 0);
+});
+
+test('VERSION COMPARE: non-numeric segments are dropped, so a staging suffix is not older', () => {
+    // Android appends "-staging" to versionName. Parsing that as a lower
+    // version would gate every staging build against its own floor.
+    assert.strictEqual(compareVersions('1.0-staging', '1.0'), 0);
+    assert.strictEqual(compareVersions('1.2.3-rc1', '1.2.3'), 0);
+});
+
+test('VERSION COMPARE: garbage compares as 0.0.0 and is therefore below any real floor', () => {
+    assert.ok(isVersionBelow('', '1.0'));
+    assert.ok(isVersionBelow('not-a-version', '1.0'));
+    // ...but equal to a 0 floor, which is what an ungated platform looks like.
+    assert.ok(!isVersionBelow('', '0'));
+});
+
+test('CLIENT IDENTITY: a well-formed header parses into platform, version and build', () => {
+    const id = parseClientIdentity('ios;1.2.0;47');
+    assert.strictEqual(id.platform, 'ios');
+    assert.strictEqual(id.version, '1.2.0');
+    assert.strictEqual(id.build, '47');
+});
+
+test('CLIENT IDENTITY: anything unreadable resolves to unknown, never to a blocked client', () => {
+    // The safety posture: a stripped or malformed header must not be able to
+    // lock a current client out of the app.
+    for (const raw of [undefined, '', '   ', 'garbage', ';;', 'windows;1.0;1']) {
+        const id = parseClientIdentity(raw as any);
+        assert.strictEqual(AppReleaseService.verdictFor(id), 'ok', `header ${JSON.stringify(raw)} must pass`);
+    }
+});
+
+test('CLIENT IDENTITY: client-controlled fields are length-capped before they reach a log or a 426 body', () => {
+    const id = parseClientIdentity(`ios;${'9'.repeat(500)};${'8'.repeat(500)}`);
+    assert.strictEqual(id.version.length, 32);
+    assert.strictEqual(id.build.length, 32);
+});
+
+test('VERDICT: the two thresholds produce three distinct outcomes', () => {
+    const policy: ReleasePolicy = JSON.parse(JSON.stringify(AppReleaseService.getReleasePolicy()));
+    policy.gateEnabled = true;
+    policy.ios = { ...policy.ios, minimumVersion: '2.0', recommendedVersion: '3.0', latestVersion: '3.0' };
+    AppReleaseService.assertSafe(policy);
+
+    const verdict = (v: string) =>
+        AppReleaseService.verdictFor({ platform: 'ios', version: v, build: '1' }, policy);
+    assert.strictEqual(verdict('1.9'), 'blocked');
+    assert.strictEqual(verdict('2.0'), 'nudge', 'AT the floor is not blocked — the floor is inclusive');
+    assert.strictEqual(verdict('2.5'), 'nudge');
+    assert.strictEqual(verdict('3.0'), 'ok');
+    assert.strictEqual(verdict('3.1'), 'ok', 'a client NEWER than latest is never nudged');
+});
+
+test('VERDICT: platforms are gated independently', () => {
+    // The whole reason app.minVersion could not be raised: one number for two
+    // platforms meant orphaning an old iOS build nudged every Android user.
+    const p = AppReleaseService.getReleasePolicy();
+    assert.notStrictEqual(p.ios.storeUrl, p.android.storeUrl, 'iOS must not be sent to Google Play');
+    assert.ok(p.ios.storeUrl.startsWith('itms-apps://'), 'iOS deep link opens the App Store app directly');
+    assert.ok(p.ios.storeUrlWeb.startsWith('https://apps.apple.com/'));
+    assert.ok(p.android.storeUrlWeb.startsWith('https://play.google.com/'));
+});
+
+test('SAFETY: a minimumVersion above latestVersion is refused (the phased-release lockout)', () => {
+    // Apple rolls automatic updates out over 7 days. A floor set to a build
+    // that has not finished rolling out tells users to update and then offers
+    // them a store page with no Update button.
+    const policy: ReleasePolicy = JSON.parse(JSON.stringify(AppReleaseService.getReleasePolicy()));
+    policy.ios = { ...policy.ios, minimumVersion: '9.9', latestVersion: '1.0', recommendedVersion: '1.0' };
+    assert.throws(() => AppReleaseService.assertSafe(policy), /minimumVersion/);
+});
+
+test('SAFETY: a recommendedVersion above latestVersion is refused (an unsatisfiable nudge)', () => {
+    const policy: ReleasePolicy = JSON.parse(JSON.stringify(AppReleaseService.getReleasePolicy()));
+    policy.android = { ...policy.android, recommendedVersion: '9.9', latestVersion: '1.0' };
+    assert.throws(() => AppReleaseService.assertSafe(policy), /recommendedVersion/);
+});
+
+test('SAFETY: the shipped policy satisfies its own invariants', () => {
+    assert.doesNotThrow(() => AppReleaseService.assertSafe());
+});
+
+const gatePolicy = (over: Partial<{ ios: any; android: any; gateEnabled: boolean }> = {}): ReleasePolicy => {
+    const base = AppReleaseService.getReleasePolicy();
+    return {
+        ...base,
+        gateEnabled: over.gateEnabled ?? base.gateEnabled,
+        ios: { ...base.ios, ...(over.ios ?? {}) },
+        android: { ...base.android, ...(over.android ?? {}) },
+    };
+};
+
+/** A floor high enough that the resting 1.0 client is below it. */
+const gatedIos = () => gatePolicy({
+    gateEnabled: true,
+    ios: { minimumVersion: '2.0', recommendedVersion: '2.0', latestVersion: '2.0' },
+});
+
+test('GATE: dormant enforcement passes every request through', () => {
+    assert.strictEqual(
+        evaluateRequest('/stations/search', 'ios;0.0.1;1', gatedIos(), false),
+        null,
+        'a dormant gate passes every request through',
+    );
+});
+
+test('GATE: the routes a blocked client still needs are never gated', () => {
+    // Gating any of these makes the block unrecoverable: the client cannot learn
+    // why it was refused, or draws its blocking screen with no copy.
+    const exempt = [
+        '/sdui/app/release-policy',
+        '/sdui/app/home-config',
+        '/sdui/app/theme-tokens',
+        '/auth/forgot-password',
+    ];
+    for (const path of exempt) {
+        assert.strictEqual(
+            evaluateRequest(path, 'ios;0.0.1;1', gatedIos(), true),
+            null,
+            `${path} must never be gated`,
+        );
+    }
+});
+
+test('GATE: EXEMPT_PREFIXES has no entry that would gate a whole family by accident', () => {
+    // A bare '/sdui/' here would exempt every SDUI route including ones a
+    // blocked client has no business reaching. Each entry must name a specific
+    // document, or be the auth namespace.
+    for (const p of EXEMPT_PREFIXES) {
+        assert.ok(
+            p === '/auth/' || p.startsWith('/sdui/app/'),
+            `unexpectedly broad exemption: ${p}`,
+        );
+    }
+});
+
+test('GATE: a blocked client gets a rejection carrying the remedy, not a bare status', () => {
+    const r = evaluateRequest('/stations/search', 'ios;1.0;4', gatedIos(), true);
+    assert.ok(r, 'a client below the floor must be rejected');
+    assert.strictEqual(r!.code, 'client_too_old');
+    // The body has to be enough to draw the screen on its own: a client that has
+    // never fetched the policy document still gets a correct blocking screen.
+    assert.ok(r!.title && r!.message && r!.cta, 'the rejection carries its own copy');
+    assert.ok(r!.storeUrl!.startsWith('itms-apps://'), 'an iPhone must not be sent to Google Play');
+    assert.strictEqual(r!.minimumVersion, '2.0');
+});
+
+test('GATE: an up-to-date client and an unknown platform both pass', () => {
+    for (const header of ['ios;2.0;9', 'ios;3.0;9', undefined, 'curl', 'android;1.0;2']) {
+        assert.strictEqual(
+            evaluateRequest('/stations/search', header, gatedIos(), true),
+            null,
+            `client ${header} must pass`,
+        );
+    }
+});
+
+test('GATE: the DEPLOYED Android client is unaffected by an iOS floor', () => {
+    // The contract that matters most. The shipped Android binary sends no
+    // X-Stationly-Client header at all, and Android is gated by its own half of
+    // the document — so raising the iOS floor must be invisible to it. Both the
+    // header-less case and an explicit Android client are checked.
+    const p = gatedIos();
+    assert.strictEqual(evaluateRequest('/stations/search', undefined, p, true), null);
+    assert.strictEqual(evaluateRequest('/user/sync/profile', undefined, p, true), null);
+    assert.strictEqual(evaluateRequest('/stations/search', 'android;1.0;2', p, true), null);
+});
+
+test('GATE: enforcementEnabled reads the env per call rather than caching it', () => {
+    const prev = process.env.VERSION_GATE_ENABLED;
+    try {
+        delete process.env.VERSION_GATE_ENABLED;
+        assert.strictEqual(enforcementEnabled(), false, 'absent env means dormant');
+        process.env.VERSION_GATE_ENABLED = 'true';
+        assert.strictEqual(enforcementEnabled(), true, 'the switch must take effect without a restart');
+        process.env.VERSION_GATE_ENABLED = 'TRUE';
+        assert.strictEqual(enforcementEnabled(), true, 'case-insensitive');
+        process.env.VERSION_GATE_ENABLED = 'yes';
+        assert.strictEqual(enforcementEnabled(), false, 'only the literal true enables it');
+    } finally {
+        if (prev === undefined) delete process.env.VERSION_GATE_ENABLED;
+        else process.env.VERSION_GATE_ENABLED = prev;
+    }
+});
+
+test('GATE TRANSPORT: req.path inside the router is stripped of the /api/v1 mount prefix', async () => {
+    // The one assumption EXEMPT_PREFIXES rests on, and the one a unit test
+    // cannot see. If Express handed the middleware the full '/api/v1/sdui/...'
+    // instead, every prefix would silently stop matching and a blocked client
+    // could never fetch the document explaining its block.
+    const express = require('express');
+    const app = express();
+    const router = express.Router();
+    const seen: string[] = [];
+    router.use((req: any, _res: any, next: any) => { seen.push(req.path); next(); });
+    router.get('/sdui/app/home-config', (_req: any, res: any) => res.json({ ok: true }));
+    app.use('/api/v1', router);
+
+    const server = await new Promise<any>(resolve => {
+        const s = app.listen(0, () => resolve(s));
+    });
+    try {
+        const port = server.address().port;
+        const res = await fetch(`http://127.0.0.1:${port}/api/v1/sdui/app/home-config`);
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(seen, ['/sdui/app/home-config'],
+            'router-level middleware sees the path WITHOUT the mount prefix');
+        assert.ok(EXEMPT_PREFIXES.some(p => seen[0].startsWith(p)),
+            'and that path matches the exempt list as written');
+    } finally {
+        server.close();
+    }
+});
+
+test('LEGACY CONFIG: the two keys the shipped Android binary reads are still served, unchanged', () => {
+    // Additive rule. Removing or repurposing either bricks the update nudge on
+    // a binary that is already in the world and cannot be patched.
+    const strings = (SduiService.getHomeConfig() as any).strings;
+    assert.strictEqual(strings['app.minVersion'], '1.0');
+    assert.ok(String(strings['app.storeUrl']).startsWith('https://play.google.com/'));
+    // ...and the platform-correct additions sit alongside them.
+    assert.ok(String(strings['app.ios.storeUrl']).startsWith('itms-apps://'));
 });
 
 main();

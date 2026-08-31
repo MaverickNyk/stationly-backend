@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { SduiService } from '../services/sduiService';
 import { RefreshPolicyService } from '../services/refreshPolicyService';
+import { AppReleaseService } from '../services/appReleaseService';
 
 export class SduiController {
     /**
@@ -109,5 +110,24 @@ export class SduiController {
      */
     static getRefreshPolicy(req: Request, res: Response) {
         res.json(RefreshPolicyService.getRefreshPolicy());
+    }
+
+    /**
+     * @swagger
+     * /sdui/app/release-policy:
+     *   get:
+     *     summary: Get app release / update policy
+     *     description: >
+     *       Per-platform version floors and store links. `minimumVersion` blocks
+     *       a client outright, `recommendedVersion` allows a dismissible nudge.
+     *       Deliberately EXEMPT from the version gate itself — a blocked client
+     *       has to be able to read the document that explains the block.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON release policy document
+     */
+    static getReleasePolicy(req: Request, res: Response) {
+        res.json(AppReleaseService.getReleasePolicy());
     }
 }
