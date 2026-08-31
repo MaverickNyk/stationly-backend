@@ -1,4 +1,5 @@
-import { getWebUrl, isStaging } from '../utils/formatters';
+import { getBaseUrl, getWebUrl, isStaging } from '../utils/formatters';
+import { assetUrl } from './assetVersionService';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
 import { LineSeverityService } from './lineSeverityService';
 import { LinePaletteService } from './linePaletteService';
@@ -13,8 +14,37 @@ export interface SduiValidation {
 
 export interface SduiCondition {
     dependsOn: string;
-    operator: "not_empty" | "equals" | "empty";
+    /**
+     * `gte` / `lte` compare as NUMBERS and are false when either side is not
+     * one, so a gate on a fact the client cannot answer hides its block rather
+     * than showing it.
+     */
+    operator: "not_empty" | "equals" | "empty" | "not_equals" | "gte" | "lte";
     value?: string;
+}
+
+/** One numbered step of a `steps` component. Media fields match `demo`. */
+export interface SduiStep {
+    title: string;
+    body?: string;
+    /** Icon name from the client's `SduiIcons` table; replaces the step number. */
+    icon?: string;
+    /** Hex tint for the marker, e.g. "#4CAF50". Defaults to the board amber. */
+    tint?: string;
+    url?: string;
+    frames?: string[];
+    frameMs?: number;
+    aspectRatio?: number;
+    corner?: number;
+    fit?: "fit" | "fill";
+    background?: string;
+}
+
+/** One pane of a `tabs` component. */
+export interface SduiTab {
+    title: string;
+    icon?: string;
+    components: SduiComponent[];
 }
 
 export interface SduiComponent {
@@ -43,6 +73,57 @@ export interface SduiComponent {
     size?: number;
     validation?: SduiValidation;
     condition?: SduiCondition;
+
+    // ── Media (`demo`, `image`) ─────────────────────────────────────────────
+    //
+    // `frames` rather than a `.gif` URL: Coil decodes animated GIFs on Android
+    // only, so a gif renders on iOS as a frozen first frame. The client plays
+    // an ordered list of ordinary images instead. `scripts/demo_frames.py` in
+    // the app repo turns a recording into this block.
+    frames?: string[];
+    frameMs?: number;
+    loop?: boolean;
+    /**
+     * Width ÷ height. The client reserves the box at this shape BEFORE the
+     * image arrives, so a wrong value makes the whole screen jump when it
+     * lands. Measure it, do not estimate it.
+     */
+    aspectRatio?: number;
+    caption?: string;
+    /**
+     * Corner radius in dp. A screenshot with rounded corners already in its
+     * pixels needs this to match, or a second curve is clipped inside the first.
+     */
+    corner?: number;
+    fit?: "fit" | "fill";
+    /** Hex fill behind the media, e.g. "#000000" for a widget screenshot. */
+    background?: string;
+    contentDescription?: string;
+    width?: number;
+    height?: number;
+
+    // ── Layout (`row`, `grid`) ──────────────────────────────────────────────
+    /** `row`: share of the leftover width per child, positional. */
+    weights?: number[];
+    /** `row` / `grid`: spacing in dp. */
+    gap?: number;
+    /** `row`: top | center | bottom */
+    align?: "top" | "center" | "bottom";
+    /** `grid`: number of equal columns, 1-4. */
+    columns?: number;
+
+    // ── `steps` ─────────────────────────────────────────────────────────────
+    steps?: SduiStep[];
+
+    // ── `tabs` ──────────────────────────────────────────────────────────────
+    tabs?: SduiTab[];
+
+    // ── `stat_row` ──────────────────────────────────────────────────────────
+    /** Name of a client device fact, e.g. "widget.count". */
+    fact?: string;
+    zero?: string;
+    one?: string;
+    many?: string;
 }
 
 export interface SduiLayout {
@@ -365,6 +446,141 @@ export class SduiService {
                     id: "acknowledgements",
                     body: "Powered by TfL Open Data. Contains OS data \u00a9 Crown copyright and database rights 2025. Neither TfL nor the UK Government endorse this app.",
                     style: "subtle"
+                }
+            ]
+        };
+    }
+
+    /**
+     * The in-app widget guide, served by `GET /sdui/app/widget-guide`.
+     *
+     * ## This screen is the reference payload
+     * Every other layout here is a form or a list of link rows. This one is the
+     * demonstration of what the channel can actually do: images, a numbered
+     * walkthrough, a two-column grid, a weighted row, a live count of the
+     * reader's own state, and per-component visibility rules that make one
+     * payload render three different screens. Change any of it and the app
+     * changes on next open, with no release.
+     *
+     * ## The one thing that is NOT server-driven, and must not be
+     * The iOS 26 floor. The app ships to iOS 16 and the widget extension needs
+     * 26, so on an older iPhone the widget is absent from the SYSTEM gallery
+     * and no guide can help. The client publishes that as the `widget.supported`
+     * fact and this payload gates on it; the number itself lives in the client
+     * (`SduiFacts.WIDGET_MIN_IOS`) because it changes when the extension's
+     * deployment target changes and at no other time.
+     *
+     * ## Client facts available to `condition`
+     * `platform`, `os.version`, `os.major`, `widget.supported`, `widget.count`,
+     * `board.count`. A fact the client does not publish HIDES its block.
+     *
+     * Client fallback: `WidgetGuideDefaults` in the app repo ships the same
+     * guide compiled in, so an offline reader still gets the words. Keep the two
+     * broadly in step. The difference is invisible until somebody has no
+     * signal.
+     */
+    static getWidgetGuideLayout(): SduiLayout {
+        // Versioned by content hash, so the URL changes exactly when the file
+        // does and the device's cached copy is replaced only then. See
+        // `assetVersionService`.
+        const asset = assetUrl;
+
+        // Shown only where the widget can actually exist, and its complement.
+        const supported: SduiCondition = { dependsOn: "widget.supported", operator: "not_empty" };
+        const unsupported: SduiCondition = { dependsOn: "widget.supported", operator: "empty" };
+
+        return {
+            id: "widget_guide",
+            title: "Widgets",
+            theme: { primaryColor: "#FFC819", backgroundColor: "#000000" },
+            components: [
+                // One line, and it is the reader's own state rather than a
+                // pitch. Everything else lives behind a tab.
+                {
+                    type: "stat_row",
+                    id: "widget_count",
+                    fact: "widget.count",
+                    zero: "No widgets on your Home Screen yet",
+                    one: "1 widget on your Home Screen",
+                    many: "{count} widgets on your Home Screen",
+                    condition: supported
+                },
+
+                // The only block an unsupported device sees. It names the
+                // version, because "not supported" leaves the reader asking
+                // "from when".
+                {
+                    type: "card",
+                    id: "unsupported",
+                    title: "Widgets need iOS 26",
+                    body: "Stationly's departure board widget uses a part of iOS that only arrived in iOS 26, so it will not appear in the widget gallery on this iPhone. Everything else in the app works as normal.",
+                    style: "brand",
+                    condition: unsupported
+                },
+
+                {
+                    type: "tabs",
+                    id: "guide_tabs",
+                    condition: supported,
+                    tabs: [
+                        {
+                            // First tab, and first thing inside it: the four
+                            // gestures. This is what somebody opens the screen
+                            // to find.
+                            title: "Add a widget",
+                            icon: "add",
+                            components: [
+                                {
+                                    type: "card",
+                                    id: "widget_intro",
+                                    title: "Live departures at a glance",
+                                    body: "Glance at upcoming departures for any station right from your Home Screen without opening the app. Zero clicks needed."
+                                },
+                                {
+                                    type: "demo",
+                                    id: "hero_board",
+                                    url: asset("widget_guide_medium.png"),
+                                    aspectRatio: 2.1453,
+                                    corner: 26,
+                                    fit: "fit",
+                                    background: "#000000",
+                                    caption: "One station, counting down"
+                                },
+                                {
+                                    type: "steps",
+                                    id: "add_steps",
+                                    steps: [
+                                        { title: "Touch and hold the Home Screen", body: "Anywhere empty, until the icons jiggle.", icon: "touch", tint: "#FFC819" },
+                                        { title: "Tap Edit, then Add Widget", body: "Top-left corner.", icon: "edit", tint: "#4FC3F7" },
+                                        { title: "Search for Stationly", body: "Pick a size and add it.", icon: "search", tint: "#81C784" },
+                                        { title: "Choose the station", body: "Hold the widget, tap Edit Widget.", icon: "station", tint: "#F06292" }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            title: "Multiple widgets",
+                            icon: "layers",
+                            components: [
+                                {
+                                    type: "card",
+                                    id: "one_each",
+                                    title: "One widget per station",
+                                    body: "A widget shows a single station, so add as many as you track: one for each end of your commute, one for the station near work. Repeat the steps in Add a widget and pick a different station each time."
+                                },
+                                {
+                                    type: "steps",
+                                    id: "stack_steps",
+                                    title: "Stack them",
+                                    steps: [
+                                        { title: "Drag one onto another", body: "Same size only. iOS turns the pair into a stack.", icon: "drag", tint: "#FFC819" },
+                                        { title: "Swipe to switch station", body: "The stack holds up to ten widgets in one slot.", icon: "layers", tint: "#4FC3F7" },
+                                        { title: "Leave Smart Rotate on", body: "iOS brings the board it thinks you want to the top.", icon: "rotate", tint: "#81C784" }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
                 }
             ]
         };

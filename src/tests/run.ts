@@ -3653,4 +3653,123 @@ test('LEGACY CONFIG: the two keys the shipped Android binary reads are still ser
     assert.ok(String(strings['app.ios.storeUrl']).startsWith('itms-apps://'));
 });
 
+/* ── The widget guide payload ─────────────────────────────────────────────
+   These assert the RULES, not the prose. Copy is meant to change without a
+   test failing; what must not change is that a device which cannot run the
+   widget is never walked through adding one.
+
+   `reachable` mirrors the client's `visibleFor`: it descends into every
+   container INCLUDING tab panes, and drops a subtree the moment an ancestor's
+   condition fails. Asserting on the flat top-level list would have missed the
+   move of the walkthrough inside a tab, where its gate is now its parent's.   */
+
+function sduiSatisfied(cond: any, facts: Record<string, string>): boolean {
+    if (!cond) return true;
+    const v = (facts[cond.dependsOn] ?? '').trim();
+    const n = (x: any) => { const p = parseFloat(x); return isNaN(p) ? null : p; };
+    switch (cond.operator) {
+        case 'not_empty':  return v.length > 0;
+        case 'empty':      return v.length === 0;
+        case 'equals':     return v === cond.value;
+        case 'not_equals': return v !== cond.value;
+        case 'gte':        return n(v) !== null && n(cond.value) !== null && n(v)! >= n(cond.value)!;
+        case 'lte':        return n(v) !== null && n(cond.value) !== null && n(v)! <= n(cond.value)!;
+        default:           return true;
+    }
+}
+
+function sduiReachable(list: any[], facts: Record<string, string>): any[] {
+    const out: any[] = [];
+    for (const c of list ?? []) {
+        if (!sduiSatisfied(c.condition, facts)) continue;
+        out.push(c);
+        out.push(...sduiReachable(c.components ?? [], facts));
+        for (const t of c.tabs ?? []) out.push(...sduiReachable(t.components ?? [], facts));
+    }
+    return out;
+}
+
+const IOS26 = { 'widget.supported': 'yes', 'widget.count': '0', 'os.major': '26' };
+const IOS18 = { 'widget.supported': '',    'widget.count': '0', 'os.major': '18' };
+
+test('WIDGET GUIDE: nothing at the top level is ungated', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    const ungated = layout.components.filter((c: any) => !c.condition);
+    assert.deepStrictEqual(ungated.map((c: any) => c.id), [],
+        'an ungated top-level block reaches devices where the widget does not exist');
+});
+
+test('WIDGET GUIDE: an iPhone that cannot run the widget is shown one card and nothing else', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    const seen = sduiReachable(layout.components, IOS18);
+    assert.deepStrictEqual(seen.map((c: any) => c.id), ['unsupported'],
+        'the only thing an old iPhone gets is the card explaining why');
+    // Said twice on purpose: this is the whole reason the screen exists.
+    for (const type of ['steps', 'demo', 'image', 'tabs', 'stat_row']) {
+        assert.strictEqual(seen.filter((c: any) => c.type === type).length, 0,
+            `a ${type} reached a device with no widget in its gallery`);
+    }
+});
+
+test('WIDGET GUIDE: a supported iPhone gets the walkthrough and never the unsupported card', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    const seen = sduiReachable(layout.components, IOS26);
+    const steps = seen.filter((c: any) => c.type === 'steps');
+    assert.ok(steps.length >= 1, 'a supported device is shown how to add one');
+    assert.ok(steps[0].steps.length >= 3, 'a walkthrough shorter than three steps is a sentence');
+    assert.strictEqual(seen.filter((c: any) => c.id === 'unsupported').length, 0,
+        'the "needs iOS 26" card must never reach a phone running iOS 26');
+});
+
+test('WIDGET GUIDE: the add-a-widget tab comes first', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    const tabs = layout.components.find((c: any) => c.type === 'tabs');
+    assert.ok(tabs && tabs.tabs.length >= 2, 'the guide is tabbed');
+    // The client always opens on tab 0 and never restores a previous choice, so
+    // the payload's first tab IS the landing screen. Adding a widget is what
+    // somebody arrives wanting.
+    const first = tabs.tabs[0];
+    assert.ok(first.components.some((c: any) => c.type === 'steps'),
+        'the first tab must lead with the walkthrough');
+});
+
+test('WIDGET GUIDE: every media block declares an aspect ratio and an absolute URL', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    // The client reserves the media box at the declared ratio BEFORE the image
+    // arrives. Missing or zero means the screen jumps when it lands.
+    const media = sduiReachable(layout.components, IOS26)
+        .filter((c: any) => c.type === 'demo' || c.type === 'image');
+    assert.ok(media.length > 0, 'the guide shows the widget');
+    for (const m of media) {
+        assert.ok(typeof m.aspectRatio === 'number' && m.aspectRatio > 0,
+            `${m.id} must declare a positive aspectRatio`);
+        const src = String(m.url ?? m.imageUrl);
+        assert.ok(src.startsWith('http'),
+            `${m.id} must serve an absolute URL; a relative one resolves against nothing on device`);
+        // The device caches on the FULL url and never re-checks it, so an
+        // unversioned asset would be downloaded once and then frozen on every
+        // phone forever. See assetVersionService.
+        assert.match(src, /\?v=[0-9a-f]{8}$/,
+            `${m.id} must carry a content-hash version, or a replaced asset never reaches a device that already cached it`);
+        // The screenshot carries its own rounded corners. A shallower container
+        // radius leaves them peeking out inside a second, differently-shaped
+        // curve, which is what this value exists to prevent.
+        assert.ok((m.corner ?? 0) >= 20,
+            `${m.id} needs a corner radius deep enough to swallow the screenshot's own`);
+    }
+});
+
+test('WIDGET GUIDE: the stat row covers all three plural cases', () => {
+    const layout = SduiService.getWidgetGuideLayout() as any;
+    const stat = layout.components.find((c: any) => c.type === 'stat_row');
+    assert.ok(stat, 'the guide opens with what the reader already has');
+    assert.strictEqual(stat.fact, 'widget.count');
+    for (const key of ['zero', 'one', 'many']) {
+        assert.ok(stat[key] && String(stat[key]).trim().length > 0,
+            `${key} must not be blank; the client renders nothing for a blank template`);
+    }
+    assert.ok(String(stat.many).includes('{count}'),
+        'the plural form has to interpolate the number it is describing');
+});
+
 main();

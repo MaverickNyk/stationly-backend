@@ -85,6 +85,29 @@ export class SduiController {
         res.json(SduiService.getAboutLayout());
     }
 
+    /**
+     * @swagger
+     * /sdui/app/widget-guide:
+     *   get:
+     *     summary: Get the in-app widget guide layout
+     *     description: >
+     *       The reference SDUI payload: images, a numbered walkthrough, a grid,
+     *       a weighted row and per-component visibility rules resolved against
+     *       client device facts (`widget.supported`, `widget.count`, `os.major`).
+     *       One payload renders differently on an iPhone that cannot run the
+     *       widget, one that has none, and one that already has several.
+     *       Clients cache the response and ship a compiled fallback, so a
+     *       failure here degrades to the built-in guide rather than a blank
+     *       screen.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON screen layout
+     */
+    static getWidgetGuideLayout(req: Request, res: Response) {
+        res.json(SduiService.getWidgetGuideLayout());
+    }
+
     static getHomeAnnouncement(req: Request, res: Response) {
         res.json(SduiService.getHomeAnnouncement());
     }
@@ -120,7 +143,7 @@ export class SduiController {
      *     description: >
      *       Per-platform version floors and store links. `minimumVersion` blocks
      *       a client outright, `recommendedVersion` allows a dismissible nudge.
-     *       Deliberately EXEMPT from the version gate itself — a blocked client
+     *       Deliberately EXEMPT from the version gate itself: a blocked client
      *       has to be able to read the document that explains the block.
      *     tags: [SDUI]
      *     responses:

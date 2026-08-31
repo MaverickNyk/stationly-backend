@@ -45,6 +45,10 @@ router.get('/sdui/app/login', SduiController.getLoginLayout);
 router.get('/sdui/app/register', SduiController.getRegisterLayout);
 router.get('/sdui/app/forgot-password', SduiController.getForgotPasswordLayout);
 router.get('/sdui/app/about', SduiController.getAboutLayout);
+// The widget guide. Cached client-side with a compiled fallback beneath it, so
+// this being unreachable degrades to the built-in copy rather than a blank
+// screen. See docs/IOS_WIDGET_GUIDE.md in the app repo.
+router.get('/sdui/app/widget-guide', SduiController.getWidgetGuideLayout);
 router.get('/sdui/app/home-announcement', SduiController.getHomeAnnouncement);
 router.get('/sdui/app/home-config', SduiController.getHomeConfig);
 router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
