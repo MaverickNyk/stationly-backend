@@ -743,6 +743,32 @@ export class SduiService {
                 "explore.fares.max_days_to_peak":  "14",     // 14d max forward walk for next peak fare window
                 "weather.refresh_interval_ms":     "1800000", // 30 min weather station poll interval
 
+                // ── Limits and quotas ─────────────────────────────────────────
+                //
+                // TWO limits, and there is deliberately no third. Clamped on
+                // client-side read via BoardPolicyStore.
+                //
+                // A per-station ceiling counted in (line, direction) ROWS was
+                // served here briefly and is gone. A line runs inbound and
+                // outbound and nothing else, so the line limit already bounds a
+                // station card at twice itself; a row ceiling could only ever
+                // fire FIRST, refusing three lines with both ways ticked — a
+                // board the line limit calls legal.
+                //
+                // DELETED rather than left dormant. It is live on staging (this
+                // file was deployed from a dirty tree), but the additive-only
+                // rule protects keys a SHIPPED client reads: Android is frozen
+                // at versionCode 2 and predates these keys, and iOS has never
+                // been released. Staging is not "shipped". Removing them here
+                // and deploying takes them off staging too, which is the point.
+                "limits.boards.max":             "4",
+                "limits.boards.reached.title":   "Station Limit Reached",
+                "limits.boards.reached.message": "You have used your full quota of 4 stations. Please delete an existing station to add a new one.",
+                "limits.boards.reached.cta":     "Got it",
+                "limits.lines_per_board.max":    "4",
+                "limits.lines.reached.title":    "Line Limit Reached",
+                "limits.lines.reached.message":  "Maximum of 4 lines reached for this station. Untick a line to select another.",
+
                 // ── Explore, board hero, empty state, dream ───────────────────
                 //
                 // Restored 2026-08-30 after a regex edit removed them: the

@@ -3653,6 +3653,24 @@ test('LEGACY CONFIG: the two keys the shipped Android binary reads are still ser
     assert.ok(String(strings['app.ios.storeUrl']).startsWith('itms-apps://'));
 });
 
+test('LIMITS CONFIG: all limits.* keys are served in getHomeConfig() with valid values', () => {
+    const strings = (SduiService.getHomeConfig() as any).strings;
+    assert.strictEqual(strings['limits.boards.max'], '4');
+    assert.strictEqual(strings['limits.boards.reached.title'], 'Station Limit Reached');
+    assert.strictEqual(strings['limits.boards.reached.message'], 'You have used your full quota of 4 stations. Please delete an existing station to add a new one.');
+    assert.strictEqual(strings['limits.boards.reached.cta'], 'Got it');
+    assert.strictEqual(strings['limits.lines_per_board.max'], '4');
+    assert.strictEqual(strings['limits.lines.reached.title'], 'Line Limit Reached');
+    assert.strictEqual(strings['limits.lines.reached.message'], 'Maximum of 4 lines reached for this station. Untick a line to select another.');
+
+    // TWO limits, no third. A row ceiling was served here briefly; nothing
+    // reads it and nothing should serve it. Asserted as absent so a re-add
+    // fails loudly rather than quietly resurrecting a cap that can only
+    // refuse boards the line limit calls legal.
+    assert.strictEqual(strings['limits.rows_per_board.max'], undefined);
+    assert.strictEqual(strings['limits.rows.reached.message'], undefined);
+});
+
 /* ── The widget guide payload ─────────────────────────────────────────────
    These assert the RULES, not the prose. Copy is meant to change without a
    test failing; what must not change is that a device which cannot run the
