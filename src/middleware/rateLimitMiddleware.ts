@@ -83,6 +83,31 @@ export class RateLimitMiddleware {
     });
 
     /**
+     * Activity-batch limiter — deliberately tight, because a correct client
+     * barely uses it.
+     *
+     * The whole design of the activity trail is that a day of app usage costs
+     * ONE upload; the foreground fallback adds a handful more on a device whose
+     * background wakes never fire. Twelve an hour leaves that enormous headroom
+     * while capping the damage from a client stuck in a flush loop — which is
+     * the realistic failure here, since a batch that fails validation is
+     * dropped rather than retried and a client bug is the only thing that
+     * re-sends.
+     *
+     * Mounted AFTER the `/user/*` strict limiter, so a device burning this
+     * budget cannot also spend the one that guards login and board sync.
+     */
+    static activity = rateLimit({
+        windowMs: 60 * 60 * 1000,
+        max: 12,
+        keyGenerator: keyByUidOrIp,
+        validate,
+        message: { error: "Rate Limit Exceeded", message: "Activity uploads are batched; please try again later." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    /**
      * Developer limiter: For internal/subscribed-ids endpoint.
      */
     static developer = rateLimit({
@@ -133,6 +158,25 @@ export class RateLimitMiddleware {
             error: "Rate Limit Exceeded",
             message: "Too many reset attempts. Please wait a few minutes before trying again.",
         },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    /**
+     * Stripe webhook limiter — a safety net, not the gate.
+     *
+     * Signature verification already rejects anything not from Stripe before a
+     * single byte is trusted, so this only bounds the cost of a flood of
+     * unsigned junk at the endpoint. Generous — a real Stripe event storm
+     * (many rapid contributions, or a redelivery backlog) must never be
+     * throttled. Keyed per-IP (Stripe posts from a small, published range).
+     */
+    static webhook = rateLimit({
+        windowMs: 5 * 60 * 1000,
+        max: 300,
+        keyGenerator: keyByUidOrIp,
+        validate,
+        message: { error: "Too Many Requests", message: "Webhook rate limit exceeded." },
         standardHeaders: true,
         legacyHeaders: false,
     });

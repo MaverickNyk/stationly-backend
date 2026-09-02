@@ -123,14 +123,34 @@ export class AdminDataService {
         // then cached so a repeat view costs nothing.
         const doc = await db.collection('users').doc(uid).get();
         if (!doc.exists) return null;
-        const mapped = mapUserDoc(uid, doc.data() || {});
+        const devs = await db.collection('users').doc(uid).collection('devices').get();
+        const mapped = mapUserDoc(uid, doc.data() || {}, devs.docs.map((d) => d.data()));
         this.detailFallback.set(uid, mapped);
         return mapped;
     }
 
     private static async refreshUsers(): Promise<void> {
         const snap = await db.collection('users').get();
-        this.users = snap.docs.map((d) => mapUserDoc(d.id, d.data() || {}));
+
+        // ONE collection-group read for every account's devices, rather than a
+        // per-user subcollection read inside the map. This runs over the whole
+        // user base on an explicit admin refresh, so N+1 reads here would be N+1
+        // Firestore reads — the exact cost this codebase's SQLite mirror exists
+        // to avoid. The unfiltered group query needs no index; verified on
+        // staging rather than assumed (`check_device_indexes.cjs`).
+        const byUid = new Map<string, any[]>();
+        const devSnap = await db.collectionGroup('devices').get();
+        for (const d of devSnap.docs) {
+            const account = d.ref.parent.parent;
+            // Skips the retired ROOT `devices` collection, which a collection
+            // group also matches until it is gone.
+            if (!account) continue;
+            const list = byUid.get(account.id) ?? [];
+            list.push(d.data());
+            byUid.set(account.id, list);
+        }
+
+        this.users = snap.docs.map((d) => mapUserDoc(d.id, d.data() || {}, byUid.get(d.id) ?? []));
         this.usersRefreshedAt = Date.now();
         this.detailFallback.clear(); // fresh snapshot supersedes any fallbacks
         await LocalDbService.replaceUsers(this.users.map(toRow));
@@ -166,16 +186,27 @@ export class AdminDataService {
 }
 
 /** Firestore user doc → full AdminUser. */
-function mapUserDoc(uid: string, x: any): AdminUser {
-    const sessionsMap = (x.sessions && typeof x.sessions === 'object') ? x.sessions : {};
-    const sessions: DeviceSession[] = Object.entries<any>(sessionsMap).map(([deviceId, s]) => ({
-        deviceId,
-        platform: s?.platform,
-        osVersion: s?.osVersion,
-        model: s?.model,
-        appVersion: s?.appVersion,
-        firstSeen: s?.firstSeen,
-        lastSeen: s?.lastSeen,
+function mapUserDoc(uid: string, x: any, deviceRows: any[] = []): AdminUser {
+    // ⚠️ Sessions now come from `users/{uid}/devices`, NOT from `x.sessions`.
+    //
+    // The field name on AdminUser is deliberately unchanged so the admin view
+    // above it does not move. What changed is only where the value is read from.
+    //
+    // Getting this wrong would not have errored. `refreshUsers` reads full user
+    // documents, so an admin left pointing at the deleted map would simply have
+    // reported EVERY account as having no devices at all — a silent, plausible,
+    // completely wrong answer.
+    const sessions: DeviceSession[] = deviceRows.map((r: any) => ({
+        deviceId: r.deviceId,
+        platform: r.platform,
+        osVersion: r.osVersion,
+        model: r.model,
+        appVersion: r.appVersion,
+        // Epoch ms on the merged row where the map held ISO strings. The admin's
+        // own `toEpochMs` coercion downstream accepts both, so this is presented
+        // as-is rather than reformatted into a string it would only re-parse.
+        firstSeen: r.firstSeen,
+        lastSeen: r.lastSeen,
     }));
     const stations: SubscribedStation[] = Array.isArray(x.stations)
         ? x.stations.map((s: any) => ({ id: s.id, name: s.name, line: s.line, mode: s.mode, direction: s.direction }))

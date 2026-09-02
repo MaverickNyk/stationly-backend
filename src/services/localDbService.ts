@@ -114,10 +114,47 @@ export class LocalDbService {
                 sessions TEXT,
                 stations TEXT
             )`,
+            // The `stateRev` watermark, one row per account. Firestore is the
+            // master; this is the slave that lets `GET /user/state/rev` answer
+            // "nothing has changed" without a Firestore read — the whole point
+            // of P1. Written ONLY from values read out of the master; see
+            // [UserRevLedger] for why that rule is not negotiable.
+            // Which accounts watch which stations and lines — the FIRST hop of
+            // the two-hop disruption audience (design §5).
+            //
+            // §3.1 took the `stations[]` / `lines[]` arrays OFF the device row,
+            // because they were named like device data and held ACCOUNT data.
+            // The index they provided still has to exist somewhere, and this is
+            // where: the backend is the only writer of the boards it derives
+            // from, so a SQLite mirror is exactly correct and costs no Firestore
+            // read at push time.
+            //
+            // One table with a `kind` discriminator rather than two, so a single
+            // composite index serves both lookups.
+            `CREATE TABLE IF NOT EXISTS user_watch (
+                uid  TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                id   TEXT NOT NULL,
+                PRIMARY KEY (uid, kind, id)
+            )`,
+            `CREATE INDEX IF NOT EXISTS idx_user_watch_lookup ON user_watch(kind, id)`,
+            `CREATE TABLE IF NOT EXISTS user_revs (
+                uid TEXT PRIMARY KEY,
+                rev INTEGER NOT NULL
+            )`,
             `CREATE TABLE IF NOT EXISTS user_waitlist (
                 id TEXT PRIMARY KEY,
                 email TEXT,
                 joinedAt INTEGER
+            )`,
+            // Idempotency ledger for Stripe webhook deliveries. Stripe is
+            // at-least-once; a redelivered event id is a no-op that still has to
+            // answer 2xx. Rows are tiny and never swept — a payment webhook
+            // fires a handful of times a day at most.
+            `CREATE TABLE IF NOT EXISTS stripe_events (
+                event_id TEXT PRIMARY KEY,
+                type TEXT,
+                processed_at INTEGER
             )`,
             // Indexes for speed
             `CREATE INDEX IF NOT EXISTS idx_stations_naptan ON stations(naptanId)`,
@@ -332,8 +369,14 @@ export class LocalDbService {
      * Run `fn`'s writes inside a single SQLite transaction — atomic (a failed
      * bulk replace never leaves the table half-written) and much faster than
      * autocommit-per-row for large snapshots.
+     *
+     * Public because `UserWatchIndex` needs the same guarantee for the same
+     * reason: it replaces one account's rows with a DELETE followed by N
+     * INSERTs, and a failure between them drops that account out of the
+     * disruption audience silently. Not nestable — SQLite has no nested BEGIN —
+     * so a caller must not already be inside one.
      */
-    private static async inTransaction(fn: () => Promise<void>): Promise<void> {
+    static async inTransaction(fn: () => Promise<void>): Promise<void> {
         await this.run('BEGIN');
         try {
             await fn();

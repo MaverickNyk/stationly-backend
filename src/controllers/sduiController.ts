@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { SduiService } from '../services/sduiService';
+import { RefreshPolicyService } from '../services/refreshPolicyService';
+import { AppReleaseService } from '../services/appReleaseService';
 
 export class SduiController {
     /**
@@ -83,11 +85,72 @@ export class SduiController {
         res.json(SduiService.getAboutLayout());
     }
 
+    /**
+     * @swagger
+     * /sdui/app/widget-guide:
+     *   get:
+     *     summary: Get the in-app widget guide layout
+     *     description: >
+     *       The reference SDUI payload: images, a numbered walkthrough, a grid,
+     *       a weighted row and per-component visibility rules resolved against
+     *       client device facts (`widget.supported`, `widget.count`, `os.major`).
+     *       One payload renders differently on an iPhone that cannot run the
+     *       widget, one that has none, and one that already has several.
+     *       Clients cache the response and ship a compiled fallback, so a
+     *       failure here degrades to the built-in guide rather than a blank
+     *       screen.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON screen layout
+     */
+    static getWidgetGuideLayout(req: Request, res: Response) {
+        res.json(SduiService.getWidgetGuideLayout());
+    }
+
     static getHomeAnnouncement(req: Request, res: Response) {
         res.json(SduiService.getHomeAnnouncement());
     }
 
     static getHomeConfig(req: Request, res: Response) {
         res.json(SduiService.getHomeConfig());
+    }
+
+    /**
+     * @swagger
+     * /sdui/app/refresh-policy:
+     *   get:
+     *     summary: Get widget refresh policy
+     *     description: >
+     *       The cadence schedule clients evaluate to decide when to refresh
+     *       glanceable surfaces (the iOS widget today; shared with Android).
+     *       Tiers are keyed by opaque string ids so bands can be added without
+     *       shipping a client.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON policy document
+     */
+    static getRefreshPolicy(req: Request, res: Response) {
+        res.json(RefreshPolicyService.getRefreshPolicy());
+    }
+
+    /**
+     * @swagger
+     * /sdui/app/release-policy:
+     *   get:
+     *     summary: Get app release / update policy
+     *     description: >
+     *       Per-platform version floors and store links. `minimumVersion` blocks
+     *       a client outright, `recommendedVersion` allows a dismissible nudge.
+     *       Deliberately EXEMPT from the version gate itself: a blocked client
+     *       has to be able to read the document that explains the block.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON release policy document
+     */
+    static getReleasePolicy(req: Request, res: Response) {
+        res.json(AppReleaseService.getReleasePolicy());
     }
 }

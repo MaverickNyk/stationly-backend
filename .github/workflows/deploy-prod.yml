@@ -53,6 +53,20 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           STATIONLY_ADMIN_KEY: ${{ secrets.STATIONLY_ADMIN_KEY }}
           LIVESTREAM_INGEST_SECRET: ${{ secrets.LIVESTREAM_INGEST_SECRET }}
+          # Support / contributions (Stripe). `.env.remote` has always listed these,
+          # but this block never exported them — so they resolved empty and could
+          # NEVER reach the box no matter what repository secrets existed.
+          # Safe to declare before the secrets are set: an unset secret substitutes
+          # an empty string, the assembly loop below logs a warning, and the value
+          # from .env.defaults is kept (SUPPORT_MONEY_ENABLED=false).
+          SUPPORT_MONEY_ENABLED: ${{ secrets.SUPPORT_MONEY_ENABLED }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          SUPPORT_MONEY_PAYMENT_URL_T4: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T4 }}
+          SUPPORT_MONEY_PAYMENT_URL_T8: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T8 }}
+          SUPPORT_MONEY_PAYMENT_URL_T12: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T12 }}
+          SUPPORT_MONEY_PAYMENT_URL_ONEOFF: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_ONEOFF }}
+          SUPPORT_MONEY_MIN_BOARDS: ${{ secrets.SUPPORT_MONEY_MIN_BOARDS }}
+          SUPPORT_MONEY_MIN_DAYS: ${{ secrets.SUPPORT_MONEY_MIN_DAYS }}
         run: |
           cp .env.defaults .env.prod
           while IFS='=' read -r key value || [[ -n "$key" ]]; do
@@ -73,6 +87,28 @@ jobs:
                   echo "  ⚠️ Warning: $clean_key is empty or not provided"
               fi
           done < .env.remote
+
+      # ── NOTE: Firestore indexes are NOT deployed from here, deliberately ──
+      #
+      # P2 introduced two COLLECTION_GROUP indexes on `devices` (`deviceId` for
+      # the login steal check, `lastSeen` for the sweep). They are declared in
+      # `firestore.indexes.json` and applied by `src/scripts/ensure_device_indexes.cjs`.
+      #
+      # A missing collection-group index FAILS its query outright rather than
+      # degrading, and one of them sits on the login path with no fallback — so
+      # they must exist BEFORE the code that needs them reaches production.
+      #
+      # This workflow deliberately does not do it. Adding the step would need a
+      # new `FIREBASE_SERVICE_ACCOUNT` repository secret and `roles/datastore.indexAdmin`
+      # on that account, and index builds are asynchronous — on production they
+      # run against live data, so a deploy that waited on them would block, and
+      # one that did not would give a false green.
+      #
+      # RUN IT BY HAND, before merging P2 to release_prod:
+      #   node src/scripts/ensure_device_indexes.cjs --key=<prod sa>
+      #   node src/scripts/check_device_indexes.cjs  --key=<prod sa>   # must PASS
+      #
+      # Full ordering in docs/HANDOVER_SESSION_SYNC.md §6 (THE PRODUCTION RUNBOOK).
 
       - name: Setup SSH
         run: |

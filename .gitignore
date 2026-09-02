@@ -23,6 +23,11 @@ yarn-error.log*
 !package-lock.json
 !tsconfig.json
 !openapi.json
+
+# Firestore index definitions. NOT secrets, and losing them loses the only
+# record of the two COLLECTION_GROUP indexes the login path depends on.
+!firestore.indexes.json
+!firebase.json
 serviceAccountKey.json
 test-key.json
 *.pem
@@ -60,3 +65,8 @@ staging_*.sh
 
 # Local dev/debug scripts
 .scripts/
+
+# Generated at runtime: `GET /icons/lines/:lineId.png` renders a TfL roundel on
+# first hit and caches it to disk here (see server.ts). Regenerates itself, so
+# it is a cache directory that happens to live under public/ - never committed.
+public/icons/lines/

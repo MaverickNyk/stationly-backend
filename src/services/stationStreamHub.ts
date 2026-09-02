@@ -175,9 +175,16 @@ export class StationStreamHub {
         const id = this.normalise(naptanId);
         if (!id) return 0;
 
-        // Store first. The cache owns ordering: a `false` here means a NEWER
-        // payload is already held, so re-broadcasting this one would make
-        // clients flicker backwards.
+        // Store first, for TWO reasons now.
+        //
+        // 1. Ordering. The cache owns it: a `false` here means a NEWER payload
+        //    is already held, so re-broadcasting this one would make clients
+        //    flicker backwards.
+        // 2. `PredictionCache.set` stamps each departure's `viaKey` IN PLACE,
+        //    and the frame below is serialised from this same object. Moving the
+        //    store after the send would ship unstamped departures to every
+        //    streaming client while the cached copy had them — the board and the
+        //    live stream would filter differently. Keep this line first.
         const accepted = PredictionCache.set(id, payload as any, source);
         if (!accepted) return -1;
 
@@ -190,6 +197,68 @@ export class StationStreamHub {
         for (const socket of room) {
             if (socket.readyState !== WebSocket.OPEN) continue;
             try { socket.send(frame); sent++; } catch { /* dropped mid-write; cleanup runs on 'close' */ }
+        }
+        return sent;
+    }
+
+    /**
+     * Deliver an account-level frame to every socket a user has open.
+     *
+     * This is the **socket tier** of the sync fabric (§6.2 of
+     * `DESIGN_SESSIONS_AND_SYNC.md`): a foregrounded device already holds this
+     * connection for live departures, so telling it that its account changed
+     * costs one write on a socket that exists anyway — no APNs round trip, no
+     * poll, and no Firestore read on either side.
+     *
+     * It is the third and last delivery tier. Push covers backgrounded devices;
+     * the foreground rev check covers everything the other two missed. All
+     * three carry the same `rev`, and the client runs all three through one
+     * gate, so a device that gets the same change twice does nothing the second
+     * time.
+     *
+     * ## Why this walks every client instead of keeping a uid index
+     * `rooms` exists because departures fan out every minute to potentially
+     * every connected socket, where an O(all sockets) walk per station would be
+     * the difference between free and quadratic. Account changes are the
+     * opposite shape: they happen when a HUMAN edits something, a couple of
+     * times a day per account. A second index would have to be maintained in
+     * `register` and torn down in `unregister` — and a routing table that leaks
+     * on disconnect is a bug this class has already had once. Paying an O(n)
+     * walk a few times a day to not have that index is the right trade.
+     *
+     * ## Deliberately not `broadcast`
+     * That one is keyed by station, writes through `PredictionCache`, and has
+     * ordering semantics tied to departure payloads. None of that applies here,
+     * and reusing it would mean teaching the cache about a frame it should
+     * never store.
+     *
+     * ## There is no `excludeDeviceId` here, and none is needed
+     * A socket is registered with a uid and nothing else — the client never
+     * sends a device id on connect — so this tier CANNOT identify the writer,
+     * and adding a parameter it could only ignore would be worse than not
+     * having one. Teaching the socket its device id is a protocol change, and
+     * it would buy nothing:
+     *
+     * The writing device stamps its own `localRev` from the sync response, so
+     * when its own frame arrives back the two integers are equal and the gate
+     * does nothing. **The rev gate makes exclusion unnecessary on this tier**,
+     * which is the same reason FCM's inability to exclude was already harmless.
+     * `excludeDeviceId` survives on the APNs tier because a push there costs a
+     * wake-up before any comparison happens; a socket frame costs one `if`.
+     *
+     * @returns the number of sockets written to.
+     */
+    static sendToUid(uid: string, payload: Record<string, unknown>): number {
+        if (!uid) return 0;
+
+        // Serialised once, like `broadcast` — a user with several tabs or
+        // devices open should not pay for the same JSON twice.
+        const frame = JSON.stringify(payload);
+        let sent = 0;
+        for (const [socket, state] of this.clients) {
+            if (state.uid !== uid) continue;
+            if (socket.readyState !== WebSocket.OPEN) continue;
+            try { socket.send(frame); sent++; } catch { /* dropped mid-write; 'close' unregisters */ }
         }
         return sent;
     }

@@ -119,7 +119,23 @@ export class AuthMiddleware {
         const idToken = authHeader.split('Bearer ')[1];
 
         try {
-            const decodedToken = await auth.verifyIdToken(idToken);
+            // ── `checkRevoked: true` is load-bearing, not belt-and-braces ──
+            //
+            // Without it this only verifies the SIGNATURE and expiry, so a token
+            // minted before its user was deleted keeps working for the rest of
+            // its ~1h life. That is not a theoretical window: a second device
+            // that had not yet noticed the deletion used it to call
+            // `/user/sync/profile`, which re-created the account document, and
+            // the "deleted" account came back as an orphan holding real boards.
+            //
+            // The flag makes Firebase check the user record — deleted, disabled,
+            // or tokens revoked — so a deletion takes effect on the very next
+            // request from every device, whether or not the push reached them.
+            // That costs a lookup per authenticated request, which is the right
+            // trade on `/user/*`: these are the routes that mutate the account,
+            // they are not on any hot path, and the alternative is trusting a
+            // credential whose owner may no longer exist.
+            const decodedToken = await auth.verifyIdToken(idToken, true);
             (req as any).user = {
                 uid: decodedToken.uid,
                 email: decodedToken.email,
@@ -141,9 +157,21 @@ export class AuthMiddleware {
 
             next();
         } catch (err: any) {
-            return res.status(401).json({ 
-                error: "Unauthorized", 
-                message: "Invalid Firebase ID Token." 
+            // Two very different 401s, and a client must be able to tell them
+            // apart: an expired token is fixed by refreshing and retrying, while
+            // a gone account must end the session on the device. Both used to
+            // return the same opaque message, so a client could only guess — and
+            // guessing "expired" for a deleted account is what leaves a ghost
+            // session running.
+            const gone = err?.code === 'auth/id-token-revoked'
+                || err?.code === 'auth/user-not-found'
+                || err?.code === 'auth/user-disabled';
+            return res.status(401).json({
+                error: "Unauthorized",
+                code: gone ? 'account_gone' : 'token_invalid',
+                message: gone
+                    ? "This account is no longer active. Sign in again."
+                    : "Invalid Firebase ID Token."
             });
         }
     }
