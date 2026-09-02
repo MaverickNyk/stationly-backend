@@ -373,12 +373,15 @@ from a clean checkout — because until now staging has been running your workin
 > tree, so `git log -S` finds no commit for them."* Deploying from a clean checkout is
 > the only way to prove that what is committed is what works.
 
-### ☐ B1 — PR `dev_13Jul` → `main`
+### ☑ B1 — PR `dev_13Jul` → `main` — DONE 2026-09-02 (PR #129, merged)
 
 Branch Guard allows `dev_*`, `feature/*`, `fix/*`, `hotfix/*` into `main`. Merging opens
 the `main` → `release_staging` PR automatically.
 
-### ☐ B2 — Merge `main` → `release_staging`
+### ☑ B2 — Merge `main` → `release_staging` — DONE 2026-09-02 (PR #130, merged; `release_staging` at c9b5285)
+
+**PR #131 (`release_staging` → `release_prod`) is now OPEN and MERGEABLE. That merge is `D1` —
+the production deploy. Leave it sitting until GATE C.**
 
 This deploys **nothing**. There is no staging workflow — `release_staging` is a
 promotion gate. Merging it opens the `release_staging` → `release_prod` PR
