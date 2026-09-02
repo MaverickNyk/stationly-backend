@@ -55,7 +55,38 @@ export class StationController {
         if (!station || !mode || !line || !direction) {
             return res.status(400).json({ error: "station, mode, line and direction are required" });
         }
+        // Refuse to answer from an unloaded cache.
+        //
+        // Every other station route already guards on `getIsReady` and falls
+        // back to Firestore; this one did not, and used to get away with it:
+        // `resolveStation` returns its INPUT when it can find no group, and the
+        // input was a stop id, so an empty cache produced an accidentally
+        // correct answer.
+        //
+        // That stopped being true when clients started sending the HUB. An
+        // empty cache would now return `{ naptanId: "490G00008805" }` with a
+        // 200 — not an error the caller can detect, but a confident wrong
+        // answer, saved as a board's fetch key and empty forever. A restart is
+        // exactly when this window is open, and restarts are routine.
+        if (!DataCacheService.getIsReady()) {
+            return res.status(503).json({
+                error: "Station cache not ready",
+                message: "Cannot resolve a stop yet. Retry shortly.",
+                station,
+            });
+        }
         const naptanId = DataCacheService.resolveStation(station, mode, line, direction);
+        // Never hand back something that is not a stop. `resolveStation` echoes
+        // its input for an id it does not know, which for a hub means a board
+        // that can never fetch anything.
+        if (naptanId === station && !DataCacheService.stationsInGroup(station)
+                .some(m => (m.naptanId || (m as any).id) === naptanId)) {
+            return res.status(404).json({
+                error: "Station not found",
+                message: `No stop found for '${station}' on ${line} ${direction}.`,
+                station,
+            });
+        }
         return res.json({ naptanId });
     }
 
@@ -125,6 +156,33 @@ export class StationController {
      * prefetch and a concurrent REST request collapse into ONE TfL call.
      */
     static async fetchPredictions(naptanId: string, skipRefresh = false): Promise<StationPredictionResponse> {
+        // Tier -1 — a HUB id is not a stop, and must not be answered as one.
+        //
+        // Clients key a saved board on the StopArea (`490G…`), so a hub id can
+        // reach here whenever the per-direction resolve did not happen — the
+        // client's `/stations/resolve` call catches its own network errors and
+        // falls back to the id it was given.
+        //
+        // TfL does not 404 a StopArea, so without this the request succeeded
+        // and returned a 200 carrying no departures and the name "Unknown
+        // Station" — measured. That is the exact failure the 404 branch in
+        // `getStationPredictions` exists to prevent: an empty board is a CLAIM
+        // ("no trains here") and is indistinguishable from a genuinely quiet
+        // stop at 3am, so the board would sit empty forever with nothing
+        // logged.
+        //
+        // A single-member group resolves exactly and is served. A multi-pole
+        // group is REFUSED rather than guessed: the poles are opposite sides of
+        // one road, and serving the wrong one is worse than serving nothing —
+        // it is the precise failure the per-direction naptan exists to prevent.
+        const members = DataCacheService.stationsInGroup(naptanId);
+        const isStop = members.some(m => (m.naptanId || (m as any).id) === naptanId);
+        if (!isStop && members.length === 1) {
+            naptanId = members[0].naptanId || (members[0] as any).id || naptanId;
+        } else if (!isStop && members.length > 1) {
+            throw new UnknownStationError(naptanId);
+        }
+
         // Tier 0 — the negative cache. An id TfL 404'd in the last few minutes
         // is refused from memory. Without this, every repeat of a dead id is a
         // fresh TfL call — the old fake-200 entry used to absorb them by
@@ -362,8 +420,16 @@ export class StationController {
                 }
 
                 const grouped = DataCacheService.groupStations(stations);
+                // The HUB, not the representative pole. `groupStations` already
+                // folds the poles into one row; returning the representative's
+                // naptan then handed the client an id that (a) is one of its own
+                // members, so a board and a stop are indistinguishable, and
+                // (b) is not stable — the representative is picked by distance
+                // to the caller, so searching the same stop from either side of
+                // the road produced a different id and therefore a different
+                // saved board. See DataCacheService.getHubId.
                 return res.json(grouped.slice(0, 50).map(s => ({
-                    id: s.id || s.naptanId,
+                    id: DataCacheService.getHubId(s),
                     label: s.commonName || s.label || s.id,
                     iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
                     secondaryLabel: s.distance !== undefined ? formatDistance(s.distance) : undefined,
@@ -408,7 +474,7 @@ export class StationController {
                 });
 
                 return res.json(grouped.slice(0, 25).map(s => ({
-                    id: s.id || s.naptanId,
+                    id: DataCacheService.getHubId(s),
                     label: s.label || s.commonName || s.id,
                     secondaryLabel: formatDistance(s.distance || 0),
                     iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
@@ -421,7 +487,7 @@ export class StationController {
                 const stations = DataCacheService.getAllStations()
                     .filter(s => DataCacheService.stationServesMode(s, modeFilter));
                 return res.json(stations.slice(0, 50).map(s => ({
-                    id: (s as any).id || s.naptanId,
+                    id: DataCacheService.getHubId(s),
                     label: s.commonName || (s as any).label || (s as any).id,
                 })));
             }

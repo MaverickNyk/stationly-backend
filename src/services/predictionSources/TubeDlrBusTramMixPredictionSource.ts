@@ -101,7 +101,14 @@ export class TubeDlrBusTramMixPredictionSource implements PredictionSource {
                 destId: isSelfTerminating ? 'unknown' : (arrival.destinationNaptanId || 'unknown'),
                 platform,
                 eta,
-                displayName: isSelfTerminating ? 'Check Front of Train' : this.formatDisplayName(arrival)
+                displayName: isSelfTerminating ? 'Check Front of Train' : this.formatDisplayName(arrival),
+                // NOTE: `viaKey` is deliberately NOT set here.
+                //
+                // It is stamped once for every producer at PredictionCache.set,
+                // derived from `displayName` above. Setting it here as well
+                // would be a second implementation of the same rule that only
+                // covered our own payloads — the Java Syncer's are stored
+                // verbatim — and two implementations of one rule drift.
             });
         });
 

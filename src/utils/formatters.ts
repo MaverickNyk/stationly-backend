@@ -114,6 +114,22 @@ export function getWebUrl(): string {
 }
 
 /**
+ * The custom URL scheme THIS environment's app answers to.
+ *
+ * Per-environment by construction, the same rule the iOS client follows
+ * (`STATIONLY_URL_SCHEME` in its Info.plist): staging builds register
+ * `stationly-staging://`, production `stationly://`. A hardcoded `"stationly"`
+ * in a redirect silently drops every staging deep link — the bug the client
+ * fixed once already. `STATIONLY_URL_SCHEME` overrides for a one-off (a rename
+ * in flight, a TestFlight-only scheme).
+ */
+export function getUrlScheme(): string {
+    const override = process.env.STATIONLY_URL_SCHEME;
+    if (override && override.trim() !== '') return override.trim();
+    return isStaging() ? 'stationly-staging' : 'stationly';
+}
+
+/**
  * Returns the fully qualified icon URL for a mode
  */
 export function getIconUrl(modeName?: string): string | null {

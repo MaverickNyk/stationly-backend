@@ -1,0 +1,86 @@
+/*
+ * Board palette - the values are copied from
+ * `StationlyUI/composeApp/.../ui/summary/components/Board.kt`.
+ *
+ * ⚠️ THE 4TH COPY of the TfL palette (core `TflLineColors.kt`, Compose
+ * `Board.kt`, backend `lineIconService`, here). A line colour change touches
+ * all four. See TEMPORARY.md.
+ *
+ * The board is dark signage regardless of any app theme - that is deliberate on
+ * every surface and must not become theme-aware here either.
+ */
+
+:root {
+    /* The board itself */
+    --board-amber:      #FFC819;
+    --board-amber-dim:  #B88F1A;
+    --panel-bg:         #0C0C0C;
+    --active-row-bg:    #161616;
+    --stationly-red:    #E32017;
+    --status-amber:     #FFA000;
+    --status-green:     #00A550;
+
+    /* Page chrome around the panel */
+    --page-bg:          #050505;
+    --chrome-fg:        #EDEDED;
+    --chrome-dim:       #7A7A7A;
+    --card-bg:          #101010;
+    --card-border:      rgba(255, 200, 25, 0.14);
+
+    /* TfL line colours, dark-surface variants where the app defines one.
+       Only the lines a London board can show. */
+    --line-bakerloo:        #B36305;
+    --line-central:         #E32017;
+    --line-circle:          #FFD300;
+    --line-district:        #00782A;
+    --line-hammersmith-city:#F3A9BB;
+    --line-jubilee:         #A0A5A9;
+    --line-metropolitan:    #9B0056;
+    --line-northern:        #888888;
+    --line-piccadilly:      #003688;
+    --line-victoria:        #0098D4;
+    --line-waterloo-city:   #95CDBA;
+    --line-dlr:             #00A4A7;
+    --line-elizabeth:       #6950A1;
+    --line-lioness:         #E2A12B;
+    --line-mildmay:         #1A6DB4;
+    --line-windrush:        #E2231A;
+    --line-weaver:          #7B2D8B;
+    --line-suffragette:     #00843D;
+    --line-liberty:         #6B717E;
+    --line-tram:            #84B817;
+    --line-cable-car:       #E21836;
+
+    /*
+     * TV type scale. Sized for legibility across a café / room on 32"-65" displays.
+     * High-contrast, bold hierarchy, and crisp distant readability.
+     */
+    --fs-station:       clamp(24px, 2.6vw, 50px);
+    --fs-venue:         clamp(11px, 1.05vw, 21px);
+    --fs-brand:         clamp(16px, 1.7vw, 34px);
+    --fs-row:           clamp(16px, 1.65vw, 32px);
+    --fs-header:        clamp(17px, 1.75vw, 34px);
+    --fs-fallback:      clamp(18px, 1.8vw, 36px);
+    --fs-status:        clamp(13px, 1.35vw, 26px);
+    --fs-boardclock:    clamp(16px, 1.65vw, 32px);
+    --fs-qr-ask:        clamp(14px, 1.35vw, 26px);
+    --fs-qr-caption:    clamp(11px, 1.0vw, 20px);
+    --fs-pill:          clamp(11px, 1.0vw, 20px);
+
+    /* Hero card - well-proportioned height with full-height right ETA block */
+    --hero-height:      clamp(80px, 11vh, 160px);
+    --hero-slot-height: clamp(16px, 2.2vh, 32px);
+    --hero-eta-width:   clamp(72px, 8vw, 150px);
+    --fs-hero-dest:     clamp(18px, 2.0vw, 40px);
+    --fs-hero-eta:      clamp(26px, 2.9vw, 54px);
+    --fs-hero-eta-unit: clamp(10px, 0.95vw, 18px);
+    --fs-hero-platform: clamp(11px, 1.0vw, 19px);
+    --fs-venue-name:    clamp(17px, 1.9vw, 38px);
+    --fs-venue-quote:   clamp(14px, 1.5vw, 30px);
+
+    /* Dot matrix pattern */
+    --dot-color:        rgba(255, 255, 255, 0.12);
+    --dot-color-unlit:  rgba(255, 255, 255, 0.038);
+    --dot-pitch:        clamp(4.5px, 0.35vw, 6.5px);
+    --dot-size:         clamp(1.0px, 0.08vw, 1.5px);
+}

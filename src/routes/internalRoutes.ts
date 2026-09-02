@@ -4,6 +4,7 @@ import { StationStreamHub } from '../services/stationStreamHub';
 import { StreamPrefetch } from '../services/streamPrefetch';
 import { LineStatusStreamHub } from '../services/lineStatusStreamHub';
 import { DataCacheService } from '../services/dataCacheService';
+import { SessionMaintenanceService } from '../services/sessionMaintenanceService';
 
 /**
  * Machine-to-machine ingest from the StationlySyncer (same host).
@@ -157,6 +158,68 @@ router.get('/stream-stats', guard, (_req: Request, res: Response) => {
         prefetch: StreamPrefetch.stats(),
         lines: LineStatusStreamHub.stats(),
     });
+});
+
+/**
+ * POST /internal/maintenance/sweep
+ * POST /internal/maintenance/reconcile
+ *
+ * The two nightly session-maintenance jobs, driven by the host's crontab.
+ *
+ * ## Why they are HTTP routes and not an in-process timer
+ * There is no scheduler in this backend — no `node-cron`, no scheduler config,
+ * and the only `setInterval`s belong to the stream server and the prediction
+ * cache. The obvious reflex is to add one, and it would be wrong here:
+ * `staging_deploy.sh` starts this service with `pm2 start -i max`, so staging
+ * runs in CLUSTER MODE today. An in-process nightly timer would fire once per
+ * worker, and a nightly registry recompute racing itself across N workers is
+ * precisely the contention the transactions exist to serialise. A crontab line
+ * fires exactly once regardless of how many workers are listening.
+ *
+ * ## Why they sit behind this guard and reuse its secret
+ * Same trust boundary as the ingest routes above: loopback-only on the raw
+ * socket address, constant-time secret, and nginx has no catch-all `location /`
+ * so `/internal` is unreachable from the internet. Anyone able to present
+ * `LIVESTREAM_INGEST_SECRET` from loopback already has full run of
+ * `/internal/station-updates`, so minting a second secret would buy no
+ * isolation while requiring a new GitHub Actions secret to land in both hosts'
+ * `.env` before the first crontab line could fire. The name is now slightly
+ * inaccurate; that is a documentation nit, not a security cost.
+ *
+ * ## Why both bodies are wrapped
+ * Express 4 does not forward a rejected async handler's promise to error
+ * middleware, and this app has none (no 4-arg `app.use` exists anywhere).
+ * Unwrapped, a throw during a 3am run becomes an unhandled rejection that can
+ * take the whole worker down over a maintenance job.
+ *
+ * Both jobs are idempotent, so an overlapping crontab, a manual run during an
+ * incident, and a retry after `pm2 reload` are all harmless.
+ */
+router.post('/maintenance/sweep', guard, async (_req: Request, res: Response) => {
+    try {
+        return res.json(await SessionMaintenanceService.sweep());
+    } catch (e: any) {
+        console.error('INTERNAL: ❌ maintenance sweep failed', e);
+        return res.status(500).json({ error: e?.message ?? 'sweep failed' });
+    }
+});
+
+router.post('/maintenance/reconcile', guard, async (_req: Request, res: Response) => {
+    try {
+        return res.json(await SessionMaintenanceService.reconcile());
+    } catch (e: any) {
+        console.error('INTERNAL: ❌ maintenance reconcile failed', e);
+        return res.status(500).json({ error: e?.message ?? 'reconcile failed' });
+    }
+});
+
+router.post('/maintenance/reindex-watch', guard, async (_req: Request, res: Response) => {
+    try {
+        return res.json(await SessionMaintenanceService.reindexWatch());
+    } catch (e: any) {
+        console.error('INTERNAL: ❌ watch reindex failed', e);
+        return res.status(500).json({ error: e?.message ?? 'reindex failed' });
+    }
 });
 
 export default router;

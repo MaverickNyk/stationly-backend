@@ -1,0 +1,58 @@
+{
+  "//": [
+    "Firestore index configuration — the FIRST deliberate index management in this repo.",
+    "",
+    "Before this file, every index in staging and production was either created",
+    "automatically by Firestore (single-field, COLLECTION scope) or clicked into a",
+    "console by hand. Neither is reproducible, and P2 introduces the first queries",
+    "that genuinely need an index that is NOT automatic.",
+    "",
+    "WHY THESE TWO, AND ONLY THESE TWO",
+    "P2 moves devices from a root collection to users/{uid}/devices/{deviceId}. Two",
+    "queries then have to span parents, and a COLLECTION_GROUP query is not covered",
+    "by the automatic COLLECTION-scope single-field indexes:",
+    "",
+    "  deviceId  — the steal check on login (design section 4.1): which OTHER account",
+    "              currently holds a session on this device?",
+    "  lastSeen  — the abandoned-session sweep (design section 9), which needs every",
+    "              device row older than the TTL regardless of account.",
+    "",
+    "An earlier draft listed four. The field audit (design section 3.1) removed the",
+    "stations[] and lines[] arrays from the device row, and with them the only two",
+    "array-contains-any collection-group queries. That matters beyond tidiness: the",
+    "push-audience path is the one that fires during a disruption incident, and it",
+    "now touches no collection group at all.",
+    "",
+    "A MISSING COLLECTION-GROUP INDEX FAILS THE QUERY OUTRIGHT. It does not degrade,",
+    "it does not get slower — it throws FAILED_PRECONDITION. So both must exist and",
+    "be verified BEFORE the code that depends on them goes live. Use:",
+    "",
+    "  node src/scripts/ensure_device_indexes.cjs --key=<sa>   # creates, idempotent",
+    "  node src/scripts/check_device_indexes.cjs  --key=<sa>   # read-only proof",
+    "",
+    "These are SINGLE-FIELD indexes with COLLECTION_GROUP scope, so they belong in",
+    "fieldOverrides rather than in `indexes` — `indexes` is for composite indexes,",
+    "and putting a single-field entry there is a common and silent mistake: the",
+    "deploy succeeds and the query still fails."
+  ],
+  "indexes": [],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "devices",
+      "fieldPath": "deviceId",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    },
+    {
+      "collectionGroup": "devices",
+      "fieldPath": "lastSeen",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    }
+  ]
+}

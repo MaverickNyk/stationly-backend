@@ -4,6 +4,7 @@ import { NotificationController } from './notificationController';
 import { AdminUserController } from './adminUserController';
 import { AdminDataController } from './adminDataController';
 import { AdminEmailController } from './adminEmailController';
+import { DevicePushController } from '../controllers/devicePushController';
 
 /**
  * Admin-only routes — guarded by [AdminAuthMiddleware] which checks
@@ -33,6 +34,23 @@ adminRouter.use(AdminAuthMiddleware.validate);
 //   See NotificationController + NotificationService for the request
 //   shape and response semantics.
 adminRouter.post('/notifications/send', NotificationController.send);
+
+// POST /admin/widget-push/send
+//   Trigger an immediate iOS widget update over APNs. Four kinds:
+//     widget.refresh  — refetch now, optionally scoped to `stations`
+//     policy.update   — refetch the refresh SCHEDULE (lands even when the
+//                       app is not running)
+//     boost.start     — promote to a denser tier for up to the policy ceiling
+//     boost.stop      — end a boost early (boosts self-expire regardless)
+//   Signals only, never departure data — the client fetches. See
+//   DevicePushService for why, and for the delivery guarantees (there are
+//   none: this makes boards fresher sooner, it is not the schedule).
+adminRouter.post('/device-push/send', DevicePushController.send);
+
+// GET /admin/widget-push/status
+//   Whether APNs is configured and how many devices are registered, by token
+//   type and environment. Counts only — tokens never leave the backend.
+adminRouter.get('/device-push/status', DevicePushController.status);
 
 // POST /admin/email/android-launch
 //   Send the Android launch notification email. Supports target: "test" or "all".

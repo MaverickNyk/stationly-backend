@@ -1,4 +1,8 @@
-import { getWebUrl, isStaging } from '../utils/formatters';
+import { getBaseUrl, getWebUrl, isStaging } from '../utils/formatters';
+import { assetUrl } from './assetVersionService';
+import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { LineSeverityService } from './lineSeverityService';
+import { LinePaletteService } from './linePaletteService';
 
 export interface SduiValidation {
     required?: boolean;
@@ -10,8 +14,37 @@ export interface SduiValidation {
 
 export interface SduiCondition {
     dependsOn: string;
-    operator: "not_empty" | "equals" | "empty";
+    /**
+     * `gte` / `lte` compare as NUMBERS and are false when either side is not
+     * one, so a gate on a fact the client cannot answer hides its block rather
+     * than showing it.
+     */
+    operator: "not_empty" | "equals" | "empty" | "not_equals" | "gte" | "lte";
     value?: string;
+}
+
+/** One numbered step of a `steps` component. Media fields match `demo`. */
+export interface SduiStep {
+    title: string;
+    body?: string;
+    /** Icon name from the client's `SduiIcons` table; replaces the step number. */
+    icon?: string;
+    /** Hex tint for the marker, e.g. "#4CAF50". Defaults to the board amber. */
+    tint?: string;
+    url?: string;
+    frames?: string[];
+    frameMs?: number;
+    aspectRatio?: number;
+    corner?: number;
+    fit?: "fit" | "fill";
+    background?: string;
+}
+
+/** One pane of a `tabs` component. */
+export interface SduiTab {
+    title: string;
+    icon?: string;
+    components: SduiComponent[];
 }
 
 export interface SduiComponent {
@@ -40,6 +73,57 @@ export interface SduiComponent {
     size?: number;
     validation?: SduiValidation;
     condition?: SduiCondition;
+
+    // ── Media (`demo`, `image`) ─────────────────────────────────────────────
+    //
+    // `frames` rather than a `.gif` URL: Coil decodes animated GIFs on Android
+    // only, so a gif renders on iOS as a frozen first frame. The client plays
+    // an ordered list of ordinary images instead. `scripts/demo_frames.py` in
+    // the app repo turns a recording into this block.
+    frames?: string[];
+    frameMs?: number;
+    loop?: boolean;
+    /**
+     * Width ÷ height. The client reserves the box at this shape BEFORE the
+     * image arrives, so a wrong value makes the whole screen jump when it
+     * lands. Measure it, do not estimate it.
+     */
+    aspectRatio?: number;
+    caption?: string;
+    /**
+     * Corner radius in dp. A screenshot with rounded corners already in its
+     * pixels needs this to match, or a second curve is clipped inside the first.
+     */
+    corner?: number;
+    fit?: "fit" | "fill";
+    /** Hex fill behind the media, e.g. "#000000" for a widget screenshot. */
+    background?: string;
+    contentDescription?: string;
+    width?: number;
+    height?: number;
+
+    // ── Layout (`row`, `grid`) ──────────────────────────────────────────────
+    /** `row`: share of the leftover width per child, positional. */
+    weights?: number[];
+    /** `row` / `grid`: spacing in dp. */
+    gap?: number;
+    /** `row`: top | center | bottom */
+    align?: "top" | "center" | "bottom";
+    /** `grid`: number of equal columns, 1-4. */
+    columns?: number;
+
+    // ── `steps` ─────────────────────────────────────────────────────────────
+    steps?: SduiStep[];
+
+    // ── `tabs` ──────────────────────────────────────────────────────────────
+    tabs?: SduiTab[];
+
+    // ── `stat_row` ──────────────────────────────────────────────────────────
+    /** Name of a client device fact, e.g. "widget.count". */
+    fact?: string;
+    zero?: string;
+    one?: string;
+    many?: string;
 }
 
 export interface SduiLayout {
@@ -368,6 +452,141 @@ export class SduiService {
     }
 
     /**
+     * The in-app widget guide, served by `GET /sdui/app/widget-guide`.
+     *
+     * ## This screen is the reference payload
+     * Every other layout here is a form or a list of link rows. This one is the
+     * demonstration of what the channel can actually do: images, a numbered
+     * walkthrough, a two-column grid, a weighted row, a live count of the
+     * reader's own state, and per-component visibility rules that make one
+     * payload render three different screens. Change any of it and the app
+     * changes on next open, with no release.
+     *
+     * ## The one thing that is NOT server-driven, and must not be
+     * The iOS 26 floor. The app ships to iOS 16 and the widget extension needs
+     * 26, so on an older iPhone the widget is absent from the SYSTEM gallery
+     * and no guide can help. The client publishes that as the `widget.supported`
+     * fact and this payload gates on it; the number itself lives in the client
+     * (`SduiFacts.WIDGET_MIN_IOS`) because it changes when the extension's
+     * deployment target changes and at no other time.
+     *
+     * ## Client facts available to `condition`
+     * `platform`, `os.version`, `os.major`, `widget.supported`, `widget.count`,
+     * `board.count`. A fact the client does not publish HIDES its block.
+     *
+     * Client fallback: `WidgetGuideDefaults` in the app repo ships the same
+     * guide compiled in, so an offline reader still gets the words. Keep the two
+     * broadly in step. The difference is invisible until somebody has no
+     * signal.
+     */
+    static getWidgetGuideLayout(): SduiLayout {
+        // Versioned by content hash, so the URL changes exactly when the file
+        // does and the device's cached copy is replaced only then. See
+        // `assetVersionService`.
+        const asset = assetUrl;
+
+        // Shown only where the widget can actually exist, and its complement.
+        const supported: SduiCondition = { dependsOn: "widget.supported", operator: "not_empty" };
+        const unsupported: SduiCondition = { dependsOn: "widget.supported", operator: "empty" };
+
+        return {
+            id: "widget_guide",
+            title: "Widgets",
+            theme: { primaryColor: "#FFC819", backgroundColor: "#000000" },
+            components: [
+                // One line, and it is the reader's own state rather than a
+                // pitch. Everything else lives behind a tab.
+                {
+                    type: "stat_row",
+                    id: "widget_count",
+                    fact: "widget.count",
+                    zero: "No widgets on your Home Screen yet",
+                    one: "1 widget on your Home Screen",
+                    many: "{count} widgets on your Home Screen",
+                    condition: supported
+                },
+
+                // The only block an unsupported device sees. It names the
+                // version, because "not supported" leaves the reader asking
+                // "from when".
+                {
+                    type: "card",
+                    id: "unsupported",
+                    title: "Widgets need iOS 26",
+                    body: "Stationly's departure board widget uses a part of iOS that only arrived in iOS 26, so it will not appear in the widget gallery on this iPhone. Everything else in the app works as normal.",
+                    style: "brand",
+                    condition: unsupported
+                },
+
+                {
+                    type: "tabs",
+                    id: "guide_tabs",
+                    condition: supported,
+                    tabs: [
+                        {
+                            // First tab, and first thing inside it: the four
+                            // gestures. This is what somebody opens the screen
+                            // to find.
+                            title: "Add a widget",
+                            icon: "add",
+                            components: [
+                                {
+                                    type: "card",
+                                    id: "widget_intro",
+                                    title: "Live departures at a glance",
+                                    body: "Glance at upcoming departures for any station right from your Home Screen without opening the app. Zero clicks needed."
+                                },
+                                {
+                                    type: "demo",
+                                    id: "hero_board",
+                                    url: asset("widget_guide_medium.png"),
+                                    aspectRatio: 2.1453,
+                                    corner: 26,
+                                    fit: "fit",
+                                    background: "#000000",
+                                    caption: "One station, counting down"
+                                },
+                                {
+                                    type: "steps",
+                                    id: "add_steps",
+                                    steps: [
+                                        { title: "Touch and hold the Home Screen", body: "Anywhere empty, until the icons jiggle.", icon: "touch", tint: "#FFC819" },
+                                        { title: "Tap Edit, then Add Widget", body: "Top-left corner.", icon: "edit", tint: "#4FC3F7" },
+                                        { title: "Search for Stationly", body: "Pick a size and add it.", icon: "search", tint: "#81C784" },
+                                        { title: "Choose the station", body: "Hold the widget, tap Edit Widget.", icon: "station", tint: "#F06292" }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            title: "Multiple widgets",
+                            icon: "layers",
+                            components: [
+                                {
+                                    type: "card",
+                                    id: "one_each",
+                                    title: "One widget per station",
+                                    body: "A widget shows a single station, so add as many as you track: one for each end of your commute, one for the station near work. Repeat the steps in Add a widget and pick a different station each time."
+                                },
+                                {
+                                    type: "steps",
+                                    id: "stack_steps",
+                                    title: "Stack them",
+                                    steps: [
+                                        { title: "Drag one onto another", body: "Same size only. iOS turns the pair into a stack.", icon: "drag", tint: "#FFC819" },
+                                        { title: "Swipe to switch station", body: "The stack holds up to ten widgets in one slot.", icon: "layers", tint: "#4FC3F7" },
+                                        { title: "Leave Smart Rotate on", body: "iOS brings the board it thinks you want to the top.", icon: "rotate", tint: "#81C784" }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        };
+    }
+
+    /**
      * Home announcement banner — leave components empty for no active announcement.
      * To push a banner, add an announcement component here and deploy.
      */
@@ -489,10 +708,289 @@ export class SduiService {
                 "board.fallback.lateNightStart":        "00:00",       // start of "ended for tonight" window (Europe/London)
                 "board.fallback.lateNightEnd":         "04:30",        // late night → early morning cutoff
                 "board.fallback.earlyMorningEnd":      "06:00",        // early morning → "no upcoming" cutoff
-                // ── Force-update gate ──────────────────────────────────────────
-                // Bump app.minVersion to block older clients immediately — no release needed.
+
+                // ── Board policy ───────────────────────────────────────────────
+                //
+                // How the countdown behaves, as opposed to what it says. The
+                // client mirrors these in `core/config/BoardPolicy.kt`, which is
+                // also where each number is argued; it CLAMPS every one of them
+                // on read, so a typo here moves a value to the edge of a
+                // sensible range rather than to whatever was typed.
+                //
+                // These reach the iOS widget too — the app republishes them into
+                // its App Group alongside the fallback copy above, because the
+                // extension never calls the network.
+                //
+                // Two rules worth knowing before editing:
+                //  · `departedLabel` sizes the ETA column, which is what the
+                //    destination truncates against. Four characters is why it
+                //    reads "Gone" and not "Departed"; the client caps it at six.
+                //  · `freshMs` and `retentionMinAgeMs` are the same number on
+                //    purpose — the footer going grey and the rows going "Gone"
+                //    are one statement about one payload. Set `freshMs` alone
+                //    and the client moves retention with it. Set both to mean
+                //    them differently.
+                "board.tick.departedGraceMs":     "30000",   // ms a departed train stays up (tube dwell)
+                "board.tick.retentionMinAgeMs":   "60000",   // payload age before departed rows are HELD not dropped
+                "board.tick.departedLabel":       "Gone",    // what a held row reads
+                "board.tick.rowReserve":          "10",      // rows per platform written at ingest, not what is drawn
+                "board.stale.freshMs":            "60000",   // "ago" chronometer: amber → grey
+                "board.stale.staleMs":           "180000",   // "ago" chronometer: grey → red
+                "board.hero.urgency_min":          "1",      // minutes <= this triggers urgent hero border/pulse
+                "selection.dropdown.cache_ttl_ms": "86400000", // 24h dropdown options cache TTL
+                "station.route_text.max_age_ms":   "1209600000", // 14d route text cache max age before re-resolve
+                "support.fetch.min_interval_ms":   "60000",  // 60s min interval between support status fetches
+                "explore.fares.max_days_to_peak":  "14",     // 14d max forward walk for next peak fare window
+                "weather.refresh_interval_ms":     "1800000", // 30 min weather station poll interval
+
+                // ── Limits and quotas ─────────────────────────────────────────
+                //
+                // TWO limits, and there is deliberately no third. Clamped on
+                // client-side read via BoardPolicyStore.
+                //
+                // A per-station ceiling counted in (line, direction) ROWS was
+                // served here briefly and is gone. A line runs inbound and
+                // outbound and nothing else, so the line limit already bounds a
+                // station card at twice itself; a row ceiling could only ever
+                // fire FIRST, refusing three lines with both ways ticked — a
+                // board the line limit calls legal.
+                //
+                // DELETED rather than left dormant. It is live on staging (this
+                // file was deployed from a dirty tree), but the additive-only
+                // rule protects keys a SHIPPED client reads: Android is frozen
+                // at versionCode 2 and predates these keys, and iOS has never
+                // been released. Staging is not "shipped". Removing them here
+                // and deploying takes them off staging too, which is the point.
+                "limits.boards.max":             "4",
+                "limits.boards.reached.title":   "Station Limit Reached",
+                "limits.boards.reached.message": "You have used your full quota of 4 stations. Please delete an existing station to add a new one.",
+                "limits.boards.reached.cta":     "Got it",
+                "limits.lines_per_board.max":    "4",
+                "limits.lines.reached.title":    "Line Limit Reached",
+                "limits.lines.reached.message":  "Maximum of 4 lines reached for this station. Untick a line to select another.",
+
+                // ── Explore, board hero, empty state, dream ───────────────────
+                //
+                // Restored 2026-08-30 after a regex edit removed them: the
+                // replacement that introduced `LineSeverityService` matched from a
+                // comment that sat ABOVE this whole block, so a `.*?` intended to
+                // span one key spanned thirty-seven.
+                //
+                // Values recovered from the deployed staging payload, which was the
+                // only remaining record — the file was uncommitted at the time. The
+                // `--check` guard in `scripts/sdui_keys.py` exists to catch exactly
+                // this and would have, had it not been run AFTER a regenerate, which
+                // makes it compare the payload against a record just written from
+                // that same payload. It now reads the COMMITTED inventory from git
+                // instead, so the order of the two commands no longer matters.
+                "board.hero.min_label": "min",
+                "board.hero.no_departures": "No departures reported yet",
+                "dream.settings.start": "Start screensaver",
+                "empty.hint": "Tube · Bus · DLR · Overground · Elizabeth line",
+                "explore.fares.offpeak.subtitle_short": "Until ",
+                "explore.fares.peak.subtitle_short": "Until ",
+                "explore.fares.sheet.heading": "Fares",
+                "explore.fares.sheet.note.offpeak": "Weekends and bank holidays stay off-peak all day, whatever the clock says.",
+                "explore.fares.sheet.note.peak": "Same trains either side of the window, just a few quid lighter once it passes.",
+                "explore.fares.sheet.title.offpeak": "You're riding cheap",
+                "explore.fares.sheet.title.peak": "You're paying peak",
+                "explore.fares.sheet.until": "Until {t}",
+                "explore.fares.sheet.window.am": "Morning peak",
+                "explore.fares.sheet.window.pm": "Evening peak",
+                "explore.fares.sheet.window.weekend": "Weekends",
+                "explore.fares.sheet.window.weekend_value": "Off-peak all day",
+                "explore.status.card.affected": "{n} lines affected",
+                "explore.status.card.loading": "Checking lines",
+                "explore.status.card.loading_sub": "Fetching from TfL",
+                "explore.status.count.blocked": "{n} closed",
+                "explore.status.count.delayed": "{n} delayed",
+                "explore.status.count.other": "{n} with notices",
+                "explore.status.dialog.body.disrupted": "Here's the live picture from TfL across the lines you follow.",
+                "explore.status.dialog.body.good": "Every line you're watching is on time. We'll flag changes the moment TfL does.",
+                "explore.status.dialog.dismiss": "Got it",
+                "explore.status.dialog.title.good": "All running normally",
+                "explore.status.sheet.body.empty": "Add a station and we'll keep an eye on its lines.",
+                "explore.status.sheet.body.good": "Good service on all {n} lines you follow. Nothing to do.",
+                "explore.status.sheet.good_count": "{n} more running normally",
+                "explore.status.sheet.heading": "Network status",
+                "explore.status.sheet.link": "See full status on TfL",
+                "explore.status.sheet.title.empty": "Nothing to watch yet",
+                "explore.status.sheet.title.good": "All clear.",
+                "explore.status.sheet.title.many": "{n} of your {total} lines are affected",
+                "explore.status.sheet.title.one": "One line needs a look",
+                "explore.status.tflUrl": "https://tfl.gov.uk/tube-dlr-overground/status/",
+
+                // TfL severity vocabulary — ORDER, TONE and DISPLAY NAMES, all
+                // generated from one table so the three can never disagree. See
+                // `lineSeverityService.ts`, which is also where the argument for
+                // each tone lives.
+                //
+                // This block used to be a hand-written order list here, a display
+                // map in the iOS client, and a red-set in shared Kotlin: three
+                // enumerations of one vocabulary, in two languages, that TfL could
+                // desynchronise at any time.
+                ...LineSeverityService.homeConfigKeys(),
+
+                // ── TfL colour palette ────────────────────────────────────────
+                //
+                // Brand hex per line, per-theme legibility overrides, and the
+                // roundel tint per mode. One table in `linePaletteService.ts`,
+                // four key families out of it, replacing four hand-synced copies
+                // across two languages and two repos.
+                //
+                // `line.color.dark.northern` is the one worth understanding: the
+                // brand colour is pure black, which is invisible on a near-black
+                // departure board. Two surfaces wanting different answers is why
+                // this is a base palette plus overrides rather than one flat map.
+                ...LinePaletteService.homeConfigKeys(),
+                // ── Auth: what the sign-in flow says when something fails ─────
+                //
+                // Seeded 2026-08-30 from the client's own fallbacks, so the first
+                // deploy of these renders identical words. See `AuthStrings.kt`.
+                //
+                // ## The wording is ours, the MAPPING is not
+                // Which Firebase code means "wrong password" is a fact about
+                // Firebase, and the client keeps that decision. Nothing here can
+                // re-point `wrong-password` at the "no such account" line, because
+                // a server able to do that could only make the app lie about what
+                // just happened. These keys change the sentence, never which
+                // sentence applies.
+                //
+                // ## Why these before any other copy
+                // Error text is the copy most likely to be wrong on the first
+                // guess and the only copy whose reader is already stuck. It was
+                // also the copy that needed an App Store release to fix.
+                //
+                // A blank value here is treated as ABSENT, not honoured — an empty
+                // error box on the screen where someone is already stuck is worse
+                // than wording nobody has got round to improving.
+                "auth.error.wrong_password":      "Incorrect email or password. Try again or reset your password.",
+                "auth.error.user_not_found":      "No account found with this email. Create an account to get started.",
+                "auth.error.email_in_use":        "This email is already registered. Sign in instead.",
+                "auth.error.weak_password":       "Please use a stronger password (at least 6 characters).",
+                "auth.error.too_many_requests":   "Too many failed attempts. Please wait a moment and try again.",
+                "auth.error.no_network":          "No internet connection. Check your connection and try again.",
+                "auth.error.generic":             "Something went wrong. Please try again.",
+
+                // Reaching us at all. `sync_rollback` is deliberately separate from
+                // `backend_unreachable`: the credentials were correct and the client
+                // has already signed back out, so telling someone "could not connect"
+                // alone invites them to retype a password that was never the problem.
+                "auth.error.backend_unreachable": "Could not connect to Stationly servers.",
+                "auth.error.sync_rollback":       "We couldn't reach our servers to finish signing you in. Please check your connection and try again.",
+
+                // Password reset
+                "auth.error.reset_email_required": "Enter your email to receive a reset link.",
+                "auth.error.reset_send_failed":    "Could not send reset link. Please try again.",
+                "auth.error.reset_link_invalid":   "Invalid reset link",
+                "auth.error.reset_link_expired":   "This reset link has expired. Please request a new one.",
+                "auth.error.reset_failed":         "Could not reset password. Please try again.",
+
+                // Email verification
+                "auth.error.session_expired":   "Your session expired. Please sign in again.",
+                "auth.error.still_unverified":  "Still not verified. Tap the link in the email and try again.",
+                "auth.error.resend_failed":     "Couldn't resend right now. Please try again in a minute.",
+
+                // Raised when an account was deleted from another device. Not an
+                // error the user caused, which is why it reads as an explanation.
+                "auth.notice.account_removed": "Your account was deleted on another device, so you've been signed out here.",
+
+                // The password RULE, not just its wording. `{n}` is substituted
+                // client-side from the value below, so the two can never disagree.
+                //
+                // The client floors this at six whatever is sent, because Firebase
+                // enforces six: a lower value here would have the form accept a
+                // password and the network then reject it as too short, which is the
+                // form contradicting itself in front of the user.
+                "auth.password.min_length":       "6",
+                "auth.error.password_too_short":  "Password must be at least {n} characters",
+
+                // ── Auth: the verify-your-email screen ────────────────────────
+                //
+                // Eight keys the client has read since it was written, through a
+                // local `str()` helper, and which nothing ever sent. They were
+                // missed by the first audit sweep for the same reason: a matcher
+                // looking for `strings["k"]` cannot see a key passed to a helper.
+                // See `scripts/sdui_keys.py`, which now looks for the key rather
+                // than the call.
+                //
+                // `{s}` is the live countdown, substituted client-side each second.
+                "auth.verify.title":            "Check your inbox",
+                "auth.verify.subtitle":         "We sent a verification link to",
+                "auth.verify.body":             "Tap the link in the email, then come back here and tap \"I've verified\".",
+                "auth.verify.open_email":       "Open email app",
+                "auth.verify.confirm":          "I've verified",
+                "auth.verify.resend":           "Resend email",
+                "auth.verify.resend_cooldown":  "Resend email in {s}s",
+                "auth.verify.different_email":  "Use a different email",
+
+                // How long the resend button stays disabled. A rate limit, not a
+                // feel decision: it exists to keep someone from hammering the send
+                // endpoint, and the right number is whatever the mail provider will
+                // tolerate — which is learned in production, not guessed here.
+                "auth.verify.resend_cooldown_sec": "60",
+
+                // ── Widget: the four "no board at all" states ─────────────────
+                //
+                // Distinct from the `board.fallback.*` family above. Those cover a
+                // board that EXISTS and is empty ("Service ended for tonight").
+                // These cover a widget with no board: signed out, no stations,
+                // never configured, or configured for a station since removed.
+                //
+                // They are the messages a CONFUSED user reads. Every other string
+                // on the widget is seen by someone whose widget works; these are
+                // seen by someone staring at a blank panel who has to be told, in
+                // about six words, which of four different things to do.
+                //
+                // The app republishes them into the App Group with the rest of the
+                // widget's table — the extension never fetches anything.
+                //
+                // Three rules produced this wording, and they are worth keeping if
+                // you retune it:
+                //  · No apology, no alarm. `needs_station` is a SETUP step, not an
+                //    error, and it can surface on several widgets at once (adding a
+                //    first station un-masks every stale configuration together),
+                //    which is exactly when alarmed wording reads as a broken app.
+                //  · Name the whole gesture. Touch-and-hold alone only opens the
+                //    jiggle menu; someone who has never configured a widget has no
+                //    reason to know there is a second step.
+                //  · Use the phone's words. "Touch and hold", not "long press";
+                //    "Edit Widget" exactly as the menu spells it.
+                //
+                // `removed.title` is a FALLBACK only: normally the removed
+                // station's own name takes that slot, because it is what tells the
+                // user which of several widgets needs attention without opening any
+                // of them.
+                "widget.state.signed_out.title":     "Signed out",
+                "widget.state.signed_out.detail":    "Open Stationly to sign in",
+                "widget.state.no_stations.title":    "No stations yet",
+                "widget.state.no_stations.detail":   "Open Stationly to add one",
+                "widget.state.needs_station.title":  "Choose a station",
+                "widget.state.needs_station.detail": "Touch and hold, then tap Edit Widget",
+                "widget.state.removed.title":        "Station removed",
+                "widget.state.removed.detail":       "Not in your stations. Touch and hold, then tap Edit Widget",
+
+                // ── Force-update gate (LEGACY — Android binary only) ───────────
+                //
+                // These two keys are read by the Android build that is already in
+                // the Play Store, so under the additive rule they can never be
+                // removed or given a new meaning. `app.storeUrl` is a Play URL
+                // and there is no platform branching on this endpoint, which is
+                // exactly the bug: an iPhone tapping "Update Now" landed on
+                // Google Play.
+                //
+                // The real policy now lives at GET /sdui/app/release-policy
+                // (AppReleaseService) — per platform, two thresholds, enforced
+                // server-side by versionGateMiddleware. New clients read that.
+                // These stay frozen at the floor so the shipped Android binary
+                // never sees a nudge it cannot act on.
                 "app.minVersion": "1.0",
                 "app.storeUrl":   "https://play.google.com/store/apps/details?id=com.stationly.mobile",
+                // Platform-correct store links, additive. Read by clients that
+                // predate the structured endpoint but postdate this key; also
+                // the offline fallback for the blocking screen's CTA.
+                "app.ios.storeUrl":    "itms-apps://apps.apple.com/app/id0000000000",
+                "app.ios.storeUrlWeb": "https://apps.apple.com/app/id0000000000",
                 "app.update.title":   "New update available",
                 "app.update.message": "Update Stationly for the latest features and improvements.",
                 "app.update.cta":     "Update Now",
@@ -581,7 +1079,16 @@ export class SduiService {
                 "profile.delete_account.bullets":    "All your saved stations and boards,Your notification preferences,Your profile and account data",
                 "profile.delete_account.footer":     "You\u2019ll need to create a new account to use Stationly again.",
                 "profile.delete_account.confirm":    "Delete Permanently",
-                "profile.delete_account.cancel":     "Keep Account"
+                "profile.delete_account.cancel":     "Keep Account",
+
+                // ── Support / contributions ──────────────────────────────────
+                // `support_money.card.json` is the whole SupportMoneyCardConfig as a JSON
+                // string (one key, so the flat Record<string,string> contract
+                // both platforms consume is unchanged). `home.promo.support_money.*`
+                // drives the "after you add a board" contextual card, same
+                // shape and `show` switch as the widget/dream promos above.
+                // All owned by SupportMoneyConfigService; `SUPPORT_MONEY_ENABLED` gates it.
+                ...SupportMoneyConfigService.homeConfigKeys(),
             }
         };
     }

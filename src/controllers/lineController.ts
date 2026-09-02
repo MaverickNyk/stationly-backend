@@ -9,13 +9,23 @@ import { DataCacheService } from '../services/dataCacheService';
 import { LocalDbService } from '../services/localDbService';
 import { nowMs, toIso, toEpochMs } from '../utils/timestamps';
 import { encodeRouteForFirestore, decodeRouteFromFirestore } from '../utils/routeEncoding';
+import { viaKeyOf, viaLabelOf, canonicalToken } from '../utils/viaKey';
 
 /** Fetch ordered stop-ID sequences for each direction of a line from TfL. */
 async function fetchSequences(
     lineId: string,
     directions: { direction: string }[]
-): Promise<{ sequences: Record<string, string[][]>; stationNames: Record<string, string> }> {
+): Promise<{
+    sequences: Record<string, string[][]>;
+    sequenceVias: Record<string, (string | null)[]>;
+    stationNames: Record<string, string>;
+}> {
     const sequences: Record<string, string[][]> = {};
+    // Index-aligned with `sequences[direction]`: the "via" half of each ordered
+    // route's NAME ("Edgware ↔ Morden via Bank" → "Bank"), or null where TfL
+    // gives none. Kept because the naptan list alone cannot tell two branches to
+    // the same terminus apart — see utils/viaKey.ts for the whole argument.
+    const sequenceVias: Record<string, (string | null)[]> = {};
     const stationNames: Record<string, string> = {};
     for (const dir of directions) {
         try {
@@ -25,6 +35,7 @@ async function fetchSequences(
 
             const data = await TflApiClient.getLineRouteSequence(lineId, tflDir);
             sequences[dir.direction] = (data.orderedLineRoutes || []).map((r: any) => r.naptanIds || []);
+            sequenceVias[dir.direction] = (data.orderedLineRoutes || []).map((r: any) => viaLabelOf(r.name));
             // Populate names from stations array
             (data.stations || []).forEach((s: any) => {
                 const id = s.stationId || s.id;
@@ -41,7 +52,7 @@ async function fetchSequences(
             console.warn(`DATA: ⚠️ Could not fetch sequence for ${lineId}/${dir.direction}`);
         }
     }
-    return { sequences, stationNames };
+    return { sequences, sequenceVias, stationNames };
 }
 
 /** One stop on a route sequence, carrying the naptan id alongside the display
@@ -82,6 +93,37 @@ interface DestinationChip {
     name: string;
     upcomingStations: string[];
     upcomingStops: RouteStop[];
+}
+
+/**
+ * One SERVICE PATTERN from the chosen station: a distinct run of stops, with the
+ * branch it takes to get there.
+ *
+ * Separate from [DestinationChip] because the two answer different questions and
+ * conflating them is what made this wrong. A chip is keyed on its terminus, so
+ * two runs ending at the same place collapse into one and a real service — the
+ * Charing Cross half of the Northern line — vanishes before any client sees it.
+ * A pattern is keyed on the run itself, so both survive.
+ *
+ * [destinations] is still emitted, unchanged, for clients that render chips.
+ * This is additive alongside it.
+ */
+interface RoutePattern {
+    /** Stable within a (line, direction, station): terminus plus branch. */
+    id: string;
+    terminusId: string;
+    terminusName: string;
+    /** TfL's own words — "Bank", "Charing Cross" — or null when unbranched. */
+    via: string | null;
+    /**
+     * The comparable form of [via], which a live departure's `viaKey` is matched
+     * against. Null means "TfL published no discriminator for this pattern";
+     * clients must read that as "cannot narrow", never as "no match".
+     */
+    viaKey: string | null;
+    /** "Morden via Bank" — what the branch is called on the map. */
+    label: string;
+    stops: RouteStop[];
 }
 
 /** Display names only — the legacy shape, kept byte-identical for existing clients. */
@@ -435,14 +477,14 @@ export class LineController {
             // so that grouped bus stops show the full set of routes at that location.
             if (station && !station.includes('{station}')) {
                 console.log(`DATA: 🔍 Filtering lines for station ${station} (Discovery Mode) using Cache`);
-                const repr = DataCacheService.getAllStations().find(s => s.naptanId === station || (s as any).id === station);
+                // Accepts the HUB id the client now stores as well as any
+                // member naptan. Matching on naptanId alone stopped working the
+                // moment clients held a StopArea id: no station document has
+                // one as its own naptan, so this found nothing and fell through
+                // to "every line on the mode".
+                const siblings = DataCacheService.stationsInGroup(station);
 
-                if (repr) {
-                    const groupKey = DataCacheService.getGroupKey(repr);
-                    const siblings = DataCacheService.getAllStations().filter(
-                        s => DataCacheService.getGroupKey(s) === groupKey
-                    );
-
+                if (siblings.length > 0) {
                     const lineIdsAtStation = new Set<string>();
                     siblings.forEach(sib => {
                         const modeData = sib.modes?.[mode];
@@ -653,7 +695,7 @@ export class LineController {
                     });
 
                     const directions = Object.entries(dirMap).map(([direction, destinations]) => ({ direction, destinations }));
-                    const { sequences, stationNames } = await fetchSequences(lineId, directions);
+                    const { sequences, sequenceVias, stationNames } = await fetchSequences(lineId, directions);
 
                     const lineInfo = DataCacheService.getLinesByMode(mode || '').find(l => l.id === lineId);
                     const lineName = lineInfo?.name || (lineId.charAt(0).toUpperCase() + lineId.slice(1));
@@ -665,6 +707,7 @@ export class LineController {
                         modeName: resolvedMode,
                         directions,
                         sequences,
+                        sequenceVias,
                         stationNames,
                         lastUpdatedTime: nowMs()
                     };
@@ -698,11 +741,16 @@ export class LineController {
             // Inline-enrich cached routes missing sequences or sparse stationNames
             // (must be synchronous so the first request already has next-stop data)
             const nameCount = Object.keys(routeData.stationNames || {}).length;
-            if ((!routeData.sequences || nameCount < 10) && routeData.directions?.length > 0) {
+            // `!routeData.sequenceVias` is what migrates the cache: every route
+            // stored before branch labels existed re-enriches once, on its first
+            // request, and is written back with them. Without it a warm route
+            // would serve unlabelled branches until its next natural refresh,
+            // which for a route document is effectively never.
+            if ((!routeData.sequences || !routeData.sequenceVias || nameCount < 10) && routeData.directions?.length > 0) {
                 try {
                     console.log(`DATA: 🔄 Enriching sequences inline for ${lineId} (nameCount=${nameCount})`);
-                    const { sequences, stationNames } = await fetchSequences(lineId, routeData.directions);
-                    routeData = { ...routeData, sequences, stationNames, lastUpdatedTime: nowMs() };
+                    const { sequences, sequenceVias, stationNames } = await fetchSequences(lineId, routeData.directions);
+                    routeData = { ...routeData, sequences, sequenceVias, stationNames, lastUpdatedTime: nowMs() };
                     DataCacheService.setRoute(lineId, routeData);
                     // Persist to Firestore master only (async); the listener syncs
                     // SQLite + memory. Don't block the response.
@@ -720,16 +768,14 @@ export class LineController {
             // Resolve the station's individual stop IDs (grouped station → sibling naptanIds)
             const stationIds = new Set<string>();
             if (station) {
-                const repr = DataCacheService.getAllStations().find(
-                    (s: any) => s.naptanId === station || s.id === station
-                );
-                if (repr) {
-                    const groupKey = DataCacheService.getGroupKey(repr);
-                    DataCacheService.getAllStations()
-                        .filter((s: any) => DataCacheService.getGroupKey(s) === groupKey)
-                        .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
-                }
-                stationIds.add(station); // always include the representative itself
+                DataCacheService.stationsInGroup(station)
+                    .forEach((s: any) => { if (s.naptanId) stationIds.add(s.naptanId); });
+                // Include the caller's own id only if it names a real stop. It
+                // used to be added unconditionally as "the representative", and
+                // that is now wrong: the client sends a HUB, and a StopArea id
+                // in a set of fetchable stops would be looked up against mode
+                // metadata no station document has.
+                if (stationIds.size === 0) stationIds.add(station);
             }
 
             // Filter directions to those the station actually serves (mode metadata)
@@ -761,18 +807,23 @@ export class LineController {
                     // "Hammersmith (Dist&Picc Line)" where a prediction says
                     // "Hammersmith"). The name list is derived from these pairs so
                     // the two arrays stay index-aligned.
-                    const runs: { terminusId: string; stops: RouteStop[] }[] = [];
+                    const vias: (string | null)[] = routeData.sequenceVias?.[dir.direction] || [];
+                    const runs: { terminusId: string; stops: RouteStop[]; via: string | null }[] = [];
                     if (station && branches.length > 0) {
-                        for (const branch of branches) {
+                        branches.forEach((branch, bi) => {
                             let idx = -1;
                             for (const sid of stationIds) { idx = branch.indexOf(sid); if (idx >= 0) break; }
                             if (idx >= 0 && idx < branch.length - 1) {
                                 runs.push({
                                     terminusId: branch[branch.length - 1],
                                     stops: stopsFor(branch.slice(idx + 1), names),
+                                    // Index-aligned with `branches` by construction in
+                                    // fetchSequences; `?? null` covers a route cached
+                                    // before the labels were collected.
+                                    via: vias[bi] ?? null,
                                 });
                             }
-                        }
+                        });
                     }
 
                     // Reachable destinations = downstream branch termini. With a
@@ -809,6 +860,96 @@ export class LineController {
                             upcomingStops: stops,
                         };
                     });
+
+                    // SERVICE PATTERNS — every distinct run, none collapsed.
+                    //
+                    // `destChips` above deliberately keeps its old behaviour (one
+                    // per terminus, longest wins) so existing clients see a
+                    // byte-identical `destinations` array. This is the honest
+                    // list beside it: southbound from Camden Town it holds
+                    // Morden-via-Bank, Morden-via-Charing-Cross and Battersea
+                    // where the chips hold two, and the Central line keeps the
+                    // Woodford arm of the Hainault loop instead of deleting
+                    // Chigwell, Grange Hill and Roding Valley with it.
+                    //
+                    // De-duplicated on the RUN, not the terminus: several ordered
+                    // routes reach the same place the same way once you start
+                    // part-way along them (from Kennington, "Battersea ↔ Edgware"
+                    // and "Morden ↔ Edgware via Charing Cross" are the same
+                    // journey), and those are one pattern, not two.
+                    //
+                    // When duplicates disagree about the branch label, the LABELLED
+                    // one wins. TfL reaches the same run by several named routes and
+                    // only some of the names carry a "via": eastbound from Liverpool
+                    // Street, "Ealing Broadway ↔ Hainault" and "West Ruislip ↔
+                    // Hainault via Newbury Park" are the same journey, and taking the
+                    // first would throw the discriminator away. That is not cosmetic —
+                    // an unlabelled Newbury Park pattern lets a "Hainault via
+                    // Woodford" train match a filter on Gants Hill, which it never
+                    // calls at.
+                    const dedupedRuns = new Map<string, typeof runs[number]>();
+                    for (const run of runs) {
+                        const runKey = `${run.terminusId}|${run.stops.map(s => s.id).join('>')}`;
+                        const existing = dedupedRuns.get(runKey);
+                        if (!existing) dedupedRuns.set(runKey, run);
+                        else if (!existing.via && run.via) dedupedRuns.set(runKey, run);
+                    }
+
+                    const patterns: RoutePattern[] = [];
+                    const usedIds = new Set<string>();
+                    for (const run of dedupedRuns.values()) {
+                        const terminusName =
+                            reachableDestinations.find((d: any) => d.id === run.terminusId)?.name
+                            ?? run.stops[run.stops.length - 1]?.name
+                            ?? run.terminusId;
+                        const label = formatDestination(terminusName);
+
+                        // The branch label only applies if the branch is still
+                        // AHEAD of you. TfL names a whole end-to-end route, so a
+                        // run that starts north of the split inherits a "via"
+                        // describing track you have already passed: northbound
+                        // from Camden Town every pattern would read "Edgware via
+                        // Bank", which is meaningless there and would make the
+                        // filter reject perfectly good trains.
+                        //
+                        // Requiring the via to name a stop ON this run is exact,
+                        // and it validates itself — no table of which junction
+                        // belongs to which segment to keep in step with TfL.
+                        // canonicalToken directly: `run.via` is already the bare
+                        // token from the route name, so wrapping it back into
+                        // "via X" only to re-parse it was a round trip through a
+                        // regex for nothing.
+                        const rawViaKey = run.via ? canonicalToken(run.via) : null;
+                        const viaOnRun = rawViaKey !== null
+                            && run.stops.some(s => canonicalToken(s.name) === rawViaKey);
+                        const viaKey = viaOnRun ? rawViaKey : null;
+                        const via = viaOnRun ? run.via : null;
+
+                        // Stable and unique. Terminus alone identifies most
+                        // patterns; the branch separates the rest. The counter is
+                        // the last resort for the case TfL gives us nothing to
+                        // tell apart — four Metropolitan runs to Aldgate that
+                        // differ only in whether they call at Willesden Green.
+                        // They must still get distinct ids, or the client keys two
+                        // rows the same and silently drops one.
+                        let id = viaKey ? `${run.terminusId}:${viaKey}` : run.terminusId;
+                        if (usedIds.has(id)) {
+                            let n = 2;
+                            while (usedIds.has(`${id}#${n}`)) n++;
+                            id = `${id}#${n}`;
+                        }
+                        usedIds.add(id);
+
+                        patterns.push({
+                            id,
+                            terminusId: run.terminusId,
+                            terminusName: label,
+                            via,
+                            viaKey,
+                            label: via ? `${label} via ${via}` : label,
+                            stops: run.stops,
+                        });
+                    }
 
                     // DEFAULT timeline = the common trunk shared by ALL reachable
                     // branches. One branch → the whole branch; a hard junction →
@@ -849,6 +990,11 @@ export class LineController {
                         label,
                         secondaryLabel: commonStations.join(' · '),
                         destinations: destChips,          // each chip has its own branch stops
+                        // ADDITIVE, and the one a branch-aware client should read.
+                        // `destinations` is kept exactly as it was so the Android
+                        // app — which renders chips from it and knows nothing about
+                        // patterns — is untouched by this change.
+                        patterns,
                         upcomingStations: commonStations, // default timeline = shared trunk
                         // ADDITIVE: the trunk with naptan ids, index-aligned with
                         // `upcomingStations`.
