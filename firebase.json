@@ -1,0 +1,6 @@
+{
+  "//": "Points the Firebase CLI at the index definitions. There is no hosting/functions config here on purpose — this repo deploys its backend by rsync+pm2 (staging) and GitHub Actions (production), and Firestore indexes are the only thing the Firebase CLI is used for.",
+  "firestore": {
+    "indexes": "firestore.indexes.json"
+  }
+}

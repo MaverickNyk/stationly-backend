@@ -149,7 +149,7 @@ export interface SupportMoneyStatusView {
 | **Tier 1 (`t4`)** | **£4.00** | `SUPPORT_MONEY_PAYMENT_URL_T4` | 1 day live · Covers live departures across the network |
 | **Tier 2 (`t8`)** | **£8.00** (Default) | `SUPPORT_MONEY_PAYMENT_URL_T8` | 3 days live · Supports stops without physical departure boards |
 | **Tier 3 (`t12`)** | **£12.00** | `SUPPORT_MONEY_PAYMENT_URL_T12` | 1 week live · Covers full servers and live data feeds |
-| **Custom** | **£1.00 – £500.00** | `SUPPORT_MONEY_PAYMENT_URL_ONEOFF` | Choose your own amount (Preset: £8.00) |
+| **Custom** | **£1.00 – £500.00** | `SUPPORT_MONEY_PAYMENT_URL_ONEOFF` | Choose your own amount (Preset: £15.00) |
 
 ### 5.2 Redirect & Webhook URLs
 - **Stripe Success Redirect URL:**
@@ -173,7 +173,7 @@ export interface SupportMoneyStatusView {
    - **Tier £4:** Fixed price `£4.00` one-off $\rightarrow$ Copy live URL to `SUPPORT_MONEY_PAYMENT_URL_T4`
    - **Tier £8:** Fixed price `£8.00` one-off $\rightarrow$ Copy live URL to `SUPPORT_MONEY_PAYMENT_URL_T8`
    - **Tier £12:** Fixed price `£12.00` one-off $\rightarrow$ Copy live URL to `SUPPORT_MONEY_PAYMENT_URL_T12`
-   - **Custom:** "Customer chooses what to pay" (£1.00 min, £500 max, £8.00 preset) $\rightarrow$ Copy live URL to `SUPPORT_MONEY_PAYMENT_URL_ONEOFF`
+   - **Custom:** "Customer chooses what to pay" (£1.00 min, £500 max, £15.00 preset) $\rightarrow$ Copy live URL to `SUPPORT_MONEY_PAYMENT_URL_ONEOFF`
 2. **Configure Success Redirect URL on ALL 4 Links:**
    Under **After payment** $\rightarrow$ **Don't show confirmation page (Redirect to your website)**:
    ```text

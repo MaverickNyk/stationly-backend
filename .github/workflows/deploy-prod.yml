@@ -53,6 +53,20 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           STATIONLY_ADMIN_KEY: ${{ secrets.STATIONLY_ADMIN_KEY }}
           LIVESTREAM_INGEST_SECRET: ${{ secrets.LIVESTREAM_INGEST_SECRET }}
+          # Support / contributions (Stripe). `.env.remote` has always listed these,
+          # but this block never exported them — so they resolved empty and could
+          # NEVER reach the box no matter what repository secrets existed.
+          # Safe to declare before the secrets are set: an unset secret substitutes
+          # an empty string, the assembly loop below logs a warning, and the value
+          # from .env.defaults is kept (SUPPORT_MONEY_ENABLED=false).
+          SUPPORT_MONEY_ENABLED: ${{ secrets.SUPPORT_MONEY_ENABLED }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          SUPPORT_MONEY_PAYMENT_URL_T4: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T4 }}
+          SUPPORT_MONEY_PAYMENT_URL_T8: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T8 }}
+          SUPPORT_MONEY_PAYMENT_URL_T12: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_T12 }}
+          SUPPORT_MONEY_PAYMENT_URL_ONEOFF: ${{ secrets.SUPPORT_MONEY_PAYMENT_URL_ONEOFF }}
+          SUPPORT_MONEY_MIN_BOARDS: ${{ secrets.SUPPORT_MONEY_MIN_BOARDS }}
+          SUPPORT_MONEY_MIN_DAYS: ${{ secrets.SUPPORT_MONEY_MIN_DAYS }}
         run: |
           cp .env.defaults .env.prod
           while IFS='=' read -r key value || [[ -n "$key" ]]; do

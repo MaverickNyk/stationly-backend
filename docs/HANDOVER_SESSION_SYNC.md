@@ -63,6 +63,12 @@ because "signs out every user" is the least accurate part of that sentence:**
    returns without POSTing. Push stays dead until the FCM token rotates or the
    user signs out and back in.
 
+> **Update 2026-09-02: `sweep` is now disabled in code as well** (`SWEEP_ENABLED
+> = false`, task `A10`), for a *separate* reason — see §3.1. That removes one of
+> the two jobs described here, but changes nothing below: `reconcile`'s
+> true→false heal performs the same release, and the ordering is what keeps it
+> safe. Do not read "sweep is off" as "the hazard is handled".
+
 **The ordering that prevents it is in §6 and is not optional.** Backfill first,
 verify, then the crontab. `HEAL_TRUE_TO_FALSE` ships `false` for the same
 reason. Step 4's `check_session_state.cjs` is the gate that catches an account
@@ -88,7 +94,7 @@ Firestore reads. Five phases, all shipped to staging:
 
 | Phase | What it does | Staging | Production |
 |---|---|---|---|
-| **P0** | nightly `sweep` + `reconcile` crons — the safety net | ✅ scheduled, firing | ❌ |
+| **P0** | nightly `reconcile` cron — the safety net (`sweep` disabled, `A10`) | ✅ scheduled, firing | ❌ |
 | **P1** | `stateRev` — an app open on an unchanged account costs **0** reads | ✅ | ❌ |
 | **P2** | devices/sessions merged into `users/{uid}/devices/{deviceId}` | ✅ | ❌ |
 | **P3** | client consolidation (no backend work) | ✅ | n/a |
@@ -143,11 +149,22 @@ user_watch(uid, kind, id)       which accounts watch which stations/lines
 ### 3.1 P0 — the maintenance crons
 
 Two nightly jobs behind `internalRoutes.ts`'s loopback + constant-time-secret
-guard, driven by the host's crontab through `.scripts/maintenance_cron.sh`.
+guard, driven by the host's crontab through `ops/maintenance_cron.sh`.
 
 - **`sweep`** releases subscription holds on accounts whose EVERY device is past
   the 90-day TTL. Predicate is **all** stale, not any: an account with one live
   device is somebody's working phone.
+
+  > ⚠️ **DISABLED 2026-09-02 — `SWEEP_ENABLED = false`, and its cron line is
+  > commented out.** The TTL reads `lastSeen`, which only `startSession`
+  > refreshes, which only `POST /user/sync/profile` calls, which the shipped
+  > Android build sends **on explicit sign-in only, never at launch**. So the
+  > predicate currently means "has not SIGNED IN for 90 days" and would release
+  > users who open the app daily — silently, with a stale board and dead push,
+  > and no self-heal. This is NOT the cutover hazard boxed at the top of this
+  > file: that one the backfill closes, this one it does not. Task `A10` of
+  > `docs/PROD_CUTOVER_PLAN.md`; it comes back at `G5`, after `lastSeen`
+  > measures app use rather than sign-in.
 - **`reconcile`** recomputes `metadata/subscribed_stations` from live accounts.
 
 **Found on staging:** the registry held **104 keys against a correct 13**. The
@@ -358,17 +375,22 @@ Verified, not assumed:
 
 Do these in order. Steps 1–5 are reversible. Step 6 is not.
 
-### Step 0 — the `.scripts/` blocker (do this first)
+### Step 0 — the `.scripts/` blocker — ✅ DONE 2026-09-01
 
-`.gitignore:62` ignores `.scripts/`. **Zero files under it are tracked.**
-Staging does not care because `staging_deploy.sh` rsyncs the working tree.
-**Production builds from `actions/checkout`, which contains only tracked
-files** — so `maintenance_cron.sh` and `maintenance.crontab` would never arrive
-and a crontab installed there would point at a file that never exists.
+_Recorded because the reasoning still matters; do not redo it._
 
-Move both to a tracked `ops/` directory, fix the absolute paths inside
-`maintenance.crontab`, then **redeploy staging and reinstall its crontab** so
-the arrangement production will use is the one that has been proven.
+`.gitignore:62` ignored `.scripts/`, and **zero files under it were tracked.**
+Staging never noticed, because `staging_deploy.sh` rsyncs the working tree and
+copies untracked files. **Production builds from `actions/checkout`, which
+contains only tracked files** — so `maintenance_cron.sh` and
+`maintenance.crontab` would never have arrived, and a crontab installed there
+would have pointed at a file that never exists.
+
+Both now live in a tracked `ops/`, with the absolute paths inside
+`maintenance.crontab` updated to match. The **staging redeploy from a clean
+checkout, and the crontab reinstall at the new path, are still outstanding** —
+they are tasks B3/B4 of `docs/PROD_CUTOVER_PLAN.md`, which supersedes this
+runbook for execution order.
 
 ### Step 1 — survey production, read-only
 
@@ -381,8 +403,16 @@ node src/scripts/check_drift_reconcile.cjs --before --key=$PROD_KEY
 node src/scripts/check_session_sweep.cjs   --before --key=$PROD_KEY
 ```
 
-**Read the sweep prediction carefully.** It currently reads the OLD store, so it
-tells you the truth about today. Note the account count — you will compare
+**Read the sweep prediction carefully — and note this text was wrong until
+2026-09-01.** It used to say the probe reads the OLD store. It does not any
+more: `check_session_sweep.cjs` was fixed to read `users/{uid}/devices` — **the
+store the sweep actually reads** — and to count legacy `users.sessions` entries
+separately as a printed note.
+
+So on production, BEFORE the backfill, it will correctly predict that **every
+account would be released**. That is the true answer for the state the database
+is in, not a probe artefact, and it is exactly why the backfill must precede any
+release job. Do not wave it through. Note the account count — you will compare
 against it later.
 
 **Confirm the root `devices` collection is empty.** `check_device_indexes.cjs`
@@ -595,5 +625,7 @@ host. They are developer tools that reach Firestore directly with an explicit
   push audience and fan-out log, not by watching B apply it.
 - **`SessionLifecycle` / `SyncEngine`** (P3) — deliberately not built. See the
   client handover.
-- **The `.scripts/` → `ops/` move.** Step 0 above.
-- **`HEAL_TRUE_TO_FALSE` is committed `true`.** Flip it before merging to prod.
+- ~~**The `.scripts/` → `ops/` move.**~~ ✅ done 2026-09-01, Step 0 above.
+- ~~**`HEAL_TRUE_TO_FALSE` is committed `true`.**~~ ✅ flipped to `false`
+  2026-09-01. It is re-enabled at task G2 of `docs/PROD_CUTOVER_PLAN.md`, after
+  the legacy stores are deleted — not before.

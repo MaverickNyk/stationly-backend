@@ -1,0 +1,57 @@
+# ── Stationly session maintenance ────────────────────────────────────────────
+# Install with:  crontab ~/stationly-backend/ops/maintenance.crontab
+# Inspect with:  crontab -l
+#
+# Two nightly jobs. Spec: stationly-backend/docs/HANDOVER_SESSION_SYNC.md §3.1;
+# design rationale: StationlyUI/docs/DESIGN_SESSIONS_AND_SYNC.md §9.
+#
+#   sweep     DISABLED, and its line below is commented out. It releases the
+#             subscription holds held by accounts whose every session has aged
+#             past the 90-day TTL — but that TTL is measured on `lastSeen`,
+#             which the shipped Android build only refreshes on an explicit
+#             sign-in, so it currently reads "has not SIGNED IN for 90 days"
+#             and would release users who open the app every day. The job is
+#             also gated in code by SWEEP_ENABLED in
+#             src/services/sessionMaintenanceService.ts — read that comment
+#             before uncommenting anything here; the cron line alone will not
+#             turn it back on.
+#   reconcile recomputes station_subscriptions from the live accounts and
+#             repairs the drift left behind when a post-transaction registry
+#             write is lost to a process restart. It ALSO rebuilds the
+#             `user_watch` push-audience index on the same pass — that table has
+#             no cache-miss path (an empty one is indistinguishable from "nobody
+#             watches this line"), so a nightly repair is the only thing standing
+#             between a lost SQLite file and a silently dead disruption push.
+#
+# Both are idempotent. A retry, an overlapping run, and a manual invocation
+# during an incident are all harmless.
+#
+# ## Why a crontab and not a timer inside the app
+# staging starts the backend with `pm2 start -i max`, i.e. cluster mode. An
+# in-process nightly timer would fire once per worker, and a registry recompute
+# racing itself across N workers is exactly the contention the transactions
+# exist to serialise. One crontab line fires once no matter how many workers
+# are listening. (Prod runs `-i 1` today, but the reasoning should not depend
+# on that staying true.)
+#
+# ## Why the wrapper rather than a bare curl
+# It keeps the secret out of this file and out of `ps`; see the header of
+# maintenance_cron.sh. Rotating LIVESTREAM_INGEST_SECRET needs no edit here.
+#
+# ## Times are UTC
+# The host runs Etc/UTC, so these fire at 04:00 / 04:20 London during BST and
+# 03:00 / 03:20 during GMT. Both sit inside the overnight quiet window either
+# way, so the drift is not worth a timezone dependency.
+#
+# The 20-minute gap is headroom for reconcile's "let Pass 1's own writes
+# settle" margin plus a slow sweep. It is generous, not measured. Reconcile
+# keeps its 03:20 slot while sweep is disabled so the schedule does not have to
+# be re-proved when sweep returns.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# DISABLED — see the sweep note in the header. Do not uncomment without also
+# flipping SWEEP_ENABLED, which would otherwise make this a nightly no-op.
+# 0  3 * * *  /home/ubuntu/stationly-backend/ops/maintenance_cron.sh sweep
+20 3 * * *  /home/ubuntu/stationly-backend/ops/maintenance_cron.sh reconcile

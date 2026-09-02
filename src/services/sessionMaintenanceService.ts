@@ -52,19 +52,79 @@ import { SubscriptionService } from './subscriptionService';
  * young backfill that turns a missing row into a real sign-out rather than
  * repairing anything.
  *
- * ENABLED 2026-08-25, once the preconditions were actually met rather than
- * assumed:
+ * The preconditions for turning it on, which are per-ENVIRONMENT and not global:
  *   - `check_device_backfill.cjs` PASS — 0 missing rows, 0 token losses
  *   - the legacy stores DELETED, so there is no stale source left to ratify
  *   - the root `devices` collection reads 0, so no collection-group query can
  *     mistake a retired row for a live session
  *   - sign-in, sign-out and the account switch verified on a real device
  *
- * Account deletion is the one verify-list item still outstanding; it does not
- * gate this, because deletion removes the account outright and never leaves a
- * `loggedIn: true` document for this heal to act on.
+ * Account deletion is the one verify-list item that does NOT gate this, because
+ * deletion removes the account outright and never leaves a `loggedIn: true`
+ * document for this heal to act on.
+ *
+ * ## History, and why this is `false` again
+ * ENABLED 2026-08-25 once staging met all four. Turned back OFF 2026-09-01 for
+ * the production cutover, where **none** of them hold: production has no
+ * `users/{uid}/devices` subcollection at all yet, so `liveByUid` returns false
+ * for every account and this heal would release the entire platform in one
+ * night — silently, exit 0, `loggedIn` being a server flag no client reads.
+ *
+ * ⚠️ This is a compile-time constant with NO env override, so the value in the
+ * branch is the value production runs and it cannot be changed from the box.
+ * It must stay `false` until the legacy stores are actually gone.
+ * Re-enable at task G2 of `docs/PROD_CUTOVER_PLAN.md`, not before.
+ *
+ * Note this gates the RECONCILE only. `sweep` performs the same release and is
+ * gated by nothing but the crontab not being installed — see plan task F3.
  */
-const HEAL_TRUE_TO_FALSE = true;
+const HEAL_TRUE_TO_FALSE = false;
+
+/**
+ * Whether [sweep] may release an account it believes has no live device rows.
+ *
+ * OFF. The job's release is correct; the CLOCK it releases against is not yet
+ * measuring what the job's own comment says it measures.
+ *
+ * `isRowLive` tests `lastSeen`, which is refreshed (at most once a day, see
+ * `UserService.SESSION_REFRESH_MS`) only by `startSession` — whose one live
+ * caller is `POST /user/sync/profile`. The shipped Android build calls that on
+ * EXPLICIT SIGN-IN ONLY, never at launch. So on the fleet we actually have,
+ * `lastSeen` records the last time a user signed in, not the last time they
+ * opened the app, and the 90-day predicate reads "has not signed in for 90
+ * days" — which a daily user who signed in once satisfies.
+ *
+ * Releasing them is silent and does not self-heal: `loggedIn` is a server flag
+ * no client reads, so nobody is signed out and nothing looks wrong, while their
+ * stations leave `metadata/subscribed_stations` (the Syncer stops polling, the
+ * board goes stale, and Android only re-syncs on an explicit sign-in) and
+ * `fcm_tokens` is purged on the last device out (push dies, and Android's
+ * `FcmTokenRegistrar` short-circuits on a SharedPreferences watermark nothing
+ * server-side can clear).
+ *
+ * ## Why gate it here rather than just leaving it out of the crontab
+ * Not installing a cron line is a fact about one box that no reader of this
+ * file can see, and `run_maintenance.cjs` and the `/internal` route both reach
+ * this function without cron. A compile-time constant is the same mechanism
+ * [HEAL_TRUE_TO_FALSE] already uses for the same class of danger, and it makes
+ * the value in the branch the value every environment runs.
+ *
+ * ## What has to be true before this comes back
+ *   - `lastSeen` is refreshed by app USE, not only by sign-in — either the
+ *     client calls `syncProfile` at cold start, or a cheap touch endpoint
+ *     exists. Re-confirm the Android call site in `StationlyUI` at that point
+ *     rather than trusting this comment.
+ *   - a sweep dry run on production names accounts you can explain one by one.
+ *
+ * Nothing else in the maintenance pair depends on this. `reconcile` keeps
+ * running and keeps doing the repair that motivated the crons — the registry
+ * drift a lost post-transaction write leaves behind (104 keys against a correct
+ * 13, on staging). Without [sweep] the registry merely keeps over-counting
+ * abandoned accounts, which is the direction the whole design deliberately
+ * errs in: over-counting polls a station nobody needs, under-counting takes a
+ * live station from someone who does.
+ */
+const SWEEP_ENABLED = false;
 
 export class SessionMaintenanceService {
 
@@ -196,6 +256,15 @@ export class SessionMaintenanceService {
         const released: string[] = [];
         let alreadyClean = 0;
         let errors = 0;
+
+        // See [SWEEP_ENABLED]. Returns the normal shape with an empty
+        // `released` rather than throwing: the crontab wrapper logs whatever
+        // comes back, and a disabled job that reports a clean run is easier to
+        // read at 3am than one that reports a failure.
+        if (!SWEEP_ENABLED) {
+            console.log('MAINTENANCE: 🧹 sweep SKIPPED — SWEEP_ENABLED is off');
+            return { scanned: 0, released, alreadyClean: 0, errors: 0, durationMs: 0 };
+        }
 
         // `.select()` is a bandwidth economy, not a read-cost one — Firestore
         // bills per document matched however few fields come back. It spares
