@@ -19,65 +19,83 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  B1   PR dev_13Jul -> main                                ║
-║                 Phase A is COMMITTED (d08f3ac) and pushed                ║
+║  RESUME HERE ▸  B5   two clean scheduled nights — WALL CLOCK, just wait  ║
+║                 Then B6, C9, C10. Those four are ALL that gate D1.       ║
+║                                                                          ║
+║  PR #131 (release_staging -> release_prod) is OPEN and MERGEABLE.        ║
+║  Merging it IS D1, the production deploy. DO NOT MERGE until the four    ║
+║  tasks above are done. It will look ready long before it is.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-02 (b)
-STATE:        PHASE A IS COMMITTED AND PUSHED — d08f3ac on dev_13Jul.
-              The working tree is clean. Phase B can start.
-              C0, C1, C3-C8, C11 closed. THE INDEXES ARE LIVE ON PRODUCTION
-              and C8's gate has PASSED — the hard blocker on D1 is gone.
-              All 5 core secrets verified present; all 5 Stripe secrets set;
-              both repos carry LIVESTREAM_INGEST_SECRET.
-              Phase C is DONE except C9 (survey) and C10 (process manager),
-              both of which need production access.
-              NOTHING IS COMMITTED. All repo work is in the working tree.
-BLOCKED ON:   nothing.
+UPDATED:      2026-09-02 (d)
+COUNT:        24 tasks done, 23 open.
+
+COMMITTED:    Everything. The working tree is clean. dev_13Jul == main ==
+              release_staging at c9b5285. Phase A is d08f3ac.
+
+PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
+              data written, no document read outside read-only probes.
+              The app on the box is the same build it was running on 09-01.
+
+BLOCKED ON:   nothing a person has to decide. B5 is the only wait, and it is
+              the calendar.
 ```
 
 **Decisions pending — do not lose these between sessions**
 
-| # | Decision | Default if unanswered |
+| # | Decision | State |
 |---|---|---|
-| 1 | **A8** — commit Phase A? | hold; nothing is committed |
-| 2 | **A9** — export `HEAL_TRUE_TO_FALSE` and pin it with a test? | not done |
-| 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED 2026-09-02: NO, not now.** See `C11` — carry the 4 forward as-is, unblocking `C0` |
-| 4 | Run the read-only production survey (`C9`) now? | not run |
+| 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
+| 2 | **A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test | ⬜ **STILL OPEN.** Decide before `G2`. Nothing asserts either value today, which is exactly how the heal flag reached this branch set to `true` |
+| 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
+| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ⬜ Still not run. The owner asked that agents not connect to production without being asked — **ask first** |
 
 **Phase checklist**
 
-- [x] **A** — Repo changes on `dev_13Jul` — A1–A8, A10 ✅ done and pushed · A9 still undecided
-- [ ] **B** — Staging re-proof
-- [~] **C** — Production prerequisites — C0–C8, C11 ✅ done · **only C9, C10 outstanding**
-- [ ] **D** — The deploy window
-- [ ] **E** — Soak
+- [x] **A** — Repo changes on `dev_13Jul` — A1–A8, A10 ✅ committed and pushed · A9 still undecided
+- [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 (wall clock), B6 outstanding**
+- [~] **C** — Production prerequisites — C0–C8, C11 ✅ · **C9, C10 outstanding (need prod access)**
+- [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
+- [ ] **E** — Soak — days, not hours
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
 - [ ] **G** — Legacy cleanup and finish
 
-> **Why C6 is done before Phase B.** It turned out to be verify-only: the live
-> nginx already has everything this release needs. Closing it early costs
-> nothing and removes it from the deploy-day critical path. No other Phase C
-> task may be pulled forward past `C8`, which is a hard gate on `D1`.
-
-**What is currently uncommitted in the working tree**
-
-```
-M  .github/workflows/deploy-prod.yml          A6 — 8 Stripe/support keys exported
-M  .gitignore                                 A3 — index JSONs allowlisted
-M  docs/HANDOVER_SESSION_SYNC.md              A4 — 4 corrections
-M  server-config/nginx.conf                   A5 — replaced with a live mirror
-M  src/services/sessionMaintenanceService.ts  A1 — HEAL_TRUE_TO_FALSE = false
-                                              A10 — SWEEP_ENABLED = false + early return
-A  ops/maintenance.crontab                    A2 — moved, paths fixed
-                                              A10 — sweep cron line commented out
-A  ops/maintenance_cron.sh                    A2 — moved, mode 100755
-?? docs/PROD_CUTOVER_PLAN.md                  this file
-?? firebase.json                              A3 — now visible to git
-?? firestore.indexes.json                     A3 — now visible to git
-```
-
 ---
+
+### If you are a new agent, read this before anything else
+
+**1. The one thing that can go badly wrong.** Production has only Android users,
+every account has `loggedIn: true`, and `users/{uid}/devices` does not exist there
+yet. Any job that reads "no live device row" as "release this account" will release
+**every account on the platform in one night, silently, exit 0**. Nobody is signed
+out — `loggedIn` is a server flag no client reads — but their stations leave
+`metadata/subscribed_stations` (Syncer stops polling, boards go stale, and Android
+only re-syncs on explicit sign-in) and `fcm_tokens` is purged (push dies and does
+not recover). Two jobs do this. Both are off. Keep them off until `G2`/`G5`.
+
+**2. Backfill before any release job.** That ordering is the whole plan. `D4`–`D6`
+before `F2`–`F4`, never the reverse.
+
+**3. Owner's working preferences, learned this session.**
+   - **Do not connect to production without being asked.** Staging is fine.
+   - Every probe prints its project id on line 1. **Read it every time.** Without
+     `--key=` they fall back to the staging key. Staging is `mindthetimefcm`;
+     production is `stationly-prod`.
+   - The owner's repo stays on `dev_13Jul`. `B3` clones to a throwaway directory
+     rather than switching branches — switching would defeat the test.
+
+**4. What "done" means here.** Every ☑ in this file was verified by running
+something and reading the output, not by reasoning that it should work. Several
+tasks turned out to be wrong when actually run (`A5`, `B3`, `F1`). Keep that habit.
+
+**Current repo state — nothing is uncommitted**
+
+```
+branch          dev_13Jul, clean
+dev_13Jul       == main == release_staging  @ c9b5285
+phase A         d08f3ac
+open PR         #131  release_staging -> release_prod   ← this is D1. Do not merge.
+```
 
 ## 0. How to run this across sessions
 
@@ -1367,6 +1385,57 @@ NOT DONE: B3 is still open. staging_deploy.sh rsyncs the WORKING TREE, so this
           place) also still open — the manual run proves the script and the path,
           not cron's PATH/HOME/exec-bit.
 Next:     A8 (needs approval), then B1-B3.
+
+### 2026-09-02 (d) — Phase A committed; Phase B through B4; Phase C closed out
+Did:      C0  Secrets audit. All 5 core secrets exist as repository secrets AND
+              are populated on the box. LIVESTREAM_INGEST_SECRET has existed
+              since 2026-08-02 — it was the one this task most expected to be
+              box-only. Fingerprints recorded in C0 for the post-D1 diff.
+              Read via ONE read-only SSH; the owner then asked that agents not
+              connect to production without being asked. Honour that.
+          C1/C2  ingest secret present in both repos (C2 confirmed by owner).
+          C3/C4/C5  Stripe live-mode links + webhook endpoint created by the
+              owner; all 5 secrets verified by `gh secret list`.
+          A8  COMMITTED d08f3ac and pushed. 12 files, +1897/-150.
+          B1/B2  owner merged dev_13Jul -> main (#129) -> release_staging (#130).
+              PR #131 (release_staging -> release_prod) now open. That is D1.
+          B3  Clean-checkout deploy PASSED. See the task for the full evidence.
+          B4  Crontab reinstalled at ops/; cron canary fired 3x a minute apart.
+
+THE POINT OF B3, PROVEN: ops/ and both index JSONs ARE in the committed tree,
+          and maintenance_cron.sh keeps mode 755 through git -> clone -> rsync
+          -> box. That is the A2 exec-bit risk closed with evidence rather than
+          reasoning. A working-tree deploy could never have shown this.
+
+FOUND BY RUNNING IT, not by reading it:
+          1. B3's steps were incomplete — a fresh clone has no node_modules, so
+             the first attempt died at `tsc: command not found`. It aborted
+             BEFORE rsync, so the box was untouched. `npm ci` added to the task.
+          2. staging_deploy.sh ECHOES EVERY SECRET IN PLAINTEXT as
+             "Writing override: <KEY>=<value>" — TFL_APP_KEY, RESEND_API_KEY,
+             STATIONLY_ADMIN_KEY, LIVESTREAM_INGEST_SECRET included. They land
+             in terminal scrollback on every deploy anyone has ever run. Not
+             fixed; recorded. Delete redirected logs.
+          3. FALSE ALARM worth recording so nobody re-raises it: the tree diff
+             showed `public/icons/lines/` present locally and absent from the
+             clean checkout, which looks exactly like the .scripts/ bug. It is
+             NOT. server.ts:92 generates line icons on first hit and caches them
+             to that directory — it is a RUNTIME CACHE, correctly gitignored,
+             and production already serves mildmay.png at 200 because it
+             regenerated there on demand. Check before reporting.
+
+Verified end to end on the clean-deployed staging build:
+          .env 23 keys unchanged; all 16 overrides written, no warnings;
+          support-money-config serves the 4 sandbox links correctly mapped with
+          ?client_reference_id={uid}; webhook unsigned POST -> 400 NOT 503
+          (the distinction that proves the secret reached the box);
+          return page 200 -> stationly-staging://support-money/thanks;
+          reconcile ok / sweep SKIPPED from the ops/ path.
+
+State:    Working tree CLEAN. Everything committed and pushed.
+          Production still has ONLY the two indexes. No code, no data.
+Next:     B5 (wall clock — tonight's 03:20 and tomorrow's), then B6, C9, C10.
+          Those four are all that gate D1 / PR #131.
 ```
 
 ---
