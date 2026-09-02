@@ -19,13 +19,13 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  A8   commit Phase A   ⚠️ NEEDS USER APPROVAL             ║
-║                 then C9/C10, then Phase B (staging re-proof)             ║
+║  RESUME HERE ▸  B1   PR dev_13Jul -> main                                ║
+║                 Phase A is COMMITTED (d08f3ac) and pushed                ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 UPDATED:      2026-09-02 (b)
-STATE:        Phase A complete and verified EXCEPT the commit.
-              A10 (sweep disabled) landed 2026-09-02 and is part of the A8 commit.
+STATE:        PHASE A IS COMMITTED AND PUSHED — d08f3ac on dev_13Jul.
+              The working tree is clean. Phase B can start.
               C0, C1, C3-C8, C11 closed. THE INDEXES ARE LIVE ON PRODUCTION
               and C8's gate has PASSED — the hard blocker on D1 is gone.
               All 5 core secrets verified present; all 5 Stripe secrets set;
@@ -33,7 +33,7 @@ STATE:        Phase A complete and verified EXCEPT the commit.
               Phase C is DONE except C9 (survey) and C10 (process manager),
               both of which need production access.
               NOTHING IS COMMITTED. All repo work is in the working tree.
-BLOCKED ON:   user approval for A8. Nothing else is blocked.
+BLOCKED ON:   nothing.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -47,7 +47,7 @@ BLOCKED ON:   user approval for A8. Nothing else is blocked.
 
 **Phase checklist**
 
-- [~] **A** — Repo changes on `dev_13Jul` — A1–A7, A10 ✅ verified · A8 pending approval · A9 undecided
+- [x] **A** — Repo changes on `dev_13Jul` — A1–A8, A10 ✅ done and pushed · A9 still undecided
 - [ ] **B** — Staging re-proof
 - [~] **C** — Production prerequisites — C0–C8, C11 ✅ done · **only C9, C10 outstanding**
 - [ ] **D** — The deploy window
@@ -287,11 +287,16 @@ npx tsc --noEmit          # must be silent
 npm test                  # 210/210 at the time of writing
 ```
 
-### ☐ A8 — Commit
+### ☑ A8 — Commit — DONE 2026-09-02
+
+`d08f3ac` on `dev_13Jul`, pushed to origin. 12 files, +1897/-150.
 
 ```
 chore(cutover): phase A — prod-safety flags, ops/ move, tracked index config
 ```
+
+⛔ GATE A satisfied: tsc silent, 210/210, `git ls-files -s ops/` shows
+`maintenance_cron.sh` at mode 100755, and both index JSONs are tracked.
 
 ### ☐ A9 — PROPOSED, decision needed: pin the heal flag with a test
 
