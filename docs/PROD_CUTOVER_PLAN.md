@@ -384,7 +384,42 @@ This deploys **nothing**. There is no staging workflow — `release_staging` is 
 promotion gate. Merging it opens the `release_staging` → `release_prod` PR
 automatically: **leave that one sitting unmerged until GATE C.**
 
-### ☐ B3 — Deploy staging from a clean checkout
+### ☑ B3 — Deploy staging from a clean checkout — PASSED 2026-09-02
+
+Clone of `release_staging` at `c9b5285`, deployed from a throwaway directory. The
+working repo was left on `dev_13Jul` and never switched — switching it would defeat the
+test, since rsync would still be copying local files.
+
+**What it proved, which a working-tree deploy cannot:**
+
+```
+ops/ in the clean checkout          PRESENT, maintenance_cron.sh mode 755
+firebase.json, firestore.indexes    PRESENT (A3 works)
+exec bit through git->clone->rsync  SURVIVED — the A2 risk, closed
+.env on the box after deploy        23 keys, unchanged
+all 16 overrides written            no warnings
+support-money-config                4 new sandbox links, correct mapping
+webhook unsigned POST               400 (not 503) — secret reached the box
+reconcile / sweep from ops/ path    ok / SKIPPED, both at 19:49:40Z
+```
+
+⛔ **STEP MISSING FROM THIS TASK, found by running it.** The first attempt died at
+`sh: tsc: command not found` — a fresh clone has no `node_modules` and the script assumes
+an existing tree. **Run `npm ci` in the clone before `staging_deploy.sh`.** It aborted at
+the build, before rsync, so the box was never touched; `set -e` plus the explicit
+"❌ Build failed. Aborting." did their job. Production's workflow already does `npm ci`,
+which is why this only bites the local path.
+
+⚠️ **The deploy log prints secrets in plaintext.** The assembly loop echoes
+`Writing override: <KEY>=<value>` for every key, including `TFL_APP_KEY`,
+`RESEND_API_KEY`, `STATIONLY_ADMIN_KEY` and `LIVESTREAM_INGEST_SECRET`. They land in
+terminal scrollback and in any redirected log. Delete the log after deploying, and do not
+paste it anywhere.
+
+Backing up the box's `.env` first turned out to be unnecessary — the copy-`.env`-in step
+worked — but it is cheap and it is what makes this task safe to attempt at all.
+
+<details><summary>Original task text</summary>
 
 ```bash
 git clone <repo> /tmp/stationly-staging-deploy
@@ -434,7 +469,30 @@ Then confirm on the box that `ops/` arrived and `maintenance_cron.sh` is still m
 `GET /sdui/app/support-money-config` + webhook-returns-400 checks from the 09-02 (c) log
 to prove the secrets survived the round trip.
 
-### ☐ B4 — Reinstall the staging crontab at the new path, and canary it
+</details>
+
+### ☑ B4 — Reinstall the staging crontab at the new path, and canary it — PASSED 2026-09-02
+
+Reinstalled from `ops/maintenance.crontab`. Only active line is
+`20 3 * * * ops/maintenance_cron.sh reconcile`; the sweep line stays commented out (`A10`).
+
+**Canary — cron proven to actually fire, not merely installed.** Armed a `* * * * *`
+reconcile at 19:50:58Z; three consecutive firings:
+
+```
+19:51:04Z  reconcile: ok  usersScanned 8, countsChanged 0, watchAccountsIndexed 7
+19:52:03Z  reconcile: ok  ...
+19:53:03Z  reconcile: ok  ...
+```
+
+Canary removed, clean crontab restored, 0 CANARY lines remaining.
+
+This is the only evidence that cron can EXEC the wrapper under its own stripped
+environment — `PATH`, `HOME`, the exec bit, and the `sed` extraction of `PORT` and
+`LIVESTREAM_INGEST_SECRET` from `.env` outside a login shell. Installing a crontab proves
+a file is in place and nothing else. **Repeat this canary at `F3` on production; do not
+treat prod's install as proven by staging's.**
+
 
 ```bash
 ssh <STAGING_HOST> 'crontab ~/stationly-backend/ops/maintenance.crontab && crontab -l'
