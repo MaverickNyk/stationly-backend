@@ -247,6 +247,24 @@ All clocks are pinned to **Europe/London**; a café TV is very often on the wron
 timezone. The countdown runs on the **server's** clock (`serverNowMs` → skew), so
 a TV three minutes fast does not silently drop every train before it arrives.
 
+### Fitting the screen
+
+The type scale is sized in **`vw`**, deliberately: on a TV the viewer's distance
+tracks the screen's *width*, so width is what legibility should follow.
+
+That assumption inverts on a wide-but-short viewport — any desktop browser that
+is not fullscreen. `vw` holds every row, hero and header at TV size while the
+height available for them collapses, and the board overflows its own `100dvh`
+box. Because `.kiosk` is `overflow: hidden` there is no scrollbar to say so; the
+excess is simply gone.
+
+So `@media (max-height: 900px)` caps the height-driving sizes as
+`min(Xvw, Yvh)` — the same clamp idiom, bounded on both axes — and trims the hero
+band and the panel gaps. A second tier at `≤620px` goes further. **A 1080p TV
+matches neither and renders exactly as it always did**; this is a correction for
+looking at the board on a laptop, which is how it is reviewed far more often
+than it is deployed.
+
 ### Unattended operation
 
 Deployment check every 30 min (hashed bundle name), a 6-hour rolling reload, a
@@ -273,7 +291,12 @@ serves every venue.
 | `platforms` | `4` | Platform blocks on the board |
 | `cards` | `2` | Hero cards. More than two get too narrow to read across a room |
 | `qr` | `""` | QR caption. Empty by default: a QR on a wall needs no instructions |
-| `overscan` | `0` | Edge padding %, for a TV that crops. Capped at 10 |
+| `overscan` | `0` | Edge padding, in `vh`/`vw`, for a TV that crops **in hardware**. Capped at 10 |
+
+`overscan` is for a set that physically cuts its own edges. It is *not* a fix
+for a board that looks clipped in a desktop browser — it adds padding to a
+fixed-height box, so on a window the board already overflows it makes the
+overflow worse. See §5's short-viewport note.
 
 ---
 
@@ -328,6 +351,17 @@ cd web-temp && npm run build     # tsc -b && vite build → dist/
 
 `dist/` is gitignored: a build artifact, produced before a deploy, not committed.
 
+> ⚠️ **A clean-checkout deploy deletes the board.** The rule above assumes
+> `staging_deploy.sh`, which rsyncs the *working tree* — where `dist/` exists
+> because you just built it. A deploy from a fresh `git clone` has no `dist/`
+> at all (it is gitignored), and `rsync --delete` then removes the one on the
+> box. Staging went down exactly this way on 2026-09-02 during cutover step B3
+> and was only noticed the next day: every `/kiosk/*` request served
+> `Kiosk build missing`. Any deploy path that builds from a checkout must run
+> `cd web-temp && npm ci && npm run build` before the rsync, or skip
+> `web-temp/dist/` in its `--delete` set. **Not yet fixed** — B3 will do it
+> again.
+
 ### nginx
 
 Three blocks in `server-config/nginx.staging.conf`. On `= /kiosk-stream` all
@@ -366,12 +400,13 @@ a trial; a product wants a kiosk browser that auto-starts.
 
 | Symptom | Cause |
 |---|---|
-| `Kiosk build missing` | `npm run build` not run before deploy |
+| `Kiosk build missing` | `npm run build` not run before deploy — **or** the deploy came from a clean checkout, which has no `dist/` to ship (§8, Deploy) |
+| Header and hero cards missing off the **top** | The window is too short for the board and something scrolled the clipped container. Fixed 2026-09-03 (§9 bug 14); if it returns, check nothing focuses an element below the fold without `preventScroll` |
 | Stuck on "Connecting…" | Socket not upgrading — check the nginx block, and that `attachTemporaryKioskStream` is still last in `server.ts` |
 | Paints once, never updates | Station probably not in the Syncer's poll set — no app user has it saved (§2) |
 | "Live updates paused" | Genuine: no frame for ≥6 min; the watchdog will have logged a reconnect |
 | Board renders as broken text | Stick too old, Chromium < 79 |
-| Corners or button cut off | TV overscan → `?overscan=3` |
+| Corners or button cut off | TV overscan → `?overscan=3`. Only if the *set* crops; not for a short browser window, where it makes things worse |
 | Vanishes after minutes, photos appear | Fire TV screensaver |
 | Black after ~20 minutes | Fire TV sleep |
 | Gate asks for an email on the TV | Link opened without its `?k=` code |
@@ -406,6 +441,13 @@ treated as a real bug, because that is the actual deployment.
 | 11 | **Overscan padding used `%`.** CSS resolves percentage padding against *width* on all four sides. | `padding: 3%` inset the top and bottom by 5.3% of their own axis. Now `vh`/`vw`. |
 | 12 | **Module-level `Intl.DateTimeFormat` with an explicit `timeZone` throws** where tz data is absent. | The throw happens at *import*, taking the bundle down — a white screen on a wall. Now falls back to device time with a warning. |
 | 13 | Dead `!valid` fallback branch; watchdog logged "75s" against a 6-minute constant. | Cosmetic, both removed. |
+| 14 | **`autoFocus` on `FullscreenButton` scrolled a container with no scrollbar.** The button is the last child of `.kiosk`, which is `100dvh` with `overflow: hidden`. Where the content did not fit, the browser scrolled the focused button into view — `overflow: hidden` prevents *user* scrolling, not programmatic. | The board silently lost its header and hero cards off the **top**. Measured at 1440×783: 916px of content in a 783px box, `scrollTop` 133, `.kiosk__head` at `-120px`. Nothing on screen explained it; it read as a broken board, and `?overscan=` — the parameter a reader would reach for — made it worse by adding padding to the same fixed box. Now a ref plus `focus({ preventScroll: true })`, which the JSX `autoFocus` prop cannot express. The one-press-OK behaviour on the remote is unchanged. |
+
+Bug 14 also exposed a real layout fault behind it — the board genuinely did not
+fit a laptop-height window, because a `vw` type scale does not shrink when only
+the height does. `preventScroll` stops the damage; the `max-height` tiers in
+§5's *Fitting the screen* are the fix. Both were verified against staging:
+content 724px in a 727px box, `scrollTop` 0, header at `+9px`.
 
 ### Performance
 

@@ -1094,19 +1094,93 @@ html, body, #root {
     }
 }
 
-/* Short / Compact Height Displays (e.g. low-res wall screens or resized windows) */
-@media (max-height: 720px) {
+/* ── Short / Compact Height Displays ──────────────────────────────────────
+ *
+ * The type scale is sized in `vw`, because on a TV the viewer's distance
+ * tracks the screen's WIDTH. On a wide-but-short window — any desktop browser
+ * that is not fullscreen — that assumption inverts: `vw` keeps every row, hero
+ * and header at TV size while the height available for them collapses, and the
+ * board overflows its own `100dvh` box. Measured at 1440x783: 916px of content
+ * in a 783px box.
+ *
+ * `.kiosk` is `overflow: hidden`, so the excess does not scroll — it is simply
+ * gone, and (before `preventScroll` in FullscreenButton) it went off the TOP.
+ * Nothing about that reads as "your window is too short"; it reads as a broken
+ * board. So the vw-driven values are capped against height here, in the same
+ * clamp() idiom: unchanged on a TV, bounded on a laptop.
+ *
+ * Two tiers rather than one, because a 780px window and a 500px one need very
+ * different budgets and a single tier would over-shrink the first.
+ */
+@media (max-height: 900px) {
     .kiosk {
         padding: clamp(6px, 1.2vh, 14px) clamp(10px, 1.5vw, 24px);
         gap: clamp(6px, 1.0vh, 12px);
     }
 
+    /* The hero band is the single largest fixed block on the board, and its
+       `11vh` floor of 80px is what binds first. */
     .hero {
-        min-height: clamp(54px, 10vh, 76px);
+        height: clamp(62px, 9.5vh, 96px);
+        min-height: 0;
+    }
+
+    /* Capped against the viewport HEIGHT as well as its width — this is the
+       whole correction, expressed once per size that drives vertical space. */
+    .kiosk {
+        --fs-station:    clamp(20px, min(2.6vw, 4.4vh), 38px);
+        /* The board is 12 rows and 3 headers deep, so these two carry most of
+           the vertical budget — measured, not guessed: at 1440x783 they take
+           the row from 34px to 29px, which is what closes the last 72px. */
+        --fs-row:        clamp(13px, min(1.65vw, 2.35vh), 24px);
+        --fs-header:     clamp(13px, min(1.75vw, 2.45vh), 25px);
+        --fs-fallback:   clamp(16px, min(1.8vw, 3.1vh), 26px);
+        --fs-hero-dest:  clamp(16px, min(2.0vw, 3.4vh), 28px);
+        --fs-hero-eta:   clamp(22px, min(2.9vw, 4.9vh), 38px);
+        --fs-boardclock: clamp(14px, min(1.65vw, 2.9vh), 24px);
+        --fs-status:     clamp(12px, min(1.35vw, 2.4vh), 20px);
+        --hero-slot-height: clamp(14px, 2.0vh, 24px);
+    }
+
+    .kiosk__bottom {
+        min-height: clamp(56px, 11vh, 92px);
+    }
+
+    /* Gaps, not padding: the row padding floor is already 3px and taking it
+       lower makes a row look like a text line rather than a panel slat. */
+    .panel {
+        gap: clamp(4px, 0.5vh, 8px);
+        padding: clamp(6px, 0.8vh, 12px) clamp(10px, 1.0vw, 20px);
+    }
+
+    .panel__body {
+        gap: clamp(4px, 0.55vh, 9px);
+    }
+
+    .panel__group {
+        gap: clamp(2px, 0.3vh, 5px);
     }
 
     .net-col__header {
         padding: 4px 10px;
+    }
+}
+
+@media (max-height: 620px) {
+    .kiosk {
+        gap: clamp(4px, 0.7vh, 8px);
+        --fs-station:   clamp(18px, min(2.6vw, 4.0vh), 30px);
+        --fs-row:       clamp(13px, min(1.65vw, 2.7vh), 20px);
+        --fs-hero-dest: clamp(15px, min(2.0vw, 3.2vh), 22px);
+        --fs-hero-eta:  clamp(19px, min(2.9vw, 4.6vh), 30px);
+    }
+
+    .hero {
+        height: clamp(52px, 9vh, 72px);
+    }
+
+    .kiosk__bottom {
+        min-height: clamp(48px, 10vh, 74px);
     }
 }
 
