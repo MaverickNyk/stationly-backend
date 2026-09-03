@@ -23,7 +23,7 @@ Companion reading:
 ║                 staging log. It is the LAST thing before D1.             ║
 ║                 B6 passed on a real device 09-03. A and C are complete.  ║
 ║                                                                          ║
-║  The prod box's pending reboot is DEFERRED by decision (C10), and       ║
+║  The prod box's pending reboot is DEFERRED by decision (C10), and        ║
 ║  VERIFIED safe: Automatic-Reboot is off, so only a person can reboot     ║
 ║  it. Do not, between D1 and the end of phase E. Reboot after, at G3.     ║
 ║                                                                          ║
@@ -37,7 +37,7 @@ Companion reading:
 ║  2 is read and clean. That is now the ONLY thing standing in the way.    ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-03 (d)
+UPDATED:      2026-09-03 (e)
 COUNT:        28 tasks done, 19 open.  (A9, C9, C10, B6 closed today)
               PHASES A AND C COMPLETE. Gate C met. B5 night 2 is the ONLY
               thing left in phase B, and the only thing left before D1.
