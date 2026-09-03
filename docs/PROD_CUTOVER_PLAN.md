@@ -21,15 +21,21 @@ Companion reading:
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  RESUME HERE ▸  B5   NIGHT 1 PASSED 09-03. Night 2 is 09-04 03:20 UTC.   ║
 ║                      One tail of the staging log closes it.              ║
-║                 Then B6, C9, C10. Those four are ALL that gate D1.       ║
+║                 Then B6 (real device) and C10 (pm2 list). C9 is DONE.    ║
+║                 Those three are ALL that gate D1.                        ║
+║                                                                          ║
+║  C9 measured it: 106 of 108 prod accounts would be released TODAY by     ║
+║  either job, wiping 191 registry keys. Both jobs are off (A1, A10) and   ║
+║  MUST stay off until D5's backfill. This is not drift — it is the        ║
+║  pre-migration state. See C9 before reading those numbers as a fault.    ║
 ║                                                                          ║
 ║  PR #131 (release_staging -> release_prod) is OPEN and MERGEABLE.        ║
 ║  Merging it IS D1, the production deploy. DO NOT MERGE until the four    ║
 ║  tasks above are done. It will look ready long before it is.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-03
-COUNT:        25 tasks done, 22 open.  (A9 closed; B5 half done)
+UPDATED:      2026-09-03 (b)
+COUNT:        26 tasks done, 21 open.  (A9, C9 closed; B5 half done)
 
 COMMITTED:    Phase A is d08f3ac. A9 is a separate commit on dev_13Jul, which
               is now AHEAD of main/release_staging (c9b5285) by that one
@@ -41,9 +47,8 @@ PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               data written, no document read outside read-only probes.
               The app on the box is the same build it was running on 09-01.
 
-BLOCKED ON:   the calendar, for B5 night 2. C9's three remaining probes are
-              AUTHORISED by the owner as of 09-03 but did not run: the local
-              permission classifier blocked the command. See the session log.
+BLOCKED ON:   the calendar, for B5 night 2. Nothing else waits on a decision.
+              C10 needs one read-only SSH to prod; B6 needs a real device.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -53,13 +58,13 @@ BLOCKED ON:   the calendar, for B5 night 2. C9's three remaining probes are
 | 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
 | 2 | ~~**A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test~~ | ☑ **DONE 2026-09-03.** Both exported and pinned; 212/212. `G2` and `G5` updated to name the second edit |
 | 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
-| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **AUTHORISED 2026-09-03**, owner said go ahead. Not yet run — the local permission classifier blocked the probe command. The authorisation covers `C9`'s **read-only** probes only; it is not standing permission to write |
+| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **DONE 2026-09-03.** Authorised by the owner and run by the owner. Numbers in `C9`. That authorisation covered the read-only survey only — it is **not** standing permission to connect to or write to production |
 
 **Phase checklist**
 
 - [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
 - [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 night 1 of 2 ✅, B6 outstanding**
-- [~] **C** — Production prerequisites — C0–C8, C11 ✅ · **C9, C10 outstanding (need prod access)**
+- [~] **C** — Production prerequisites — C0–C9, C11 ✅ · **C10 outstanding (one `pm2 list`)**
 - [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
 - [ ] **E** — Soak — days, not hours
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
@@ -883,7 +888,70 @@ real time on staging:
 - Builds are **asynchronous** and run against live data. The error text is the tell:
   *"You can create it here"* = absent; *"That index is not ready yet"* = building. **Wait.**
 
-### ☐ C9 — Survey production, read-only, and record the numbers
+### ☑ C9 — Survey production, read-only — DONE 2026-09-03
+
+**THE BASELINE. `D6` and `F1` compare against these numbers. Do not edit them.**
+
+```
+Project: stationly-prod          (verified on line 1 of every run)
+
+ACCOUNTS
+  accounts total                        108
+  stateRev == 0                         108   ✓ every one, the pre-P1 baseline
+  ledger cold or behind                   0
+  ledger AHEAD of master                  0   ✓ PASS
+  loggedIn == true                      106   (of 108 — 2 accounts already false)
+
+DEVICES                          (banked at C8, 2026-09-02)
+  root collection('devices')              0   ✓ EMPTY — never had iOS
+  collectionGroup('devices')              0   ✓ no subcollection rows: pre-migration
+
+RECONCILE PREDICTION  (check_drift_reconcile --before)
+  users scanned                         108
+  recomputed registry size                0   ← the whole point. See below.
+  PREDICTED loggedIn heals              106   all true -> false
+  PREDICTED registry changes            191   every one have>0, want=0
+  registry keys with want > 0             0
+  total subscription holds at risk      235
+
+SWEEP PREDICTION      (check_session_sweep --before)
+  PREDICTED to be released              106   accounts
+  station holds released                 83
+  stations losing their LAST holder      71   Syncer stops polling these entirely
+```
+
+**Read this before you read the numbers as a failure.** `recomputed registry
+size: 0`, `191 registry keys deleted`, `106 accounts released` is not drift and
+not a bug. Production has **no `users/{uid}/devices` rows at all**, so both jobs'
+"has a live device row" predicate is false for every account, and both correctly
+predict releasing the entire platform. This is §2 invariant 2 — *backfill before
+any release job* — quantified. It is the single strongest piece of evidence in
+this plan that `A1` and `A10` had to happen, and the reason `D4`–`D6` precede
+`F2`. Both jobs are off; neither ran.
+
+**The 71 is the number that matters.** A released hold only hurts when it was the
+*last* one on a station: that station leaves `metadata/subscribed_stations`, the
+Syncer stops polling it, and boards go stale with no self-heal, because Android
+only re-syncs on an explicit sign-in. 71 of 191 keys are in that state.
+
+**What `D6` must show after the backfill:** re-run both `--before` probes and
+`PREDICTED to be released` must be **0**, `recomputed registry size` back to
+**191**, and `PREDICTED loggedIn heals` **0**. Anything else means the backfill
+missed accounts — stop, do not proceed to `F2`.
+
+**`106`, not `108`.** Two accounts already carry `loggedIn: false` and are
+therefore invisible to both jobs. Expected: an account that signed out and never
+returned. Not a discrepancy, but it is why the account count and the release
+count differ — do not read that gap as 2 accounts the probes missed.
+
+**Ledger half is INCONCLUSIVE, deliberately.** `check_state_rev` read the local
+`data/stationly.sqlite`, not the prod host's, so it compared 0 accounts and said
+so rather than reporting a pass it had not earned. That is the script's exit-2
+design working; the Firestore half is what `C9` needs and it is complete.
+
+---
+
+Original task, for reference:
 
 ```bash
 node src/scripts/check_state_rev.cjs       --key=$PROD_KEY   # expect every account rev=0
@@ -929,6 +997,10 @@ If it is not 1: `pm2 delete stationly-backend`, then let the next deploy cold-st
 
 ⛔ **GATE C** — `check_device_indexes.cjs` **PASSES**, root `devices` is empty, nginx
 reloaded clean, `pm2 list` shows 1, and `C1`/`C2` hold the same secret.
+
+Status 2026-09-03: all of these hold **except `pm2 list`**, which is `C10` and is
+the only thing left in Phase C. Indexes passed at `C8`, root `devices` is 0
+(`C8`/`C9`), nginx verified at `C6`, secrets matched at `C0`–`C2`.
 
 ---
 
@@ -1552,6 +1624,56 @@ State:    dev_13Jul is AHEAD of main/release_staging by the A9 commit. That is
           behaviour, and does not need to reach production before D1.
 Next:     B5 night 2 (09-04, one tail), C9 (authorised, needs a permission
           path), C10, B6. Still those four gating D1 / PR #131.
+```
+
+### 2026-09-03 (b) — C9 done: production surveyed, read-only
+
+```
+Did:      C9  CLOSED. Owner ran all four probes against stationly-prod
+              themselves (the classifier had blocked the agent). Full baseline
+              is in the C9 task — that block is what D6 and F1 diff against.
+
+THE HEADLINE NUMBER: 106 of 108 production accounts would be released TODAY by
+          either job. 191 registry keys deleted, 235 holds dropped, and 71
+          stations losing their LAST subscriber — those stop being polled by
+          the Syncer and their boards go stale with no self-heal.
+          This is NOT drift and NOT a fault. Prod has no users/{uid}/devices
+          rows at all, so "has a live device row" is false for everyone and
+          both jobs correctly predict releasing the platform. It is §2
+          invariant 2 quantified, and the strongest evidence in this plan that
+          A1 and A10 were necessary. Both jobs are off. Neither ran.
+
+CAUGHT BY THE PROJECT-ID LINE, exactly as designed: the first attempt at probes
+          2 and 3 line-wrapped in the paste, so zsh dropped --key= into a
+          separate command and both ran against STAGING under the fallback key.
+          They printed "Project: mindthetimefcm" on line 1 and were spotted and
+          re-run. The staging numbers (8 users, 5 loggedIn) are NOT C9 data and
+          are recorded nowhere.
+          KEEP THAT LINE-1 HABIT. A wrapped --key= is silent otherwise: the
+          fallback is a working key, so the probe succeeds, it just answers
+          about the wrong planet.
+
+VERIFIED THE RESULTS WERE PROD independently of the header, since the good runs'
+          stdout was not captured: read the two prediction JSONs off disk and
+          cross-checked their uids against check_state_rev's prod listing.
+          05x7m6yr… and 28tpd7Zt… appear in both. 106 accounts also cannot be
+          staging, which has 8.
+
+INCIDENTAL: prod has 108 accounts to staging's 8. D5's backfill is a 108-account
+          job, not the handful staging has been rehearsing on.
+          106 not 108 because 2 accounts are already loggedIn:false — invisible
+          to both jobs, expected, not a probe miss.
+          check_state_rev's ledger half is INCONCLUSIVE (it read the LOCAL
+          sqlite, compared 0). Its exit-2 design refusing a pass it had not
+          earned. The Firestore half is complete, which is what C9 wanted.
+
+SCRATCH FILES: .reconcile-prediction.json / .sweep-prediction.json now hold PROD
+          predictions. Gitignored. Do not run a STAGING --after against them.
+
+State:    Production STILL untouched — two indexes, no code, no data. Every
+          probe is read-only; verified no .set/.update/.delete before running.
+Next:     C10 (one read-only `pm2 list`, must show 1), B5 night 2 (09-04),
+          B6 (real device). Those three now gate D1 / PR #131.
 ```
 
 ---
