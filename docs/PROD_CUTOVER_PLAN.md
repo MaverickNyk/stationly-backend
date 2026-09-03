@@ -24,8 +24,8 @@ Companion reading:
 ║                 Then B6, a real-device pass. That plus B5 is ALL that    ║
 ║                 gates D1 now — phases A and C are DONE.                  ║
 ║                                                                          ║
-║  BEFORE D1: the prod box has a PENDING REBOOT. Decide reboot-now vs      ║
-║  defer, and do NOT let it fire during the D4-D6 backfill. See C10.       ║
+║  The prod box's pending reboot is DEFERRED by decision (C10). Do not    ║
+║  let it fire between D1 and the end of phase E. Reboot after, at G3.     ║
 ║                                                                          ║
 ║  C9 measured it: 106 of 108 prod accounts would be released TODAY by     ║
 ║  either job, wiping 191 registry keys. Both jobs are off (A1, A10) and   ║
@@ -52,7 +52,7 @@ PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               The app on the box is the same build it was running on 09-01.
 
 BLOCKED ON:   the calendar for B5 night 2, and B6 which needs a real device.
-              One decision outstanding: the prod box's pending reboot (C10).
+              Nothing else. No decision outstanding.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -62,6 +62,7 @@ BLOCKED ON:   the calendar for B5 night 2, and B6 which needs a real device.
 | 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
 | 2 | ~~**A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test~~ | ☑ **DONE 2026-09-03.** Both exported and pinned; 212/212. `G2` and `G5` updated to name the second edit |
 | 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
+| 5 | ~~Reboot the prod box before `D1`, or defer?~~ | ☑ **DECIDED 2026-09-03: DEFER** until after Phase E. Commits you to keeping anything else from rebooting it during the window — verify `Automatic-Reboot` is off (`C10`). Reboot at `G3` |
 | 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **DONE 2026-09-03.** Authorised by the owner and run by the owner. Numbers in `C9`. That authorisation covered the read-only survey only — it is **not** standing permission to connect to or write to production |
 
 **Phase checklist**
@@ -1004,16 +1005,27 @@ a lifetime restart count, not a crash loop; 221.8mb is normal steady state.
 > accounts with device rows, some without — which is the one state neither the
 > probes nor the jobs have a defined answer for.
 >
-> Decide **before** `D1`, and record the decision here:
-> - **reboot first** (preferred) — do it now, while prod still runs the OLD
->   build and no data has moved. Cheapest possible moment. Confirm pm2 comes
->   back with 1 instance and the API answers, then proceed.
-> - **defer** — explicitly, and do not let anything trigger it until Phase E is
->   over. `unattended-upgrades` does not reboot on its own by default, but check
->   `/var/run/reboot-required` and `/etc/apt/apt.conf.d/50unattended-upgrades`
->   rather than assuming.
+> **DECIDED 2026-09-03: DEFER.** The owner's call. The box has carried this
+> pending restart for some time without incident, Ubuntu does not reboot itself
+> by default, and a reboot is not free either — it is downtime plus a cold pm2
+> start to re-verify, on the eve of the window.
 >
-> Status: ⬜ **UNDECIDED as of 2026-09-03.** This is now a Phase D precondition.
+> **What deferring commits you to.** Do not reboot, and do not let anything else
+> reboot, from `D1` until Phase E is over. One check makes this safe rather than
+> merely hopeful — `Unattended-Upgrade::Automatic-Reboot` must be false or unset:
+>
+> ```bash
+> ssh <PROD_HOST> 'cat /var/run/reboot-required 2>/dev/null; \
+>   grep -rn "Automatic-Reboot" /etc/apt/apt.conf.d/ 2>/dev/null'
+> ```
+>
+> Expect no `Automatic-Reboot "true"` line. **If one exists, this decision is not
+> safe as taken** — either flip it off for the duration or reboot before `D1`.
+> ⬜ not yet run.
+>
+> Reboot afterwards, once Phase E is clean. Do not carry it indefinitely: a
+> pending kernel update is a security patch waiting on you, and the reason to
+> defer expires when the window does. Close it out at `G3`.
 
 Original task:
 
@@ -1038,7 +1050,8 @@ reloaded clean, `pm2 list` shows 1, and `C1`/`C2` hold the same secret.
 the same secret (`C0`). **Phase C is complete.**
 
 Carried forward as a Phase D precondition, not a gate C failure: the prod box
-has a **pending reboot** — see the warning in `C10`.
+has a **pending reboot**, deliberately **deferred** until after Phase E — see
+`C10` for what that commits you to.
 
 ---
 
@@ -1293,6 +1306,9 @@ before either edit.
 
 ### ☐ G3 — Close out
 
+- **Reboot the production box.** Deferred at `C10` on 2026-09-03 for the duration
+  of the window; the reason to defer expires here, and a pending kernel update is
+  a security patch waiting on you. Confirm pm2 returns with **1** instance.
 - Update `docs/HANDOVER_SESSION_SYNC.md` §1's phase table — production is no longer ❌.
 - Update this file's STATUS block to `COMPLETE`.
 - Delete the `revert-116-dev_13Jul` / `revert-118-release_staging` remote branches if
