@@ -1079,9 +1079,15 @@ a lifetime restart count, not a crash loop; 221.8mb is normal steady state.
 >   grep -rn "Automatic-Reboot" /etc/apt/apt.conf.d/ 2>/dev/null'
 > ```
 >
-> Expect no `Automatic-Reboot "true"` line. **If one exists, this decision is not
-> safe as taken** — either flip it off for the duration or reboot before `D1`.
-> ⬜ not yet run.
+> ☑ **RUN 2026-09-03. The deferral is SAFE.** All four matches in
+> `50unattended-upgrades` (lines 94, 97, 98, 103) are **commented out** with
+> `//`, so `Automatic-Reboot` is never set and falls back to its built-in
+> default of false. The box patches itself but will not reboot itself.
+> **Only a person can reboot it.**
+>
+> Line 98 `//Unattended-Upgrade::Automatic-Reboot-WithUsers "true";` looks
+> alarming at a glance and is not: it is commented, and it is a different
+> setting that only applies once `Automatic-Reboot` is already on.
 >
 > Reboot afterwards, once Phase E is clean. Do not carry it indefinitely: a
 > pending kernel update is a security patch waiting on you, and the reason to
