@@ -23,8 +23,9 @@ Companion reading:
 ║                 staging log. It is the LAST thing before D1.             ║
 ║                 B6 passed on a real device 09-03. A and C are complete.  ║
 ║                                                                          ║
-║  The prod box's pending reboot is DEFERRED by decision (C10). Do not    ║
-║  let it fire between D1 and the end of phase E. Reboot after, at G3.     ║
+║  The prod box's pending reboot is DEFERRED by decision (C10), and       ║
+║  VERIFIED safe: Automatic-Reboot is off, so only a person can reboot     ║
+║  it. Do not, between D1 and the end of phase E. Reboot after, at G3.     ║
 ║                                                                          ║
 ║  C9 measured it: 106 of 108 prod accounts would be released TODAY by     ║
 ║  either job, wiping 191 registry keys. Both jobs are off (A1, A10) and   ║
@@ -32,8 +33,8 @@ Companion reading:
 ║  pre-migration state. See C9 before reading those numbers as a fault.    ║
 ║                                                                          ║
 ║  PR #131 (release_staging -> release_prod) is OPEN and MERGEABLE.        ║
-║  Merging it IS D1, the production deploy. DO NOT MERGE until the four    ║
-║  tasks above are done. It will look ready long before it is.             ║
+║  Merging it IS D1, the production deploy. DO NOT MERGE until B5 night    ║
+║  2 is read and clean. That is now the ONLY thing standing in the way.    ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 UPDATED:      2026-09-03 (d)
@@ -41,11 +42,18 @@ COUNT:        28 tasks done, 19 open.  (A9, C9, C10, B6 closed today)
               PHASES A AND C COMPLETE. Gate C met. B5 night 2 is the ONLY
               thing left in phase B, and the only thing left before D1.
 
-COMMITTED:    Phase A is d08f3ac. A9 is a separate commit on dev_13Jul, which
-              is now AHEAD of main/release_staging (c9b5285) by that one
-              commit. It is export-and-test only and does NOT need to reach
-              production before D1 — but if you re-promote for any other
-              reason it rides along harmlessly.
+COMMITTED:    Working tree CLEAN. Phase A is d08f3ac.
+              dev_13Jul is AHEAD of main/release_staging (c9b5285) by SIX
+              commits from 2026-09-03, NONE OF WHICH ARE PUSHED:
+                a03be92  A9 — flags exported and pinned (212/212)
+                549031c  C9 — production surveyed
+                fbcd420  C10 — pm2 verified, gate C met
+                1357e66  reboot deferred
+                89515ac  B6 — real-device pass
+                d8a4865  reboot deferral verified safe
+              Only a03be92 touches shippable code, and it is export-and-test
+              only. NONE of this needs to reach production before D1; PR #131
+              is built from release_staging and is unaffected by all of it.
 
 PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               data written, no document read outside read-only probes.
@@ -62,15 +70,15 @@ BLOCKED ON:   the calendar, and nothing else. B5 night 2 fires 09-04 03:20 UTC.
 | 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
 | 2 | ~~**A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test~~ | ☑ **DONE 2026-09-03.** Both exported and pinned; 212/212. `G2` and `G5` updated to name the second edit |
 | 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
-| 5 | ~~Reboot the prod box before `D1`, or defer?~~ | ☑ **DECIDED 2026-09-03: DEFER** until after Phase E. Commits you to keeping anything else from rebooting it during the window — verify `Automatic-Reboot` is off (`C10`). Reboot at `G3` |
 | 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **DONE 2026-09-03.** Authorised by the owner and run by the owner. Numbers in `C9`. That authorisation covered the read-only survey only — it is **not** standing permission to connect to or write to production |
+| 5 | ~~Reboot the prod box before `D1`, or defer?~~ | ☑ **DECIDED 2026-09-03: DEFER** until after Phase E, and **VERIFIED SAFE** the same day — `Automatic-Reboot` is commented out, so nothing but a person can reboot that box (`C10`). Reboot at `G3` |
 
 **Phase checklist**
 
 - [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
 - [~] **B** — Staging re-proof — B1–B4, B6 ✅ · **B5 night 2 (09-04) is all that remains**
 - [x] **C** — Production prerequisites — C0–C11 ✅ **complete**; gate C met 09-03
-- [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
+- [ ] **D** — The deploy window — 9 tasks, ONE session, gated only on `B5` night 2
 - [ ] **E** — Soak — days, not hours
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
 - [ ] **G** — Legacy cleanup and finish
@@ -1873,6 +1881,57 @@ State:    Production untouched — two indexes, no code, no data. Everything thi
           them docs plus the A9 test. Not pushed.
 Next:     B5 NIGHT 2, 2026-09-04 03:20 UTC. One tail of ~/logs/maintenance.log.
           That is the last thing before D1 / PR #131.
+```
+
+### 2026-09-03 (e) — end of day: the deferred reboot verified; nothing left but the clock
+
+```
+Did:      Verified the C10 reboot deferral is actually safe rather than merely
+          hopeful. Automatic-Reboot is commented out in 50unattended-upgrades
+          (lines 94/97/98/103 all //), so it falls back to its default of
+          false. The prod box patches itself but will NOT reboot itself.
+          ONLY A PERSON CAN REBOOT IT. Recorded in C10.
+          Line 98 reads Automatic-Reboot-WithUsers "true" and is a red herring:
+          commented, AND a different setting that only applies once
+          Automatic-Reboot is already on. Do not re-raise it.
+
+WHY THIS WAS WORTH A COMMAND: it was the only risk in this window able to fire
+          with nobody doing anything. A reboot during D4-D6 restarts pm2 with
+          the backfill half-applied across 108 accounts — a state neither the
+          probes nor the jobs define, and one the rollback does not cover
+          cleanly. Deferring was the right call; deferring UNVERIFIED was not.
+
+ALSO CORRECTED IN THIS FILE, because it had gone stale within the day:
+          the STATUS box still said "DO NOT MERGE until the four tasks above
+          are done" when three of the four had closed. It is one now. A STATUS
+          block that overstates what is outstanding trains its reader to stop
+          believing it — see rule 6 in §0.
+
+END OF DAY POSITION
+          Phases A and C: COMPLETE. Gate C met.
+          Phase B: B1-B4 and B6 done; B5 night 1 of 2 done.
+          Phase D-G: not started. PR #131 open, mergeable, 20 commits.
+          Working tree clean. Six commits on dev_13Jul, NONE PUSHED.
+          Production: two Firestore indexes. No code, no data. Unchanged since
+          2026-09-02, and unchanged by anything done today.
+
+STILL OUTSTANDING, and it is one thing:
+          B5 night 2, 2026-09-04 03:20 UTC.
+            ssh <STAGING_HOST> 'tail -5 ~/logs/maintenance.log'
+          One reconcile line, ok, loggedInHealed: [], no 03:00 sweep line.
+          That closes B5, GATE B and phase B, and D1 becomes genuinely ready.
+
+CARRY INTO D1, none of them blocking:
+          - A staging log-watch agent was running during B6 and had not
+            reported when the session ended. Its verdict covers server-side
+            behaviour during the device pass — a 200-with-internal-error would
+            not appear in any of the Firestore checks. If it never reported,
+            the B6 result stands on Firestore state evidence alone; say so
+            rather than implying the logs were reviewed.
+          - Prod is 108 accounts to staging's 8. D5 runs at 13x anything that
+            has been rehearsed.
+          - D1-D9 is ONE session. Do not start it late in the day.
+          - Staging lost testnyk67, its richest fixture, to B6 step 6.
 ```
 
 ---
