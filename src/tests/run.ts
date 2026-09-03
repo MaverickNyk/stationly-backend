@@ -56,6 +56,9 @@ import {
 } from '../middleware/versionGateMiddleware';
 import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
+import {
+    HEAL_TRUE_TO_FALSE, SWEEP_ENABLED,
+} from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -3788,6 +3791,37 @@ test('WIDGET GUIDE: the stat row covers all three plural cases', () => {
     }
     assert.ok(String(stat.many).includes('{count}'),
         'the plural form has to interpolate the number it is describing');
+});
+
+// ─── release-flag pins (plan task A9) ────────────────────────────────────────
+//
+// These two constants are the most consequential values in the repo: each one,
+// set wrong, releases every account on the platform in a single scheduled run —
+// silently, exit 0, because `loggedIn` is a server flag no client reads. See
+// docs/PROD_CUTOVER_PLAN.md §2 invariants 2 and 3.
+//
+// HEAL_TRUE_TO_FALSE reached this branch set to `true`, left over from the
+// staging enablement on 2026-08-25, with nothing but human review between it
+// and production. That is the regression these tests exist to make impossible.
+//
+// They are deliberately just an equality assertion. The point is not to verify
+// behaviour — it is to make re-enabling either flag a DELIBERATE act, where the
+// person flipping it must also come here and change the expected value. If you
+// are here because a test failed after flipping one: that is the test working.
+// Turning them back on is plan task G2 (heal) and G5 (sweep), and each has
+// per-environment preconditions listed at the constant's own definition. Check
+// those hold for the environment you are shipping to, then update these.
+
+test('RELEASE FLAG: HEAL_TRUE_TO_FALSE is off', () => {
+    assert.strictEqual(HEAL_TRUE_TO_FALSE, false,
+        'the reconcile true->false heal releases every account with no device row. '
+        + 'It stays false until the legacy stores are deleted — plan task G2.');
+});
+
+test('RELEASE FLAG: SWEEP_ENABLED is off', () => {
+    assert.strictEqual(SWEEP_ENABLED, false,
+        'sweep releases on a 90-day lastSeen that the shipped Android build only '
+        + 'refreshes on explicit sign-in, so it would release daily users — plan task G5.');
 });
 
 main();

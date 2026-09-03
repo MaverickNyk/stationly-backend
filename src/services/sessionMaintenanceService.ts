@@ -78,7 +78,7 @@ import { SubscriptionService } from './subscriptionService';
  * Note this gates the RECONCILE only. `sweep` performs the same release and is
  * gated by nothing but the crontab not being installed — see plan task F3.
  */
-const HEAL_TRUE_TO_FALSE = false;
+export const HEAL_TRUE_TO_FALSE = false;
 
 /**
  * Whether [sweep] may release an account it believes has no live device rows.
@@ -124,7 +124,7 @@ const HEAL_TRUE_TO_FALSE = false;
  * errs in: over-counting polls a station nobody needs, under-counting takes a
  * live station from someone who does.
  */
-const SWEEP_ENABLED = false;
+export const SWEEP_ENABLED = false;
 
 export class SessionMaintenanceService {
 

@@ -19,7 +19,8 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  B5   two clean scheduled nights — WALL CLOCK, just wait  ║
+║  RESUME HERE ▸  B5   NIGHT 1 PASSED 09-03. Night 2 is 09-04 03:20 UTC.   ║
+║                      One tail of the staging log closes it.              ║
 ║                 Then B6, C9, C10. Those four are ALL that gate D1.       ║
 ║                                                                          ║
 ║  PR #131 (release_staging -> release_prod) is OPEN and MERGEABLE.        ║
@@ -27,18 +28,22 @@ Companion reading:
 ║  tasks above are done. It will look ready long before it is.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-02 (d)
-COUNT:        24 tasks done, 23 open.
+UPDATED:      2026-09-03
+COUNT:        25 tasks done, 22 open.  (A9 closed; B5 half done)
 
-COMMITTED:    Everything. The working tree is clean. dev_13Jul == main ==
-              release_staging at c9b5285. Phase A is d08f3ac.
+COMMITTED:    Phase A is d08f3ac. A9 is a separate commit on dev_13Jul, which
+              is now AHEAD of main/release_staging (c9b5285) by that one
+              commit. It is export-and-test only and does NOT need to reach
+              production before D1 — but if you re-promote for any other
+              reason it rides along harmlessly.
 
 PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               data written, no document read outside read-only probes.
               The app on the box is the same build it was running on 09-01.
 
-BLOCKED ON:   nothing a person has to decide. B5 is the only wait, and it is
-              the calendar.
+BLOCKED ON:   the calendar, for B5 night 2. C9's three remaining probes are
+              AUTHORISED by the owner as of 09-03 but did not run: the local
+              permission classifier blocked the command. See the session log.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -46,14 +51,14 @@ BLOCKED ON:   nothing a person has to decide. B5 is the only wait, and it is
 | # | Decision | State |
 |---|---|---|
 | 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
-| 2 | **A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test | ⬜ **STILL OPEN.** Decide before `G2`. Nothing asserts either value today, which is exactly how the heal flag reached this branch set to `true` |
+| 2 | ~~**A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test~~ | ☑ **DONE 2026-09-03.** Both exported and pinned; 212/212. `G2` and `G5` updated to name the second edit |
 | 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
-| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ⬜ Still not run. The owner asked that agents not connect to production without being asked — **ask first** |
+| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **AUTHORISED 2026-09-03**, owner said go ahead. Not yet run — the local permission classifier blocked the probe command. The authorisation covers `C9`'s **read-only** probes only; it is not standing permission to write |
 
 **Phase checklist**
 
-- [x] **A** — Repo changes on `dev_13Jul` — A1–A8, A10 ✅ committed and pushed · A9 still undecided
-- [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 (wall clock), B6 outstanding**
+- [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
+- [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 night 1 of 2 ✅, B6 outstanding**
 - [~] **C** — Production prerequisites — C0–C8, C11 ✅ · **C9, C10 outstanding (need prod access)**
 - [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
 - [ ] **E** — Soak — days, not hours
@@ -316,9 +321,9 @@ chore(cutover): phase A — prod-safety flags, ops/ move, tracked index config
 ⛔ GATE A satisfied: tsc silent, 210/210, `git ls-files -s ops/` shows
 `maintenance_cron.sh` at mode 100755, and both index JSONs are tracked.
 
-### ☐ A9 — PROPOSED, decision needed: pin the heal flag with a test
+### ☑ A9 — Pin the release flags with tests — DONE 2026-09-03
 
-**Not done. Decide before Phase G.**
+**Decided: yes, do it. Done.** Both flags exported and pinned; 212/212 pass (was 210).
 
 Nothing in the 210-test suite asserts `HEAL_TRUE_TO_FALSE`. It is the single
 most consequential constant in this release — the one whose wrong value releases
@@ -335,8 +340,26 @@ plus one assertion in `src/tests/run.ts`. That makes `G2` a deliberate act: the
 person turning it back on must also change the test, which is exactly the
 friction wanted on a switch that can empty the subscription registry.
 
-Cost: one export and three lines of test. Risk of NOT doing it: the same silent
-regression happens again, and the next reviewer may not catch it.
+**What was actually done.** Both flags, not just the heal — `SWEEP_ENABLED` is
+the same class of danger (`A10`) and was equally unasserted:
+
+```diff
+-const HEAL_TRUE_TO_FALSE = false;
++export const HEAL_TRUE_TO_FALSE = false;
+-const SWEEP_ENABLED = false;
++export const SWEEP_ENABLED = false;
+```
+
+`src/tests/run.ts` gains an import and two tests under a `RELEASE FLAG:` prefix,
+each asserting `false` with a failure message naming the task that re-enables it
+(`G2` for the heal, `G5` for sweep). The comment above them says explicitly that
+a failure after a deliberate flip *is the test working* — so the next person is
+told what to do rather than left to guess whether they broke something.
+
+Export-only change: no call site moved, `npx tsc --noEmit` clean, 212/212 pass.
+
+> **This changes `G2` and `G5`.** Each now has a second edit: the constant *and*
+> its pin in `src/tests/run.ts`. Both tasks note this.
 
 ### ☑ A10 — Disable `sweep` — DONE 2026-09-02
 
@@ -524,10 +547,46 @@ place, not that `PATH`, `HOME`, the exec bit and `.env` readability all line up.
 a `* * * * *` copy of the sweep line, wait two minutes, confirm two new lines in
 `~/logs/maintenance.log`, then reinstall the clean crontab.
 
-### ☐ B5 — Two clean nights
+### ☐ B5 — Two clean nights — NIGHT 1 PASSED 2026-09-03
 
-Both scheduled jobs fire from `ops/` on two consecutive nights. Read
+The scheduled job fires from `ops/` on two consecutive nights. Read
 `~/logs/maintenance.log` each morning.
+
+> **Corrected 2026-09-03.** This task used to read "*both* scheduled jobs fire".
+> That is stale: `A10` disabled sweep and commented out its cron line, so
+> **reconcile is the only scheduled job** and B5 is reconcile-only. Sweep's own
+> two clean nights are `F4`, after it returns at `G5`.
+
+**Night 1 — 2026-09-03 03:20 UTC — CLEAN:**
+
+```
+[2026-09-03T03:20:03Z] reconcile: ok {"usersScanned":8,"loggedInHealed":[],
+  "countsChanged":0,"countsDeleted":0,"registrySkippedDueToRace":false,
+  "watchAccountsIndexed":7,"durationMs":2447}
+```
+
+What each part is evidence of:
+
+- **It fired at all**, at `03:20:03`, from
+  `/home/ubuntu/stationly-backend/ops/maintenance_cron.sh` — the new `A2` path.
+  That is the whole point of B5. `B4`'s canary proved the exec bit survived
+  git → clone → rsync; this proves the installed crontab entry resolves and runs
+  unattended, on schedule, with cron's own environment rather than a login shell.
+- `loggedInHealed: []` — `HEAL_TRUE_TO_FALSE` is `false` in the build actually
+  running on the box, not just in the branch (`A1`).
+- `durationMs: 2447` sits inside the 2.2–2.4s band held every night since 08-25,
+  and `usersScanned: 8` / `watchAccountsIndexed: 7` match 09-01 and 09-02
+  exactly. The clean-checkout deploy changed no behaviour.
+- **No sweep line for 09-03**, where every night through 09-02 had one at 03:00.
+  Visible confirmation that `A10` reached the box.
+
+**Night 2 is 2026-09-04 03:20 UTC.** One command closes this task:
+
+```bash
+ssh <STAGING_HOST> 'tail -5 ~/logs/maintenance.log'
+```
+
+Expect one reconcile line, `ok`, `loggedInHealed: []`, and no 03:00 sweep line.
 
 ### ☐ B6 — Regression pass on staging
 
@@ -535,7 +594,8 @@ On a real device against staging: sign in, save a board, sign out, sign back in,
 account switch, delete account. Plus `GET /lines/status`, a station board, and a live
 stream connection.
 
-⛔ **GATE B** — two clean scheduled runs from `ops/`, and the device pass clean.
+⛔ **GATE B** — two clean scheduled **reconcile** runs from `ops/` (1 of 2 as of
+09-03), and the device pass clean.
 
 ---
 
@@ -1114,6 +1174,13 @@ Flip `HEAL_TRUE_TO_FALSE` to `true` on `dev_13Jul` and promote through all three
 branches. Only now: with the old stores gone there is no stale source left for it to
 ratify.
 
+**Two edits, not one** (`A9`): the constant in
+`src/services/sessionMaintenanceService.ts`, and its pin in `src/tests/run.ts`
+(`RELEASE FLAG: HEAL_TRUE_TO_FALSE is off`). `npm test` fails until you change
+both — that friction is deliberate. Re-read the preconditions listed at the
+constant's own definition and confirm they hold for **production**, not staging,
+before either edit.
+
 ### ☐ G3 — Close out
 
 - Update `docs/HANDOVER_SESSION_SYNC.md` §1's phase table — production is no longer ❌.
@@ -1123,7 +1190,10 @@ ratify.
 
 ### ☐ G5 — Later: bring `sweep` back
 
-A separate piece of work, not part of this cutover. In order:
+A separate piece of work, not part of this cutover. Note that re-enabling it is
+now **three** edits, not two: `SWEEP_ENABLED`, its pin in `src/tests/run.ts`
+(`RELEASE FLAG: SWEEP_ENABLED is off`, added at `A9`), and the commented-out cron
+line in `ops/maintenance.crontab`. In order:
 
 1. **Make `lastSeen` measure app USE, not sign-in.** Either the Android client calls
    `syncProfile` at cold start, or add a cheap `POST /user/session/touch` that only bumps
@@ -1436,6 +1506,52 @@ State:    Working tree CLEAN. Everything committed and pushed.
           Production still has ONLY the two indexes. No code, no data.
 Next:     B5 (wall clock — tonight's 03:20 and tomorrow's), then B6, C9, C10.
           Those four are all that gate D1 / PR #131.
+```
+
+### 2026-09-03 — B5 night 1; A9 done
+
+```
+Did:      B5  NIGHT 1 OF 2 PASSED. Read ~/logs/maintenance.log on staging.
+              Reconcile fired 03:20:03 UTC from the ops/ path, ok, 2447ms,
+              loggedInHealed: [], 8 users / 7 watch accounts — identical to
+              09-01 and 09-02. Full evidence in the B5 task.
+              Night 2 is 2026-09-04 03:20 UTC.
+          A9  DONE, and decided in the doing: the objection was never that it
+              was wrong, only that nobody had chosen. Both flags exported and
+              pinned. 212/212 (was 210), tsc --noEmit clean.
+
+CORRECTED A STALE TASK (plan rule 6): B5 said "BOTH scheduled jobs fire".
+          Sweep has not been scheduled since A10 commented its cron line out, so
+          taken literally B5 could never pass. It is reconcile-only; F4 is where
+          sweep gets its own two nights. Fixed in the task and in GATE B.
+
+READ FROM THE LOG, worth keeping: there is no 03:00 sweep line on 09-03, where
+          every night 08-25..09-02 had one. That is A10 confirmed on the BOX,
+          not just in the branch — a fact the crontab alone would not show you,
+          since a line can be present and the job still gated in code.
+
+A9 WIDENED, deliberately: the task named HEAL_TRUE_TO_FALSE. SWEEP_ENABLED got
+          the same treatment because it is the same class of danger (A10) and
+          was equally unasserted. Pinning one and not the other would have left
+          the plan's own reasoning half-applied.
+          Both tests carry a message naming the task that re-enables them, and
+          G2/G5 now say out loud that they are TWO edits (three for G5, with the
+          cron line). npm test failing after a deliberate flip is the design.
+
+BLOCKED, and the owner should know: C9 was AUTHORISED this session — the owner
+          said go ahead with the read-only prod survey — but the probe command
+          was refused by the LOCAL permission classifier, not by anything on
+          Google's side. Nothing connected to production. No credential was
+          read. Production remains: two indexes, no code, no data.
+          To unblock, the owner either runs the four C9 probes themselves with
+          `! node src/scripts/<probe>.cjs --key=$PROD_KEY` or adds a Bash
+          permission rule. The authorisation stands; only the mechanism failed.
+
+State:    dev_13Jul is AHEAD of main/release_staging by the A9 commit. That is
+          fine and intended — A9 is export-and-test only, changes no runtime
+          behaviour, and does not need to reach production before D1.
+Next:     B5 night 2 (09-04, one tail), C9 (authorised, needs a permission
+          path), C10, B6. Still those four gating D1 / PR #131.
 ```
 
 ---
