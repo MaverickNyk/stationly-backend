@@ -19,10 +19,9 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  B5   NIGHT 1 PASSED 09-03. Night 2 is 09-04 03:20 UTC.   ║
-║                      One tail of the staging log closes it.              ║
-║                 Then B6, a real-device pass. That plus B5 is ALL that    ║
-║                 gates D1 now — phases A and C are DONE.                  ║
+║  RESUME HERE ▸  B5 night 2, 2026-09-04 03:20 UTC. ONE tail of the        ║
+║                 staging log. It is the LAST thing before D1.             ║
+║                 B6 passed on a real device 09-03. A and C are complete.  ║
 ║                                                                          ║
 ║  The prod box's pending reboot is DEFERRED by decision (C10). Do not    ║
 ║  let it fire between D1 and the end of phase E. Reboot after, at G3.     ║
@@ -37,9 +36,10 @@ Companion reading:
 ║  tasks above are done. It will look ready long before it is.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-03 (c)
-COUNT:        27 tasks done, 20 open.  (A9, C9, C10 closed; B5 half done)
-              PHASES A AND C ARE COMPLETE. Gate C is met.
+UPDATED:      2026-09-03 (d)
+COUNT:        28 tasks done, 19 open.  (A9, C9, C10, B6 closed today)
+              PHASES A AND C COMPLETE. Gate C met. B5 night 2 is the ONLY
+              thing left in phase B, and the only thing left before D1.
 
 COMMITTED:    Phase A is d08f3ac. A9 is a separate commit on dev_13Jul, which
               is now AHEAD of main/release_staging (c9b5285) by that one
@@ -51,8 +51,8 @@ PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               data written, no document read outside read-only probes.
               The app on the box is the same build it was running on 09-01.
 
-BLOCKED ON:   the calendar for B5 night 2, and B6 which needs a real device.
-              Nothing else. No decision outstanding.
+BLOCKED ON:   the calendar, and nothing else. B5 night 2 fires 09-04 03:20 UTC.
+              No decision outstanding, no work outstanding.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -68,7 +68,7 @@ BLOCKED ON:   the calendar for B5 night 2, and B6 which needs a real device.
 **Phase checklist**
 
 - [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
-- [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 night 1 of 2 ✅, B6 outstanding**
+- [~] **B** — Staging re-proof — B1–B4, B6 ✅ · **B5 night 2 (09-04) is all that remains**
 - [x] **C** — Production prerequisites — C0–C11 ✅ **complete**; gate C met 09-03
 - [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
 - [ ] **E** — Soak — days, not hours
@@ -598,14 +598,74 @@ ssh <STAGING_HOST> 'tail -5 ~/logs/maintenance.log'
 
 Expect one reconcile line, `ok`, `loggedInHealed: []`, and no 03:00 sweep line.
 
-### ☐ B6 — Regression pass on staging
+### ☑ B6 — Regression pass on staging — PASSED 2026-09-03
+
+**Real Android device, real staging, owner driving the handset.** Every step was
+verified in Firestore with `check_session_state.cjs` between steps, not inferred
+from the app looking right. Accounts: `testnyk67` → `testnyk66` → `testnyk67`.
+
+| # | step | Firestore evidence |
+|---|---|---|
+| 1 | sign in | no 500 — the `collectionGroup('devices')` query inside the sign-in transaction resolved. This is invariant 1 proven on a device |
+| 2 | save board | 4 stations held; `rev` 163 → 164 |
+| 3 | sign out | android row `1e39b0b2` **deleted**, not stale; both iOS rows untouched; `loggedIn` stayed `true` |
+| 4 | sign back in | **same device id `1e39b0b2` reused**; exactly one android row; board intact |
+| 5 | account switch | row **moved** 67 → 66; ownership invariant held; **`fcm_tokens` moved with it** |
+| 6 | delete account | account doc absent, **0 surviving subcollections**, 0 orphan rows, 4 station holds released, registry recomputes exact |
+
+Read paths: `GET /lines/status` listed, station boards listed, **and an FCM
+disruption push was received on the handset.**
+
+**The five findings worth keeping.**
+
+1. **Step 4 — the device id was REUSED, not regenerated.** A fresh id per sign-in
+   would orphan the previous row and accumulate dead rows forever, which is close
+   to the old model's failure mode. This is the single most reassuring result of
+   the pass.
+2. **Step 5 — the device row and the push token moved TOGETHER.** That is bug #3
+   (`DEVICE_IDENTITY_AND_SESSIONS.md` §3) fixed and proven. It is the whole point
+   of unifying the lifecycle: those were two stores behind two code paths, so a
+   fix to one silently missed the other.
+3. **Step 6 — zero surviving subcollections.** Bug #4: `deleteAccount` used to
+   purge one named subcollection and miss `fcm_tokens`. Nothing survived, and
+   there is **no phantom parent** — the nastier variant, where a subcollection
+   outlives its document, invisible to every account-iterating check while still
+   matching the unfiltered `collectionGroup` the broadcast audience uses.
+4. **An FCM push actually ARRIVED.** This is bug #1 (§2) closed end to end, and
+   it is the one bug in this set that **no Firestore inspection could ever have
+   confirmed** — the store looked correct the entire time it was broken. The
+   audience resolved to zero devices and `send` reported success. A push landing
+   on a real handset is the only possible proof.
+5. **Unasked-for bonus:** signing back into `testnyk67` moved the row off
+   `testnyk66`, and `testnyk66` correctly flipped to `loggedIn=false` with 0
+   rows. That is the "last device out" path — release the account only when its
+   FINAL device leaves — which fired correctly without being deliberately tested.
+
+**Honest limits of this pass — do not overstate it later.**
+
+- **No `fcm_tokens` baseline was captured before step 5.** The token's placement
+  after the switch is measured; its *removal* from the old account is inference
+  (strong — that handset was signed into `testnyk67` for steps 1–4 — but not
+  measured). If this ever needs to be airtight, repeat step 5 capturing tokens
+  on both sides.
+- **The board was not re-checked between sign-out and sign-in.** It was intact
+  after, which is what the step protects, but the intermediate state is unobserved.
+- `testnyk66`'s `rev` bumped 8 → 9 on sign-in where `testnyk67`'s stayed flat
+  across its own sign-out/sign-in. Asymmetric and unexplained, but benign in this
+  direction: a spurious `stateRev` bump costs one extra profile fetch. A MISSING
+  bump would be the dangerous case and was not seen.
+- `testnyk67` is now deleted, so staging has lost its richest fixture (rev 164,
+  3 device rows, 4 stations). Rebuild one before the next pass needs it.
+
+Original task:
 
 On a real device against staging: sign in, save a board, sign out, sign back in,
 account switch, delete account. Plus `GET /lines/status`, a station board, and a live
 stream connection.
 
 ⛔ **GATE B** — two clean scheduled **reconcile** runs from `ops/` (1 of 2 as of
-09-03), and the device pass clean.
+09-03), and the device pass clean (**B6 PASSED 09-03**). Night 2 is the only
+outstanding half of this gate.
 
 ---
 
@@ -1759,6 +1819,54 @@ State:    Production untouched: two indexes, no code, no data. C10 was a read,
           nothing was changed on the box.
 Next:     Decide the reboot. B5 night 2 (09-04 03:20 UTC, one tail). B6 on a
           real device. Then D1.
+```
+
+### 2026-09-03 (d) — B6 passed on a real Android device
+
+```
+Did:      B6  PASSED, all six lifecycle steps plus the read paths. Owner drove
+              a real Android handset against staging; every step was verified
+              in Firestore with check_session_state.cjs BETWEEN steps rather
+              than inferred from the app looking right. Full table in B6.
+          Reboot DEFERRED by owner decision — recorded in C10 and booked into
+              G3, with the Automatic-Reboot check that makes deferring safe.
+
+WHY ANDROID AND NOT iOS: production is Android-only and has never had an iOS
+          install. The two platforms write DIFFERENT stores — iOS writes the
+          root `devices` collection via /device/register, which reads 0 on prod
+          and always has. An iOS pass would exercise the one part of the system
+          production has never touched and miss the store P2 actually migrates.
+
+THE RESULT THAT ONLY A DEVICE COULD PRODUCE: an FCM disruption push ARRIVED on
+          the handset. That closes bug #1 end to end, and no amount of Firestore
+          inspection could ever have established it — the store looked correct
+          the entire time the feature was broken, because `lines` was dropped in
+          the controller, the audience matched zero devices, and send() returned
+          SUCCESS. This is the reason B6 exists as a task at all.
+
+STRONGEST STRUCTURAL RESULT: on sign-out then sign-in the device id was REUSED
+          (1e39b0b2), not regenerated. A fresh id per sign-in would orphan the
+          old row and accumulate dead rows forever.
+
+FOUND WITHOUT TESTING FOR IT: signing back into testnyk67 moved the row off
+          testnyk66, and testnyk66 correctly went loggedIn=false with 0 rows.
+          That is the "last device out" release path firing correctly.
+
+LIMITS RECORDED IN THE TASK, so nobody overstates this later: no fcm_tokens
+          baseline was captured before the account switch, so the token's
+          REMOVAL from the old account is inference rather than measurement;
+          the board was not re-checked between sign-out and sign-in; and one
+          unexplained but benign stateRev asymmetry between the two accounts.
+
+COST: testnyk67 was the account deleted, so staging lost its richest fixture
+          (rev 164, 3 device rows, 4 stations). Rebuild one before the next pass.
+
+State:    Production untouched — two indexes, no code, no data. Everything this
+          session touched was staging or read-only.
+          dev_13Jul is ahead of main/release_staging by today's commits, all of
+          them docs plus the A9 test. Not pushed.
+Next:     B5 NIGHT 2, 2026-09-04 03:20 UTC. One tail of ~/logs/maintenance.log.
+          That is the last thing before D1 / PR #131.
 ```
 
 ---
