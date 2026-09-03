@@ -21,8 +21,11 @@ Companion reading:
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  RESUME HERE ▸  B5   NIGHT 1 PASSED 09-03. Night 2 is 09-04 03:20 UTC.   ║
 ║                      One tail of the staging log closes it.              ║
-║                 Then B6 (real device) and C10 (pm2 list). C9 is DONE.    ║
-║                 Those three are ALL that gate D1.                        ║
+║                 Then B6, a real-device pass. That plus B5 is ALL that    ║
+║                 gates D1 now — phases A and C are DONE.                  ║
+║                                                                          ║
+║  BEFORE D1: the prod box has a PENDING REBOOT. Decide reboot-now vs      ║
+║  defer, and do NOT let it fire during the D4-D6 backfill. See C10.       ║
 ║                                                                          ║
 ║  C9 measured it: 106 of 108 prod accounts would be released TODAY by     ║
 ║  either job, wiping 191 registry keys. Both jobs are off (A1, A10) and   ║
@@ -34,8 +37,9 @@ Companion reading:
 ║  tasks above are done. It will look ready long before it is.             ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-03 (b)
-COUNT:        26 tasks done, 21 open.  (A9, C9 closed; B5 half done)
+UPDATED:      2026-09-03 (c)
+COUNT:        27 tasks done, 20 open.  (A9, C9, C10 closed; B5 half done)
+              PHASES A AND C ARE COMPLETE. Gate C is met.
 
 COMMITTED:    Phase A is d08f3ac. A9 is a separate commit on dev_13Jul, which
               is now AHEAD of main/release_staging (c9b5285) by that one
@@ -47,8 +51,8 @@ PRODUCTION:   Two Firestore indexes, and NOTHING ELSE. No code deployed, no
               data written, no document read outside read-only probes.
               The app on the box is the same build it was running on 09-01.
 
-BLOCKED ON:   the calendar, for B5 night 2. Nothing else waits on a decision.
-              C10 needs one read-only SSH to prod; B6 needs a real device.
+BLOCKED ON:   the calendar for B5 night 2, and B6 which needs a real device.
+              One decision outstanding: the prod box's pending reboot (C10).
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -64,7 +68,7 @@ BLOCKED ON:   the calendar, for B5 night 2. Nothing else waits on a decision.
 
 - [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
 - [~] **B** — Staging re-proof — B1–B4 ✅ · **B5 night 1 of 2 ✅, B6 outstanding**
-- [~] **C** — Production prerequisites — C0–C9, C11 ✅ · **C10 outstanding (one `pm2 list`)**
+- [x] **C** — Production prerequisites — C0–C11 ✅ **complete**; gate C met 09-03
 - [ ] **D** — The deploy window — 9 tasks, one session, gated on the four above
 - [ ] **E** — Soak — days, not hours
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
@@ -980,7 +984,38 @@ outstanding here are `check_state_rev.cjs`, `check_drift_reconcile.cjs --before`
   with a note counting legacy `users.sessions` entries. That is correct and expected
   pre-backfill — see `A4`. It is not a reason to stop; it is the reason `D5` exists.
 
-### ☐ C10 — Confirm the process manager
+### ☑ C10 — Confirm the process manager — PASSED 2026-09-03
+
+```
+id  name               mode     ↺  status   cpu  memory
+24  stationly-backend  cluster  3  online   0%   221.8mb
+27  pm2-logrotate               -  online   0%   68.8mb
+```
+
+**1 instance. PASS.** Cluster mode at a count of 1 is fine — the count is what
+matters, and `pm2 reload` inherits it, so the deploy cannot widen this. `↺ 3` is
+a lifetime restart count, not a crash loop; 221.8mb is normal steady state.
+`pm2-logrotate` is installed, so the deploy-day logs will not fill the disk.
+
+> **⚠️ FOUND HERE, NOT PART OF C10 — the box wants a reboot.** The SSH login
+> banner prints `*** System restart required ***`, a pending kernel/package
+> update. **Do not let this happen during `D4`–`D6`.** A reboot mid-backfill
+> restarts pm2 under the new code with the migration half-applied — some
+> accounts with device rows, some without — which is the one state neither the
+> probes nor the jobs have a defined answer for.
+>
+> Decide **before** `D1`, and record the decision here:
+> - **reboot first** (preferred) — do it now, while prod still runs the OLD
+>   build and no data has moved. Cheapest possible moment. Confirm pm2 comes
+>   back with 1 instance and the API answers, then proceed.
+> - **defer** — explicitly, and do not let anything trigger it until Phase E is
+>   over. `unattended-upgrades` does not reboot on its own by default, but check
+>   `/var/run/reboot-required` and `/etc/apt/apt.conf.d/50unattended-upgrades`
+>   rather than assuming.
+>
+> Status: ⬜ **UNDECIDED as of 2026-09-03.** This is now a Phase D precondition.
+
+Original task:
 
 ```bash
 ssh <PROD_HOST> 'pm2 list'
@@ -998,9 +1033,12 @@ If it is not 1: `pm2 delete stationly-backend`, then let the next deploy cold-st
 ⛔ **GATE C** — `check_device_indexes.cjs` **PASSES**, root `devices` is empty, nginx
 reloaded clean, `pm2 list` shows 1, and `C1`/`C2` hold the same secret.
 
-Status 2026-09-03: all of these hold **except `pm2 list`**, which is `C10` and is
-the only thing left in Phase C. Indexes passed at `C8`, root `devices` is 0
-(`C8`/`C9`), nginx verified at `C6`, secrets matched at `C0`–`C2`.
+**GATE C IS MET, 2026-09-03.** Indexes passed at `C8`; root `devices` is 0
+(`C8`/`C9`); nginx verified at `C6`; `pm2 list` shows 1 (`C10`); `C1`/`C2` hold
+the same secret (`C0`). **Phase C is complete.**
+
+Carried forward as a Phase D precondition, not a gate C failure: the prod box
+has a **pending reboot** — see the warning in `C10`.
 
 ---
 
@@ -1674,6 +1712,37 @@ State:    Production STILL untouched — two indexes, no code, no data. Every
           probe is read-only; verified no .set/.update/.delete before running.
 Next:     C10 (one read-only `pm2 list`, must show 1), B5 night 2 (09-04),
           B6 (real device). Those three now gate D1 / PR #131.
+```
+
+### 2026-09-03 (c) — C10 passed; PHASE C COMPLETE
+
+```
+Did:      C10 PASSED. One read-only SSH. pm2 shows exactly ONE
+              stationly-backend, cluster mode, online, 221.8mb, lifetime
+              restarts 3. pm2-logrotate also online, so deploy-day logging
+              will not fill the disk.
+              Cluster-at-1 is fine: the COUNT is the invariant and pm2 reload
+              inherits it, so the deploy cannot widen it.
+
+GATE C IS MET. Phase C is complete, and so is Phase A. Only B5 night 2 and B6
+          now stand between here and D1 / PR #131 (open, mergeable, 20 commits).
+
+FOUND WHILE DOING SOMETHING ELSE — the value of reading the whole screen:
+          the SSH login banner says "*** System restart required ***". The prod
+          box has a pending kernel/package update. Nothing to do with C10, and
+          it would have been easy to scroll past to the pm2 table.
+          WHY IT MATTERS: a reboot during D4-D6 restarts pm2 under the new code
+          with the backfill HALF APPLIED — some accounts with device rows, some
+          without. Neither the probes nor the jobs have a defined answer for
+          that state, and it is not one the rollback covers cleanly.
+          Cheapest moment to reboot is NOW, while prod still runs the OLD build
+          and no data has moved. Recorded as an explicit Phase D precondition
+          in C10 with both options; the owner has not decided yet.
+
+State:    Production untouched: two indexes, no code, no data. C10 was a read,
+          nothing was changed on the box.
+Next:     Decide the reboot. B5 night 2 (09-04 03:20 UTC, one tail). B6 on a
+          real device. Then D1.
 ```
 
 ---
