@@ -14,10 +14,20 @@ import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
 import { getWebUrl, getBaseUrl } from './utils/formatters';
 import internalRoutes from './routes/internalRoutes';
+import { StripeWebhookController } from './controllers/stripeWebhookController';
+import { SupportMoneyReturnController } from './controllers/supportMoneyReturnController';
 import { attachStationStream } from './services/stationStreamServer';
 import { StationStreamHub } from './services/stationStreamHub';
 import { LineStatusStreamHub } from './services/lineStatusStreamHub';
+import { DisruptionTriggerService } from './services/disruptionTriggerService';
 import { PredictionCache } from './services/predictionCache';
+
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// The café-trial web app is hosted inside this process for the duration of the
+// trial. This import and the mountTemporaryWebApp() call below are the ENTIRE
+// coupling; see web-temp/CAFE_KIOSK_DISPLAY.md.
+import { mountTemporaryWebApp, attachTemporaryKioskStream } from './tempWebHost';
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 dotenv.config();
 
@@ -45,7 +55,37 @@ app.use(morgan('dev'));
 // to the route (further down) would be too late.
 app.use('/internal', express.json({ limit: '5mb' }));
 
+// Stripe contribution webhook. Two ordering constraints put it HERE:
+//
+//  1. It needs the RAW request bytes for HMAC signature verification. A
+//     JSON.parse → JSON.stringify round-trip reorders keys and the signature
+//     stops matching. `express.raw()` as route middleware captures the body
+//     before the global `express.json()` below runs — body-parser no-ops once
+//     `req._body` is set, so the first parser to match wins (same rule as the
+//     `/internal` line above).
+//  2. Path is `/api/v1/*` so nginx proxies it (no catch-all `location /`), but
+//     mounted BEFORE `app.use('/api/v1', apiRoutes)` so it skips that router's
+//     `validateApiKey` — Stripe sends no `X-Stationly-Key`. Same pattern as the
+//     admin routes and the waitlist POST.
+//
+// Every guard (rate limit, secret configured, signature, replay window, JSON
+// parse, livemode fence) lives in StripeWebhookController.
+app.post(
+    '/api/v1/webhooks/stripe',
+    RateLimitMiddleware.webhook,
+    express.raw({ type: '*/*', limit: '1mb' }),
+    StripeWebhookController.handle,
+);
+
 app.use(express.json());
+
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// Mounted here, after express.json() and BEFORE the /api/v1 router, so the
+// kiosk's own routes never pass through validateApiKey — the whole point is
+// that no key exists on a café screen. Same placement rule as the admin routes
+// and the waitlist POST.
+mountTemporaryWebApp(app);
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 // Serving icons from the public directory
 // Dynamic line-icon route — generates a TfL-roundel PNG for any known
@@ -547,6 +587,64 @@ Stationly provides a high-performance middleware for transport data, specializin
                         modeName: { type: 'string', example: 'tube' }
                     }
                 },
+                BoardFilter: {
+                    type: 'object',
+                    description:
+                        'How one queue is narrowed. Both the user INTENT (`viaIds`) and its ' +
+                        'RESOLUTION (`destinationIds`) are kept: the resolution goes stale when a ' +
+                        'branch closes, so the intent has to survive to be re-resolved.',
+                    properties: {
+                        mode: { type: 'string', enum: ['ALL', 'DESTINATIONS', 'VIA'], example: 'ALL' },
+                        destinationIds: {
+                            type: 'array', items: { type: 'string' },
+                            description: 'Naptan allow-list. Filters never match on display name.'
+                        },
+                        destinationNames: { type: 'array', items: { type: 'string' } },
+                        viaIds: { type: 'array', items: { type: 'string' } },
+                        viaNames: { type: 'array', items: { type: 'string' } },
+                        resolvedAt: { type: 'number', description: 'Epoch millis' }
+                    }
+                },
+                BoardSelection: {
+                    type: 'object',
+                    description:
+                        'One departure queue on a board — one line, one direction, one stop. Flat ' +
+                        'under the board: a line level would hold nothing but the line id.',
+                    required: ['naptanId', 'line'],
+                    properties: {
+                        naptanId: {
+                            type: 'string', example: '490008805N',
+                            description:
+                                'The RESOLVED stop for this exact (line, direction). On rail it equals ' +
+                                'the station naptan; on bus it is the specific pole, and the two ' +
+                                'directions of one route sit on opposite sides of the road.'
+                        },
+                        line: { type: 'string', example: '39' },
+                        mode: { type: 'string', example: 'bus', description: 'On the selection — a hub can serve several modes' },
+                        direction: { type: 'string', example: 'inbound' },
+                        filter: { $ref: '#/components/schemas/BoardFilter' }
+                    }
+                },
+                SavedBoard: {
+                    type: 'object',
+                    description:
+                        'One saved board — ONE PER STATION. `id` is the hub the user picked (the ' +
+                        'client\'s groupingId), matching the one card the home screen draws and the ' +
+                        'one station a widget is configured with. Selections hang flat under it, ' +
+                        'each carrying its own fetch naptan, because on a bus hub each ' +
+                        '(line, direction) departs from its own pole — e.g. Smithwood Close hub ' +
+                        '490012211N, route 39 inbound from 490008805N and outbound from ' +
+                        '490012211N. Written by iOS; Android still uses the separate `stations` list. ' +
+                        'Carries what the user TRACKS only — appearance (expanded, rows, pin, ' +
+                        'order) is device-local and never sent.',
+                    required: ['id', 'selections'],
+                    properties: {
+                        id: { type: 'string', example: '490012211N', description: 'The hub / grouping id — the board\'s identity' },
+                        name: { type: 'string', example: 'Smithwood Close' },
+                        selections: { type: 'array', items: { $ref: '#/components/schemas/BoardSelection' } },
+                        addedAt: { type: 'number', description: 'Epoch millis — drives restore order' }
+                    }
+                },
                 UserProfile: {
                     type: 'object',
                     properties: {
@@ -555,8 +653,40 @@ Stationly provides a high-performance middleware for transport data, specializin
                         displayName: { type: 'string', example: 'John Doe' },
                         stations: {
                             type: 'array',
+                            description: 'LEGACY board list — Android only.',
                             items: { $ref: '#/components/schemas/SubscribedStation' }
+                        },
+                        boards: {
+                            type: 'array',
+                            description:
+                                'v2 board list. Always present on read: derived from `stations` for an ' +
+                                'account that has only ever used Android, so a first iOS login restores ' +
+                                'their board without writing back over Android\'s list.',
+                            items: { $ref: '#/components/schemas/SavedBoard' }
+                        },
+                        boardsUpdatedAt: { type: 'number', description: 'LWW guard for `boards`, epoch millis' },
+                        supportMoney: {
+                            type: 'object',
+                            description:
+                                'Voluntary-contribution status. Present ONLY when the account has ' +
+                                'contributed at least once. Status only, never a history — see ' +
+                                '`UserService.normaliseSupportMoneyForClient`. Written server-side off a ' +
+                                'signature-verified payment webhook; the client cannot set it.',
+                            properties: {
+                                status: { type: 'string', enum: ['active', 'none'], description: 'Recomputed from `until` on every read' },
+                                tier:   { type: 'string', enum: ['tip', 'supporter'] },
+                                since:  { type: 'number', description: 'Epoch millis of the most recent contribution' },
+                                until:  { type: 'number', description: 'Epoch millis the Supporter badge stops showing' },
+                                count:  { type: 'number', description: 'Lifetime contribution count — powers copy, never shown as a list' }
+                            }
                         }
+                        // No `preferences`. Client settings — expanded, rows, pin,
+                        // order, layout — are DEVICE-LOCAL, kept per account on the
+                        // device and restored when the same person signs back in
+                        // there. They change on every touch and this document is the
+                        // one every login reads, so syncing them spent the write
+                        // quota on the lowest-value state in the app. Advertising the
+                        // field here is what would invite a client to start again.
                     }
                 },
                 UserSyncRequest: {
@@ -764,6 +894,12 @@ app.get('/', (req, res) => {
 // Public — no API key required (website waitlist form)
 app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController.join);
 
+// Public — post-checkout browser return. Stripe's redirect only accepts https,
+// so this branded page bounces into the app's `<scheme>://support-money/thanks` deep
+// link (falling back to a button + the website). Under `/api/v1/*` for nginx,
+// mounted here so it skips `validateApiKey` — the browser arrives with no key.
+app.get('/api/v1/support-money/return', SupportMoneyReturnController.render);
+
 // Admin routes — mounted BEFORE `apiRoutes` so they bypass the
 // client `X-Stationly-Key` middleware that apiRoutes installs at
 // the top of its router. Guarded instead by a separate
@@ -792,6 +928,13 @@ const server = http.createServer(app);
 
 attachStationStream(server);
 
+// ── ⚠️ TEMP WEB HOST — DELETE THIS BLOCK ON EXTRACTION ──────────────────────
+// The café display's read-only stream. Registered AFTER the real one so its
+// upgrade handler runs second; both return without destroying a socket whose
+// path is not theirs, so the two coexist. See web-temp/CAFE_KIOSK_DISPLAY.md.
+attachTemporaryKioskStream(server);
+// ── end TEMP WEB HOST ──────────────────────────────────────────────────────
+
 // Tuning knobs, env-overridable so `freshForMs` can be moved on a live box
 // without a code change — the whole point of watching `restHitRate` is being
 // able to act on it. Unset vars leave the module defaults untouched.
@@ -814,6 +957,14 @@ PredictionCache.startSweeper();
 server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
+
+    // Disruption → immediate widget refresh. Registered as an OBSERVER rather
+    // than imported by the hub, which is constrained to import only `ws` to
+    // stay free of cycles (see the note atop lineStatusStreamHub). Wiring it
+    // here inverts the dependency and keeps that invariant intact.
+    LineStatusStreamHub.observe((lineId, payload) => {
+        DisruptionTriggerService.observe(lineId, payload.statusSeverityDescription, payload.mode);
+    });
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
     console.log(`Stream: ws://localhost:${port}/api/v1/stream`);

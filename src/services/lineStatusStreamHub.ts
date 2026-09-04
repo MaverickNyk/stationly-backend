@@ -34,7 +34,7 @@ import { WebSocket } from 'ws';
 /** Which producer wrote an entry. Diagnostic only — never affects routing. */
 export type LineStatusSource = 'syncer' | 'tfl';
 
-interface LineStatusPayload {
+export interface LineStatusPayload {
     id: string;
     name?: string;
     statusSeverityDescription?: string;
@@ -43,7 +43,36 @@ interface LineStatusPayload {
     lastUpdatedTime?: string | number;
 }
 
+/** Notified on every genuinely-new line status. See [LineStatusStreamHub.observe]. */
+export type LineStatusObserver = (lineId: string, payload: LineStatusPayload) => void;
+
 export class LineStatusStreamHub {
+
+    /**
+     * Side-effects that want to know a line's status changed.
+     *
+     * An observer list rather than a direct import, purely to keep constraint 3
+     * above intact: this module imports only `ws`, and the disruption trigger
+     * pulls in the push stack (registry, APNs, refresh policy). Registering
+     * from `server.ts` inverts that dependency so the hub stays a leaf.
+     *
+     * Observers are called synchronously and their exceptions are swallowed —
+     * this runs inside the live-stream broadcast path, and a failing side
+     * effect must never cost a connected client its board.
+     */
+    private static observers: LineStatusObserver[] = [];
+
+    /** Register a side-effect. Called once at startup from `server.ts`. */
+    static observe(observer: LineStatusObserver): void {
+        this.observers.push(observer);
+    }
+
+    private static notifyObservers(lineId: string, payload: LineStatusPayload): void {
+        for (const observer of this.observers) {
+            try { observer(lineId, payload); } catch { /* never break the broadcast */ }
+        }
+    }
+
     /** lineId → sockets watching it. The routing table. */
     private static rooms = new Map<string, Set<WebSocket>>();
 
@@ -190,6 +219,16 @@ export class LineStatusStreamHub {
         this.writes[source]++;
         if (this.lastFrame.get(id) === body) { this.suppressedDuplicates++; return -1; }
         this.lastFrame.set(id, body);
+
+        // Notify observers (today: the disruption→push trigger).
+        //
+        // Placed here, after the duplicate filter and BEFORE the room check,
+        // for two reasons. After the filter, because an identical re-broadcast
+        // is not news. Before the room check, because devices needing a PUSH
+        // are by definition the ones with NO socket open — returning early on
+        // an empty room would mean the trigger only ever fired for users whose
+        // app was already in the foreground watching, which is exactly backwards.
+        this.notifyObservers(id, payload);
 
         const room = this.rooms.get(id);
         if (!room || room.size === 0) return 0;

@@ -1,0 +1,8 @@
+# This folder is its own project (see TEMPORARY.md) and carries its own ignores.
+node_modules/
+
+# Build output. `dist/` is the ONLY thing that ships to the server (the deploy
+# script excludes `src` at any depth), but it is a build artifact - it is
+# produced by `npm run build` before a deploy, not committed.
+dist/
+*.tsbuildinfo

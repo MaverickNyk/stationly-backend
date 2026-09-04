@@ -5,6 +5,7 @@ import {
     PredictionCacheStats,
     PredictionSourceTag,
 } from './types';
+import { viaKeyOf } from '../../utils/viaKey';
 
 /**
  * THE single in-memory store of current station predictions.
@@ -235,11 +236,48 @@ export class PredictionCache {
         // fetch rather than refreshing it for a no-op.
         if (existing && existing.payload === payload && existing.lut === lut) return true;
 
+        // Stamp the branch token here, at THE single write-through, because
+        // there are two producers and only one of them is ours. Our own
+        // TypeScript sources build departures from TfL arrivals; the Java Syncer
+        // POSTs its own payloads to /internal/station-updates and they are
+        // stored verbatim. Deriving it in a PredictionSource covered only the
+        // first, so `viaKey` was present on unsubscribed stations and absent on
+        // subscribed ones — the same station answering differently depending on
+        // which producer wrote last, which is worse than not having the field.
+        //
+        // Read off `displayName` rather than the raw `towards`: it is the one
+        // field both producers populate, and it keeps the token and the text on
+        // the board derived from the same string.
+        this.stampViaKeys(payload);
+
         this.entries.set(id, { payload, storedAt: Date.now(), lut, source });
         this.writes[source]++;
 
         if (this.entries.size > this.maxEntries) this.evictOldest();
         return true;
+    }
+
+    /**
+     * Fill in each departure's branch token, in place, where a producer has not.
+     *
+     * Never overwrites an existing value: a producer that knows better (ours
+     * reads TfL's raw `towards`) keeps its own answer.
+     */
+    private static stampViaKeys(payload: StationPredictionResponse): void {
+        const lines = (payload as any)?.lines;
+        if (!lines || typeof lines !== 'object') return;
+        for (const line of Object.values<any>(lines)) {
+            for (const dir of Object.values<any>(line?.dirs || {})) {
+                for (const pred of (dir?.preds || [])) {
+                    if (!pred || pred.viaKey !== undefined) continue;
+                    // Assigned ONLY when there is a branch to name. Writing null
+                    // would put the key on every departure of every unbranched
+                    // line, which is nearly all of them.
+                    const key = viaKeyOf(pred.displayName);
+                    if (key) pred.viaKey = key;
+                }
+            }
+        }
     }
 
     // ─── lifecycle ───────────────────────────────────────────────────────
