@@ -1020,6 +1020,18 @@ real time on staging:
 
 **THE BASELINE. `D6` and `F1` compare against these numbers. Do not edit them.**
 
+> **⚠️ THE PLATFORM HAS MOVED SINCE THIS WAS TAKEN (noted 2026-09-04).** These are
+> a 2026-09-03 snapshot of a **live** product, not a fixed constant. By the
+> morning of 09-04 production held **111 accounts, not 108** — `loggedIn:true`
+> went 106 → 109 while `loggedIn:false` stayed at exactly 2, i.e. three ordinary
+> signups, confirmed by the owner. The registry likewise read **192 keys / 237
+> holds** against the 191 / 235 recorded below.
+>
+> **Do not read that drift as a fault.** Expect the counts to keep moving; what
+> must hold is the *shape* — `loggedIn:false` accounts having no device rows,
+> `stateRev` all 0, root `devices` empty. Compare against a fresh
+> `backup_firestore_snapshot.cjs` run rather than against these figures.
+
 ```
 Project: stationly-prod          (verified on line 1 of every run)
 
@@ -1608,6 +1620,21 @@ still `false` (`A1`), this run is a **rehearsal**: every line names an account t
 *would* have been released. Zero lines is the expected result after a clean backfill.
 Any lines are a list of accounts to investigate before `G3` turns the heal on.
 
+> ⛔ **READ DECISIONS 7 AND 8 BEFORE RUNNING THIS. This is the task they land in.**
+>
+> **Expect roughly 119 registry keys to be deleted.** As of 09-04 the registry
+> carried 192 keys / 237 holds while only **73** stations are actually wanted by
+> live accounts — 85 of 111 accounts hold a station, exactly one each. That gap
+> is pre-existing drift, and clearing it is what reconcile is *for*; this plan
+> records the same shape on staging (*"104 keys against a correct 13"*). But it
+> is a large deletion, so understand it before this command acts on it, and note
+> that `C9`'s "expect 191" was wrong — see the correction there.
+>
+> **Expect exactly one heal-SKIPPED line: `nykkumar@google.com`**, unless
+> decision 7 has been settled by then. It is `loggedIn:true` with no *live*
+> device row (91.8 days against a 90-day TTL) and is pre-existing, not a
+> backfill miss. **A second account would be a real finding.**
+
 ### ☐ F3 — Install the crontab, and prove cron can exec it
 
 ```bash
@@ -1641,6 +1668,16 @@ the thing `G2` depends on._
 ## Phase G — cleanup and finish
 
 ### ☐ G1 — Delete the legacy stores
+
+> ⛔ **THE ONLY DESTRUCTIVE STEP IN THIS PLAN, AND IT IS IRREVERSIBLE.**
+> **Do not run it before `F4`.** Until it runs, every account carries BOTH the
+> legacy `sessions` map and its new `users/{uid}/devices` rows — that duplication
+> is the rollback path (§9), and it is why seeing `sessions` still present in
+> Firestore throughout phases D, E and F is **correct**, not a missed migration.
+> Nothing in the deployed server reads those fields any more; they are inert.
+>
+> Take a fresh `backup_firestore_snapshot.cjs` immediately before this, the way
+> `D5` did. It is 45 seconds and it is the last cheap moment.
 
 ```bash
 node src/scripts/cleanup_legacy_stores.cjs --key=$PROD_KEY --dry-run
