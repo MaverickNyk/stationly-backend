@@ -19,96 +19,164 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  B1   PR dev_13Jul -> main                                ║
-║                 Phase A is COMMITTED (d08f3ac) and pushed                ║
+║  ▸ THE DEPLOYMENT IS DONE. THE CUTOVER IS NOT. Those are different       ║
+║    things and this box keeps them apart on purpose.                      ║
+║                                                                          ║
+║  DONE ──  Production migrated and LIVE on 51e2e76 since 2026-09-04.      ║
+║           Phases A, B, C, D complete; gates A-D met. Verified healthy on ║
+║           09-08 by a full read-only E1 pass: 6 of 7 checks green, the    ║
+║           7th (GCP quota) not reachable from the CLI. Syncer feeding     ║
+║           (1.2M writes), 1 error line in 4 days, box at load 0.20.       ║
+║                                                                          ║
+║  PARKED ─ F2 deferred by decision 8 (09-08): surplus registry keys stay  ║
+║           while the Syncer has headroom. That parks F3, F4, G1, G2 too,  ║
+║           because reconcile IS the nightly job F3 installs.              ║
+║           G3 reboot deferred INDEFINITELY, owner-initiated only — do not ║
+║           schedule it, do not raise it again. Kernel patch stays pending.║
+║           D9/G4 Stripe, G5 sweep, G6 keepalive: deferred earlier.        ║
+║                                                                          ║
+║  SOAK ──  WINDOW CLOSED 09-09. Days 4 and 5 run, both PASS. Days 1-3     ║
+║           never run — 2 of 5, not 5 of 5. Nothing scheduled remains.     ║
+║                                                                          ║
+║  ✅ CLEAR TO PROMOTE dev_13Jul. The A9 regression is FIXED (fb102a9,      ║
+║     09-09) and invariant 3 holds again. Promotion ships exactly two      ║
+║     wanted things: the flag fix, and SUPPORT_MONEY=false. Nothing else   ║
+║     reaches the box. It does NOT unpark F2-G2 or install any cron.       ║
+║                                                                          ║
+║  Prod has NO crontab and both release jobs are OFF. Nothing scheduled    ║
+║  runs. Nothing can sign anyone out. That is the safe resting state.      ║
+║  Decision 7 SETTLED: nykkumar@google.com is a dangling account, left as  ║
+║  is. E1 reports that ONE failure forever. Two is a finding.              ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-02 (b)
-STATE:        PHASE A IS COMMITTED AND PUSHED — d08f3ac on dev_13Jul.
-              The working tree is clean. Phase B can start.
-              C0, C1, C3-C8, C11 closed. THE INDEXES ARE LIVE ON PRODUCTION
-              and C8's gate has PASSED — the hard blocker on D1 is gone.
-              All 5 core secrets verified present; all 5 Stripe secrets set;
-              both repos carry LIVESTREAM_INGEST_SECRET.
-              Phase C is DONE except C9 (survey) and C10 (process manager),
-              both of which need production access.
-              NOTHING IS COMMITTED. All repo work is in the working tree.
-BLOCKED ON:   nothing.
+UPDATED:      2026-09-09 (b) — soak closed; SUPPORT_MONEY disabled; the A9
+              regression FIXED (fb102a9). Promotion gate CLEARED.
+
+COUNT:        38 tasks done, 10 open. Phases A, B, C, D COMPLETE, gates A-D met.
+              Phase E: day 4 of 5 passed. F and G parked by decision.
+
+DEPLOYMENT:   ✅ DONE. This is the part that is finished, and it is finished.
+              Production migrated 2026-09-04 and serving normally since.
+
+CUTOVER:      ◐ NOT COMPLETE, and deliberately so. F2/F3/F4/G1/G2 are parked
+              on decision 8; G3's reboot is owner-initiated with no trigger.
+              None of that is a defect and none of it is blocking anything —
+              but do NOT stamp this file COMPLETE while they are open.
+
+COMMITTED:    dev_13Jul is fully PUSHED (0 ahead of origin/dev_13Jul), and is
+              **16** commits ahead of release_staging as of 2026-09-09.
+              (Earlier STATUS said 12, then 14; each was right when written and
+              stale by the next commit. Recount before trusting this line.)
+              3f63f1f still cannot reach prod — `build` is plain `tsc`, so
+              web-temp never compiles, and `--exclude src` drops it anyway.
+              **TWO of the 16 now reach the box, not one:**
+                1. a03be92 → compiled sessionMaintenanceService.js. This is the
+                   A9 regression, and it is UNWANTED. See the promotion gate.
+                2. 197270a → .env.defaults. WANTED: it is the SUPPORT_MONEY
+                   disable. `--exclude .env` matches that exact name only, so
+                   .env.defaults ships.
+              RESOLVED 2026-09-09: A9 was fixed rather than deferred
+              (fb102a9), so both changes that reach the box are now wanted
+              ones. The count is 18 commits; recount before trusting it.
+
+PRODUCTION:   MIGRATED AND LIVE on 51e2e76. Re-measured 2026-09-08: 121
+              accounts (was 111 on 09-04), 196 registry keys, 76 recomputed.
+              Legacy stores untouched and still present — G1 deletes them, and
+              G1 is parked. Snapshot at backups/stationly-prod-snapshot-
+              2026-09-04T07-35-40-836Z.json is therefore STILL the live
+              rollback artefact. It holds real user emails and uids in
+              plaintext, untracked, on the owner's laptop.
+
+BLOCKED ON:   nothing external. E1 day 5 is the last scheduled item. Promotion
+              is blocked on a code fix, not on a date.
 ```
 
 **Decisions pending — do not lose these between sessions**
 
-| # | Decision | Default if unanswered |
+| # | Decision | State |
 |---|---|---|
-| 1 | **A8** — commit Phase A? | hold; nothing is committed |
-| 2 | **A9** — export `HEAL_TRUE_TO_FALSE` and pin it with a test? | not done |
-| 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED 2026-09-02: NO, not now.** See `C11` — carry the 4 forward as-is, unblocking `C0` |
-| 4 | Run the read-only production survey (`C9`) now? | not run |
+| 1 | ~~**A8** — commit Phase A?~~ | ☑ **DONE 2026-09-02.** `d08f3ac`, pushed |
+| 2 | ~~**A9** — export `HEAL_TRUE_TO_FALSE` + `SWEEP_ENABLED` and pin both with a test~~ | ☑ **DONE 2026-09-03.** Both exported and pinned; 212/212. `G2` and `G5` updated to name the second edit |
+| 3 | ~~Rotate the 4 production secrets pasted into a chat transcript on 2026-09-01?~~ | ☑ **DECIDED: NO, not now.** See `C11`. Do it as separate work after the cutover |
+| 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **DONE 2026-09-03.** Authorised by the owner and run by the owner. Numbers in `C9`. That authorisation covered the read-only survey only — it is **not** standing permission to connect to or write to production |
+| 5 | ~~Reboot the prod box before `D1`, or defer?~~ | ☑ **DECIDED 2026-09-03: DEFER** until after Phase E, and **VERIFIED SAFE** the same day — `Automatic-Reboot` is commented out, so nothing but a person can reboot that box (`C10`). Reboot at `G3` |
+| 6 | ~~Take a Firestore backup before `D5`?~~ | ☑ **DECIDED 2026-09-04: YES — and TAKEN.** §9 raised this and no earlier session recorded a decision. No managed export is configured and `gcloud` is not installed, so a managed export would have meant an IAM grant plus a GCS bucket mid-window. A direct JSON snapshot was written instead by a new probe, `src/scripts/backup_firestore_snapshot.cjs` — 211 KB, read-only, taken before any write |
+| 7 | **`nykkumar@google.com`** — `loggedIn: true` with no live device row | ☑ **SETTLED 2026-09-08: LEAVE IT.** The owner confirms it is a **dangling account — a real account left in a broken state by earlier testing**, not a test account and not a live user. So its `loggedIn`/device mismatch is a **known artefact of test activity, not evidence of a backfill defect** (consistent with `D6` calling it pre-existing), and losing station `910GCLDNNRB` costs nothing real. Consequences, all acceptable: (a) `E1` and `F2` keep reporting this ONE known failure permanently — **a second account is still a real finding**; (b) at `F2` the heal is off (`A1`), so reconcile only logs `heal SKIPPED` for it and does not act; (c) `910GCLDNNRB` is dropped by the registry recompute anyway, as one of the ~119 stale keys in decision 8; (d) at `G2`, when `HEAL_TRUE_TO_FALSE` returns, reconcile will flip it to `loggedIn: false` on its own. **No longer blocks `F2`.** *Optional at `G3`: deleting the dangling account outright would retire the permanently-red check — see `G3`.* |
+| 8 | The registry carries **196 keys** against **76** stations actually wanted | ☑ **SETTLED 2026-09-08: DEFER `F2`. The extra keys stay, for now.** The owner's call: the surplus costs only Syncer polling on stations nobody watches, and prod is not close to strained (load 0.20, CPU 0%, 264 MB, verified 09-08). Not a risk decision — the 09-08 read-only prediction showed the deletion is **safe** (see below); it is a "not worth doing yet" decision. **NUMBERS RESTATED 2026-09-08** from a live `--before` run, superseding both the 09-04 figures and `C9`'s wrong `191`: 121 users, 196 keys now, 76 recomputed, **153 changes = 120 removals + 33 decrements**, 1 predicted heal. The 33 decrements are stations that **survive** (e.g. `910GWOLWXR: 6 → 5`) — a stale hold drops, the station stays. Removals are keys whose only holder is stale. **⚠️ CONSEQUENCE: this parks `F3`, `F4`, `G1` and `G2` too** — reconcile *is* the nightly job `F3` installs. See `G3` for the one thing that must NOT wait for this |
 
 **Phase checklist**
 
-- [x] **A** — Repo changes on `dev_13Jul` — A1–A8, A10 ✅ done and pushed · A9 still undecided
-- [ ] **B** — Staging re-proof
-- [~] **C** — Production prerequisites — C0–C8, C11 ✅ done · **only C9, C10 outstanding**
-- [ ] **D** — The deploy window
-- [ ] **E** — Soak
+- [x] **A** — Repo changes on `dev_13Jul` — A1–A10 ✅ **complete**; A9 closed 09-03
+- [x] **B** — Staging re-proof — B1–B6 ✅ **complete**; B5 closed 09-04, **gate B met**
+- [x] **C** — Production prerequisites — C0–C11 ✅ **complete**; gate C met 09-03
+- [x] **D** — The deploy window — D1–D8 ✅ **complete 2026-09-04**; D9 deferred by decision
+- [~] **E** — Soak — **WINDOW CLOSED 2026-09-09.** Both checks that were actually run (days 4 and 5) PASSED. Days 1-3 were never run, so this is 2 of 5, not 5 of 5 — recorded honestly rather than ticked
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
 - [ ] **G** — Legacy cleanup and finish
 
-> **Why C6 is done before Phase B.** It turned out to be verify-only: the live
-> nginx already has everything this release needs. Closing it early costs
-> nothing and removes it from the deploy-day critical path. No other Phase C
-> task may be pulled forward past `C8`, which is a hard gate on `D1`.
-
-**What is currently uncommitted in the working tree**
-
-```
-M  .github/workflows/deploy-prod.yml          A6 — 8 Stripe/support keys exported
-M  .gitignore                                 A3 — index JSONs allowlisted
-M  docs/HANDOVER_SESSION_SYNC.md              A4 — 4 corrections
-M  server-config/nginx.conf                   A5 — replaced with a live mirror
-M  src/services/sessionMaintenanceService.ts  A1 — HEAL_TRUE_TO_FALSE = false
-                                              A10 — SWEEP_ENABLED = false + early return
-A  ops/maintenance.crontab                    A2 — moved, paths fixed
-                                              A10 — sweep cron line commented out
-A  ops/maintenance_cron.sh                    A2 — moved, mode 100755
-?? docs/PROD_CUTOVER_PLAN.md                  this file
-?? firebase.json                              A3 — now visible to git
-?? firestore.indexes.json                     A3 — now visible to git
-```
-
 ---
 
-## 0. How to run this across sessions
+### If you are a new agent, read this before anything else
 
-1. **Read the STATUS block, then the phase you are in.** Do not re-derive the plan.
-2. **Tasks have stable ids** (`A1`, `C4`, …). Refer to them by id. Never renumber —
-   append `A9`, `C11` if something new is needed.
-3. **One phase per commit** where the phase touches the repo. Commit message:
-   `chore(cutover): <phase id> — <what>`.
-4. **Gates are marked `⛔ GATE`.** Do not pass one because it "looks fine". Each gate
-   names a command whose output decides.
-5. **Append to §10 (Session log) before you stop**, even if you did nothing. A session
-   that leaves no trace is a session the next one has to reconstruct.
-6. **If you deviate from this plan, edit this plan.** A runbook that disagrees with what
-   was actually done is worse than no runbook — that is exactly how
-   `HANDOVER_SESSION_SYNC.md` §6 Step 1 ended up describing a probe that had since been
-   fixed (see `A4`).
+**1. The one thing that can go badly wrong.** Production has only Android users,
+every account has `loggedIn: true`, and `users/{uid}/devices` does not exist there
+yet. Any job that reads "no live device row" as "release this account" will release
+**every account on the platform in one night, silently, exit 0**. Nobody is signed
+out — `loggedIn` is a server flag no client reads — but their stations leave
+`metadata/subscribed_stations` (Syncer stops polling, boards go stale, and Android
+only re-syncs on explicit sign-in) and `fcm_tokens` is purged (push dies and does
+not recover). Two jobs do this. Both are off. Keep them off until `G2`/`G5`.
 
-### Credentials and hosts — never write these into this file
+**2. Backfill before any release job.** That ordering is the whole plan. `D4`–`D6`
+before `F2`–`F4`, never the reverse.
 
-| Thing | Where it lives |
-|---|---|
-| Prod Firestore key | `~/workspace/Projects/Stationly/Env/Prod/firebase/service_account.json` |
-| Staging Firestore key | `~/workspace/Projects/Stationly/Env/Staging/firebase/service_account.json` |
-| Prod SSH | `~/workspace/Projects/Stationly/Env/Prod/ssh/` (`connect.sh`) |
-| Staging SSH | `~/workspace/Projects/Stationly/Env/Staging/ssh/` (`connect.sh`) |
+**3. Owner's working preferences, learned this session.**
+   - **Do not connect to production without being asked.** Staging is fine.
+   - Every probe prints its project id on line 1. **Read it every time.** Without
+     `--key=` they fall back to the staging key. Staging is `mindthetimefcm`;
+     production is `stationly-prod`.
+   - The owner's repo stays on `dev_13Jul`. `B3` clones to a throwaway directory
+     rather than switching branches — switching would defeat the test.
 
-Referred to below as `$PROD_KEY`, `$STAGING_KEY`, `<PROD_HOST>`, `<STAGING_HOST>`.
+**4. What "done" means here.** Every ☑ in this file was verified by running
+something and reading the output, not by reasoning that it should work. Several
+tasks turned out to be wrong when actually run (`A5`, `B3`, `F1`). Keep that habit.
 
-> **Every probe prints its project id on line 1. Read it every single time.**
-> Without `--key=` they fall back to this repo's staging key. Staging is
-> `mindthetimefcm`; production is `stationly-prod`.
+**Current repo state — nothing is uncommitted**
+
+```
+branch          dev_13Jul, clean, and fully PUSHED (0 ahead of origin)
+release_prod    51e2e76   ← DEPLOYED 2026-09-04. Production runs this.
+release_staging c9b5285   ← what phase B proved, and what D1 shipped
+dev_13Jul       12 commits ahead of release_staging; NONE reach production
+                (9 docs, a03be92 export-only, 3f63f1f under web-temp/src)
+phase A         d08f3ac
+PR #131         MERGED 2026-09-04 07:06:15 UTC. That was D1.
+```
+
+> ## ✅ PROMOTION GATE — CLEARED 2026-09-09
+>
+> **`dev_13Jul` → `main` → `release_staging` → `release_prod` is SAFE to promote.**
+>
+> The one blocker — `A9`'s `export`, which compiled the two release flags to
+> mutable `exports.X` reads at every use site — was fixed in `fb102a9`. Verified
+> three ways: the emitted `dist/` now shows `if (!SWEEP_ENABLED)` with no
+> `exports.*` lookup; 212/212 tests pass; and flipping a flag still fails the pin
+> (211/212, `true !== false`), so the guard is real and not decorative.
+>
+> **What promoting now ships to production:**
+>   1. `fb102a9` — the flag fix. Restores the compile-time guard. Wanted.
+>   2. `197270a` — `.env.defaults`, `SUPPORT_MONEY_ENABLED=false`. Wanted.
+>   3. Nothing else. The rest are docs (`*.md` excluded) and `web-temp`
+>      (never compiled by `tsc`; `--exclude src` drops it at any depth).
+>
+> **Still true, and still the reason to keep the deploy boring:** `release_staging`
+> at `c9b5285` is the tree `B3`/`B5`/`B6` proved. This promotion moves off that
+> proof, so watch the staging deploy rather than assuming it.
+>
+> ⚠️ Promotion does NOT change the parked work. `F2`/`F3`/`F4`/`G1`/`G2` stay
+> parked on decision 8, prod still gets no crontab, and both release jobs stay
+> off. Nothing here starts a scheduled job.
 
 ---
 
@@ -144,22 +212,18 @@ on a watermark in SharedPreferences that nothing server-side can clear).
    inside the sign-in transaction with no fallback. No index ⇒ every Android login 500s.
 2. **Backfill before any release job.** Both `sweep` and the true→false heal read the
    new store. Against an empty one, every account looks abandoned.
-3. **`HEAL_TRUE_TO_FALSE = false` until the legacy stores are gone.** It is a
-   compile-time `const` with no env override — the value in the branch is the value
-   production runs, and it cannot be changed from the box.
-4. **The crontab is the last thing installed, not the first.**
-5. **No catch-all `location /` on nginx's 443 block.** It is the only reason
-   `/internal/*` is unreachable from the internet.
-6. **Never spread `updateData` into a response.** It carries Firestore sentinels; this
-   already shipped once and broke login while logging 200.
-7. **`stateRev` stays in `PROTECTED_PROFILE_FIELDS`** — the profile sync spreads unknown
-   body keys onto the document.
-8. **Android's required response keys** — `uid`, `email`, `displayName`, `stations` on
-   the profile; `id`/`name`/`mode`/`statusSeverityDescription`/`reason`/`lastUpdatedTime`
-   on a line status. A nullable field with no Kotlin default is still a *required key*.
-   Pinned by the `ANDROID CONTRACT` tests.
-9. **Do not add a global Jackson inclusion setting to the Syncer.** `NON_NULL` would drop
-   `"reason": null` and break the Android line-status screen from the other repo.
+3. **`HEAL_TRUE_TO_FALSE = false` until the legacy stores are gone.** It has no env
+   override — the value in the branch is the value production runs.
+
+   > **✅ RESTORED 2026-09-09 (`fb102a9`). This invariant holds again.**
+   > `A9` broke it on 09-03 by adding `export`, which under commonjs compiles
+   > every use site to a mutable `exports.X` read. The constants are module-local
+   > again and the use sites compile to bindings nothing outside the file can
+   > reach; a frozen `RELEASE_FLAGS` export carries the values to the test pins.
+   > Verified by reading the emitted `dist/`, not by reading the diff, and by
+   > flipping a flag to confirm the pin still fails (211/212, `true !== false`).
+   > Production was never exposed — `release_staging` always had the plain
+   > `const`, so this only ever threatened the next promotion.
 
 ---
 
@@ -278,7 +342,14 @@ they resolve empty and can never reach the box no matter what GitHub secrets exi
 
 Safe to add before the secrets exist: an unset secret substitutes an empty string, the
 assembly loop logs `⚠️ Warning: <KEY> is empty or not provided`, and `.env.defaults`
-keeps its value — which is `SUPPORT_MONEY_ENABLED=false`.
+keeps its value.
+
+> **CORRECTED 2026-09-04.** This used to end *"— which is
+> `SUPPORT_MONEY_ENABLED=false`."* **It is `true`.** `.env.defaults:56` ships
+> `SUPPORT_MONEY_ENABLED=true`, no repository secret overrides it, and the `D1`
+> deploy log duly printed `⚠️ Warning: SUPPORT_MONEY_ENABLED is empty or not
+> provided`. **Production runs with support money ENABLED.** `C5` has said so
+> since 09-02; this line, `D9` and the appendix had not caught up.
 
 ### ☑ A7 — Verify
 
@@ -298,9 +369,9 @@ chore(cutover): phase A — prod-safety flags, ops/ move, tracked index config
 ⛔ GATE A satisfied: tsc silent, 210/210, `git ls-files -s ops/` shows
 `maintenance_cron.sh` at mode 100755, and both index JSONs are tracked.
 
-### ☐ A9 — PROPOSED, decision needed: pin the heal flag with a test
+### ☑ A9 — Pin the release flags with tests — DONE 2026-09-03
 
-**Not done. Decide before Phase G.**
+**Decided: yes, do it. Done.** Both flags exported and pinned; 212/212 pass (was 210).
 
 Nothing in the 210-test suite asserts `HEAL_TRUE_TO_FALSE`. It is the single
 most consequential constant in this release — the one whose wrong value releases
@@ -317,8 +388,26 @@ plus one assertion in `src/tests/run.ts`. That makes `G2` a deliberate act: the
 person turning it back on must also change the test, which is exactly the
 friction wanted on a switch that can empty the subscription registry.
 
-Cost: one export and three lines of test. Risk of NOT doing it: the same silent
-regression happens again, and the next reviewer may not catch it.
+**What was actually done.** Both flags, not just the heal — `SWEEP_ENABLED` is
+the same class of danger (`A10`) and was equally unasserted:
+
+```diff
+-const HEAL_TRUE_TO_FALSE = false;
++export const HEAL_TRUE_TO_FALSE = false;
+-const SWEEP_ENABLED = false;
++export const SWEEP_ENABLED = false;
+```
+
+`src/tests/run.ts` gains an import and two tests under a `RELEASE FLAG:` prefix,
+each asserting `false` with a failure message naming the task that re-enables it
+(`G2` for the heal, `G5` for sweep). The comment above them says explicitly that
+a failure after a deliberate flip *is the test working* — so the next person is
+told what to do rather than left to guess whether they broke something.
+
+Export-only change: no call site moved, `npx tsc --noEmit` clean, 212/212 pass.
+
+> **This changes `G2` and `G5`.** Each now has a second edit: the constant *and*
+> its pin in `src/tests/run.ts`. Both tasks note this.
 
 ### ☑ A10 — Disable `sweep` — DONE 2026-09-02
 
@@ -373,18 +462,56 @@ from a clean checkout — because until now staging has been running your workin
 > tree, so `git log -S` finds no commit for them."* Deploying from a clean checkout is
 > the only way to prove that what is committed is what works.
 
-### ☐ B1 — PR `dev_13Jul` → `main`
+### ☑ B1 — PR `dev_13Jul` → `main` — DONE 2026-09-02 (PR #129, merged)
 
 Branch Guard allows `dev_*`, `feature/*`, `fix/*`, `hotfix/*` into `main`. Merging opens
 the `main` → `release_staging` PR automatically.
 
-### ☐ B2 — Merge `main` → `release_staging`
+### ☑ B2 — Merge `main` → `release_staging` — DONE 2026-09-02 (PR #130, merged; `release_staging` at c9b5285)
+
+**PR #131 (`release_staging` → `release_prod`) is now OPEN and MERGEABLE. That merge is `D1` —
+the production deploy. Leave it sitting until GATE C.**
 
 This deploys **nothing**. There is no staging workflow — `release_staging` is a
 promotion gate. Merging it opens the `release_staging` → `release_prod` PR
 automatically: **leave that one sitting unmerged until GATE C.**
 
-### ☐ B3 — Deploy staging from a clean checkout
+### ☑ B3 — Deploy staging from a clean checkout — PASSED 2026-09-02
+
+Clone of `release_staging` at `c9b5285`, deployed from a throwaway directory. The
+working repo was left on `dev_13Jul` and never switched — switching it would defeat the
+test, since rsync would still be copying local files.
+
+**What it proved, which a working-tree deploy cannot:**
+
+```
+ops/ in the clean checkout          PRESENT, maintenance_cron.sh mode 755
+firebase.json, firestore.indexes    PRESENT (A3 works)
+exec bit through git->clone->rsync  SURVIVED — the A2 risk, closed
+.env on the box after deploy        23 keys, unchanged
+all 16 overrides written            no warnings
+support-money-config                4 new sandbox links, correct mapping
+webhook unsigned POST               400 (not 503) — secret reached the box
+reconcile / sweep from ops/ path    ok / SKIPPED, both at 19:49:40Z
+```
+
+⛔ **STEP MISSING FROM THIS TASK, found by running it.** The first attempt died at
+`sh: tsc: command not found` — a fresh clone has no `node_modules` and the script assumes
+an existing tree. **Run `npm ci` in the clone before `staging_deploy.sh`.** It aborted at
+the build, before rsync, so the box was never touched; `set -e` plus the explicit
+"❌ Build failed. Aborting." did their job. Production's workflow already does `npm ci`,
+which is why this only bites the local path.
+
+⚠️ **The deploy log prints secrets in plaintext.** The assembly loop echoes
+`Writing override: <KEY>=<value>` for every key, including `TFL_APP_KEY`,
+`RESEND_API_KEY`, `STATIONLY_ADMIN_KEY` and `LIVESTREAM_INGEST_SECRET`. They land in
+terminal scrollback and in any redirected log. Delete the log after deploying, and do not
+paste it anywhere.
+
+Backing up the box's `.env` first turned out to be unnecessary — the copy-`.env`-in step
+worked — but it is cheap and it is what makes this task safe to attempt at all.
+
+<details><summary>Original task text</summary>
 
 ```bash
 git clone <repo> /tmp/stationly-staging-deploy
@@ -434,7 +561,30 @@ Then confirm on the box that `ops/` arrived and `maintenance_cron.sh` is still m
 `GET /sdui/app/support-money-config` + webhook-returns-400 checks from the 09-02 (c) log
 to prove the secrets survived the round trip.
 
-### ☐ B4 — Reinstall the staging crontab at the new path, and canary it
+</details>
+
+### ☑ B4 — Reinstall the staging crontab at the new path, and canary it — PASSED 2026-09-02
+
+Reinstalled from `ops/maintenance.crontab`. Only active line is
+`20 3 * * * ops/maintenance_cron.sh reconcile`; the sweep line stays commented out (`A10`).
+
+**Canary — cron proven to actually fire, not merely installed.** Armed a `* * * * *`
+reconcile at 19:50:58Z; three consecutive firings:
+
+```
+19:51:04Z  reconcile: ok  usersScanned 8, countsChanged 0, watchAccountsIndexed 7
+19:52:03Z  reconcile: ok  ...
+19:53:03Z  reconcile: ok  ...
+```
+
+Canary removed, clean crontab restored, 0 CANARY lines remaining.
+
+This is the only evidence that cron can EXEC the wrapper under its own stripped
+environment — `PATH`, `HOME`, the exec bit, and the `sed` extraction of `PORT` and
+`LIVESTREAM_INGEST_SECRET` from `.env` outside a login shell. Installing a crontab proves
+a file is in place and nothing else. **Repeat this canary at `F3` on production; do not
+treat prod's install as proven by staging's.**
+
 
 ```bash
 ssh <STAGING_HOST> 'crontab ~/stationly-backend/ops/maintenance.crontab && crontab -l'
@@ -445,18 +595,128 @@ place, not that `PATH`, `HOME`, the exec bit and `.env` readability all line up.
 a `* * * * *` copy of the sweep line, wait two minutes, confirm two new lines in
 `~/logs/maintenance.log`, then reinstall the clean crontab.
 
-### ☐ B5 — Two clean nights
+### ☑ B5 — Two clean nights — PASSED 2026-09-04
 
-Both scheduled jobs fire from `ops/` on two consecutive nights. Read
+The scheduled job fires from `ops/` on two consecutive nights. Read
 `~/logs/maintenance.log` each morning.
 
-### ☐ B6 — Regression pass on staging
+> **Corrected 2026-09-03.** This task used to read "*both* scheduled jobs fire".
+> That is stale: `A10` disabled sweep and commented out its cron line, so
+> **reconcile is the only scheduled job** and B5 is reconcile-only. Sweep's own
+> two clean nights are `F4`, after it returns at `G5`.
+
+**Night 1 — 2026-09-03 03:20 UTC — CLEAN:**
+
+```
+[2026-09-03T03:20:03Z] reconcile: ok {"usersScanned":8,"loggedInHealed":[],
+  "countsChanged":0,"countsDeleted":0,"registrySkippedDueToRace":false,
+  "watchAccountsIndexed":7,"durationMs":2447}
+```
+
+What each part is evidence of:
+
+- **It fired at all**, at `03:20:03`, from
+  `/home/ubuntu/stationly-backend/ops/maintenance_cron.sh` — the new `A2` path.
+  That is the whole point of B5. `B4`'s canary proved the exec bit survived
+  git → clone → rsync; this proves the installed crontab entry resolves and runs
+  unattended, on schedule, with cron's own environment rather than a login shell.
+- `loggedInHealed: []` — `HEAL_TRUE_TO_FALSE` is `false` in the build actually
+  running on the box, not just in the branch (`A1`).
+- `durationMs: 2447` sits inside the 2.2–2.4s band held every night since 08-25,
+  and `usersScanned: 8` / `watchAccountsIndexed: 7` match 09-01 and 09-02
+  exactly. The clean-checkout deploy changed no behaviour.
+- **No sweep line for 09-03**, where every night through 09-02 had one at 03:00.
+  Visible confirmation that `A10` reached the box.
+
+**Night 2 — 2026-09-04 03:20 UTC — CLEAN. B5 CLOSED:**
+
+```
+[2026-09-04T03:20:03Z] reconcile: ok {"usersScanned":8,"loggedInHealed":[],
+  "countsChanged":0,"countsDeleted":0,"registrySkippedDueToRace":false,
+  "watchAccountsIndexed":7,"durationMs":2319}
+```
+
+Fired at `03:20:03` — the same second as 09-01, 09-02 and 09-03. `usersScanned: 8`
+and `watchAccountsIndexed: 7` match all three; `durationMs: 2319` sits in the
+2.2–2.4s band. **No 03:00 sweep line on 09-03 or 09-04**, where every night
+through 09-02 had one.
+
+Two extra read-only checks, because this half of the gate rests on an *absence*:
+
+- `crontab -l` on staging shows the sweep line commented out and
+  `20 3 * * * .../ops/maintenance_cron.sh reconcile` as the only active entry,
+  on the new `A2` path. So the missing sweep line is `A10` working, not cron
+  being broken — and cron demonstrably works, because reconcile fired.
+- `grep -v ": ok "` over the whole log returns **nothing**. Zero non-ok lines, ever.
+
+### ☑ B6 — Regression pass on staging — PASSED 2026-09-03
+
+**Real Android device, real staging, owner driving the handset.** Every step was
+verified in Firestore with `check_session_state.cjs` between steps, not inferred
+from the app looking right. Accounts: `testnyk67` → `testnyk66` → `testnyk67`.
+
+| # | step | Firestore evidence |
+|---|---|---|
+| 1 | sign in | no 500 — the `collectionGroup('devices')` query inside the sign-in transaction resolved. This is invariant 1 proven on a device |
+| 2 | save board | 4 stations held; `rev` 163 → 164 |
+| 3 | sign out | android row `1e39b0b2` **deleted**, not stale; both iOS rows untouched; `loggedIn` stayed `true` |
+| 4 | sign back in | **same device id `1e39b0b2` reused**; exactly one android row; board intact |
+| 5 | account switch | row **moved** 67 → 66; ownership invariant held; **`fcm_tokens` moved with it** |
+| 6 | delete account | account doc absent, **0 surviving subcollections**, 0 orphan rows, 4 station holds released, registry recomputes exact |
+
+Read paths: `GET /lines/status` listed, station boards listed, **and an FCM
+disruption push was received on the handset.**
+
+**The five findings worth keeping.**
+
+1. **Step 4 — the device id was REUSED, not regenerated.** A fresh id per sign-in
+   would orphan the previous row and accumulate dead rows forever, which is close
+   to the old model's failure mode. This is the single most reassuring result of
+   the pass.
+2. **Step 5 — the device row and the push token moved TOGETHER.** That is bug #3
+   (`DEVICE_IDENTITY_AND_SESSIONS.md` §3) fixed and proven. It is the whole point
+   of unifying the lifecycle: those were two stores behind two code paths, so a
+   fix to one silently missed the other.
+3. **Step 6 — zero surviving subcollections.** Bug #4: `deleteAccount` used to
+   purge one named subcollection and miss `fcm_tokens`. Nothing survived, and
+   there is **no phantom parent** — the nastier variant, where a subcollection
+   outlives its document, invisible to every account-iterating check while still
+   matching the unfiltered `collectionGroup` the broadcast audience uses.
+4. **An FCM push actually ARRIVED.** This is bug #1 (§2) closed end to end, and
+   it is the one bug in this set that **no Firestore inspection could ever have
+   confirmed** — the store looked correct the entire time it was broken. The
+   audience resolved to zero devices and `send` reported success. A push landing
+   on a real handset is the only possible proof.
+5. **Unasked-for bonus:** signing back into `testnyk67` moved the row off
+   `testnyk66`, and `testnyk66` correctly flipped to `loggedIn=false` with 0
+   rows. That is the "last device out" path — release the account only when its
+   FINAL device leaves — which fired correctly without being deliberately tested.
+
+**Honest limits of this pass — do not overstate it later.**
+
+- **No `fcm_tokens` baseline was captured before step 5.** The token's placement
+  after the switch is measured; its *removal* from the old account is inference
+  (strong — that handset was signed into `testnyk67` for steps 1–4 — but not
+  measured). If this ever needs to be airtight, repeat step 5 capturing tokens
+  on both sides.
+- **The board was not re-checked between sign-out and sign-in.** It was intact
+  after, which is what the step protects, but the intermediate state is unobserved.
+- `testnyk66`'s `rev` bumped 8 → 9 on sign-in where `testnyk67`'s stayed flat
+  across its own sign-out/sign-in. Asymmetric and unexplained, but benign in this
+  direction: a spurious `stateRev` bump costs one extra profile fetch. A MISSING
+  bump would be the dangerous case and was not seen.
+- `testnyk67` is now deleted, so staging has lost its richest fixture (rev 164,
+  3 device rows, 4 stations). Rebuild one before the next pass needs it.
+
+Original task:
 
 On a real device against staging: sign in, save a board, sign out, sign back in,
 account switch, delete account. Plus `GET /lines/status`, a station board, and a live
 stream connection.
 
-⛔ **GATE B** — two clean scheduled runs from `ops/`, and the device pass clean.
+⛔ **GATE B — MET 2026-09-04.** Two clean scheduled **reconcile** runs from `ops/`
+(09-03 and 09-04), and the device pass clean (**B6 PASSED 09-03**). **Phase B is
+complete.**
 
 ---
 
@@ -744,7 +1004,96 @@ real time on staging:
 - Builds are **asynchronous** and run against live data. The error text is the tell:
   *"You can create it here"* = absent; *"That index is not ready yet"* = building. **Wait.**
 
-### ☐ C9 — Survey production, read-only, and record the numbers
+### ☑ C9 — Survey production, read-only — DONE 2026-09-03
+
+**THE BASELINE. `D6` and `F1` compare against these numbers. Do not edit them.**
+
+> **⚠️ THE PLATFORM HAS MOVED SINCE THIS WAS TAKEN (noted 2026-09-04).** These are
+> a 2026-09-03 snapshot of a **live** product, not a fixed constant. By the
+> morning of 09-04 production held **111 accounts, not 108** — `loggedIn:true`
+> went 106 → 109 while `loggedIn:false` stayed at exactly 2, i.e. three ordinary
+> signups, confirmed by the owner. The registry likewise read **192 keys / 237
+> holds** against the 191 / 235 recorded below.
+>
+> **Do not read that drift as a fault.** Expect the counts to keep moving; what
+> must hold is the *shape* — `loggedIn:false` accounts having no device rows,
+> `stateRev` all 0, root `devices` empty. Compare against a fresh
+> `backup_firestore_snapshot.cjs` run rather than against these figures.
+
+```
+Project: stationly-prod          (verified on line 1 of every run)
+
+ACCOUNTS
+  accounts total                        108
+  stateRev == 0                         108   ✓ every one, the pre-P1 baseline
+  ledger cold or behind                   0
+  ledger AHEAD of master                  0   ✓ PASS
+  loggedIn == true                      106   (of 108 — 2 accounts already false)
+
+DEVICES                          (banked at C8, 2026-09-02)
+  root collection('devices')              0   ✓ EMPTY — never had iOS
+  collectionGroup('devices')              0   ✓ no subcollection rows: pre-migration
+
+RECONCILE PREDICTION  (check_drift_reconcile --before)
+  users scanned                         108
+  recomputed registry size                0   ← the whole point. See below.
+  PREDICTED loggedIn heals              106   all true -> false
+  PREDICTED registry changes            191   every one have>0, want=0
+  registry keys with want > 0             0
+  total subscription holds at risk      235
+
+SWEEP PREDICTION      (check_session_sweep --before)
+  PREDICTED to be released              106   accounts
+  station holds released                 83
+  stations losing their LAST holder      71   Syncer stops polling these entirely
+```
+
+**Read this before you read the numbers as a failure.** `recomputed registry
+size: 0`, `191 registry keys deleted`, `106 accounts released` is not drift and
+not a bug. Production has **no `users/{uid}/devices` rows at all**, so both jobs'
+"has a live device row" predicate is false for every account, and both correctly
+predict releasing the entire platform. This is §2 invariant 2 — *backfill before
+any release job* — quantified. It is the single strongest piece of evidence in
+this plan that `A1` and `A10` had to happen, and the reason `D4`–`D6` precede
+`F2`. Both jobs are off; neither ran.
+
+**The 71 is the number that matters.** A released hold only hurts when it was the
+*last* one on a station: that station leaves `metadata/subscribed_stations`, the
+Syncer stops polling it, and boards go stale with no self-heal, because Android
+only re-syncs on an explicit sign-in. 71 of 191 keys are in that state.
+
+**What `D6` must show after the backfill:** re-run both `--before` probes and
+`PREDICTED to be released` must be **0**, and `PREDICTED loggedIn heals` **0**.
+
+> ⚠️ **CORRECTED 2026-09-04 — the "back to 191" target above was WRONG, and
+> following it literally would make you abort a healthy migration.**
+>
+> Measured from the `D5` pre-write snapshot: only **85 of 111** accounts hold any
+> station, exactly one each, over **73 distinct** stations. The registry carries
+> **192 keys / 237 holds**. So a correct recompute produces roughly **73**, not
+> 191 — meaning ~**119 registry keys are pre-existing drift**.
+>
+> That is not a fault. It is precisely what reconcile exists to repair, and this
+> plan already records the same shape on staging: *"104 keys against a correct
+> 13."* Corroborated independently at `D7`, whose reindex reported
+> `accountsIndexed: 85, stationRows: 85` from the live box.
+>
+> The two numbers that genuinely gate you are the release and heal predictions.
+> **Both must be 0.** Understand the 119 before `F2` acts on them — decision 8.
+
+**`106`, not `108`.** Two accounts already carry `loggedIn: false` and are
+therefore invisible to both jobs. Expected: an account that signed out and never
+returned. Not a discrepancy, but it is why the account count and the release
+count differ — do not read that gap as 2 accounts the probes missed.
+
+**Ledger half is INCONCLUSIVE, deliberately.** `check_state_rev` read the local
+`data/stationly.sqlite`, not the prod host's, so it compared 0 accounts and said
+so rather than reporting a pass it had not earned. That is the script's exit-2
+design working; the Firestore half is what `C9` needs and it is complete.
+
+---
+
+Original task, for reference:
 
 ```bash
 node src/scripts/check_state_rev.cjs       --key=$PROD_KEY   # expect every account rev=0
@@ -773,7 +1122,55 @@ outstanding here are `check_state_rev.cjs`, `check_drift_reconcile.cjs --before`
   with a note counting legacy `users.sessions` entries. That is correct and expected
   pre-backfill — see `A4`. It is not a reason to stop; it is the reason `D5` exists.
 
-### ☐ C10 — Confirm the process manager
+### ☑ C10 — Confirm the process manager — PASSED 2026-09-03
+
+```
+id  name               mode     ↺  status   cpu  memory
+24  stationly-backend  cluster  3  online   0%   221.8mb
+27  pm2-logrotate               -  online   0%   68.8mb
+```
+
+**1 instance. PASS.** Cluster mode at a count of 1 is fine — the count is what
+matters, and `pm2 reload` inherits it, so the deploy cannot widen this. `↺ 3` is
+a lifetime restart count, not a crash loop; 221.8mb is normal steady state.
+`pm2-logrotate` is installed, so the deploy-day logs will not fill the disk.
+
+> **⚠️ FOUND HERE, NOT PART OF C10 — the box wants a reboot.** The SSH login
+> banner prints `*** System restart required ***`, a pending kernel/package
+> update. **Do not let this happen during `D4`–`D6`.** A reboot mid-backfill
+> restarts pm2 under the new code with the migration half-applied — some
+> accounts with device rows, some without — which is the one state neither the
+> probes nor the jobs have a defined answer for.
+>
+> **DECIDED 2026-09-03: DEFER.** The owner's call. The box has carried this
+> pending restart for some time without incident, Ubuntu does not reboot itself
+> by default, and a reboot is not free either — it is downtime plus a cold pm2
+> start to re-verify, on the eve of the window.
+>
+> **What deferring commits you to.** Do not reboot, and do not let anything else
+> reboot, from `D1` until Phase E is over. One check makes this safe rather than
+> merely hopeful — `Unattended-Upgrade::Automatic-Reboot` must be false or unset:
+>
+> ```bash
+> ssh <PROD_HOST> 'cat /var/run/reboot-required 2>/dev/null; \
+>   grep -rn "Automatic-Reboot" /etc/apt/apt.conf.d/ 2>/dev/null'
+> ```
+>
+> ☑ **RUN 2026-09-03. The deferral is SAFE.** All four matches in
+> `50unattended-upgrades` (lines 94, 97, 98, 103) are **commented out** with
+> `//`, so `Automatic-Reboot` is never set and falls back to its built-in
+> default of false. The box patches itself but will not reboot itself.
+> **Only a person can reboot it.**
+>
+> Line 98 `//Unattended-Upgrade::Automatic-Reboot-WithUsers "true";` looks
+> alarming at a glance and is not: it is commented, and it is a different
+> setting that only applies once `Automatic-Reboot` is already on.
+>
+> Reboot afterwards, once Phase E is clean. Do not carry it indefinitely: a
+> pending kernel update is a security patch waiting on you, and the reason to
+> defer expires when the window does. Close it out at `G3`.
+
+Original task:
 
 ```bash
 ssh <PROD_HOST> 'pm2 list'
@@ -791,6 +1188,14 @@ If it is not 1: `pm2 delete stationly-backend`, then let the next deploy cold-st
 ⛔ **GATE C** — `check_device_indexes.cjs` **PASSES**, root `devices` is empty, nginx
 reloaded clean, `pm2 list` shows 1, and `C1`/`C2` hold the same secret.
 
+**GATE C IS MET, 2026-09-03.** Indexes passed at `C8`; root `devices` is 0
+(`C8`/`C9`); nginx verified at `C6`; `pm2 list` shows 1 (`C10`); `C1`/`C2` hold
+the same secret (`C0`). **Phase C is complete.**
+
+Carried forward as a Phase D precondition, not a gate C failure: the prod box
+has a **pending reboot**, deliberately **deferred** until after Phase E — see
+`C10` for what that commits you to.
+
 ---
 
 ## Phase D — the deploy window
@@ -805,12 +1210,61 @@ complete in the same session.
 > user's other devices are still signed in. Small window, rare action, costs nothing to
 > avoid.
 
-### ☐ D1 — Merge `release_staging` → `release_prod`
+### ☑ D1 — Merge `release_staging` → `release_prod` — DONE 2026-09-04
 
-The PR is already open (opened automatically at `B2`). Merging pushes to
-`release_prod`, which **deploys immediately**.
+PR #131 merged **07:06:15 UTC**. `release_prod` is now `51e2e76`.
 
-### ☐ D2 — Watch the deploy and the boot
+**It took two attempts, and the cause is worth keeping.** The first run
+(`33847216935`, job `100941668068`) ran 9m12s and died at `Install deps & reload`:
+
+```
+client_loop: send disconnect: Broken pipe
+Error: Process completed with exit code 255
+```
+
+That is the SSH connection from the GitHub runner to the box dropping, **not a
+code fault**. `npm ci --omit=dev --silent` prints nothing while it works, the
+connection sat idle for 4m47s, and something in the middle timed it out. The
+`ssh` invocation carries no `ServerAliveInterval`.
+
+**Why that morning and not on 09-08 (41s for the whole job):** `actions/setup-node`
+caches npm keyed on `package-lock.json`, but **GitHub evicts any cache unused for
+7 days** and the previous prod deploy was 26 days earlier. Cold cache both ends —
+the runner's own `npm ci` took **3m59s**. Dependencies were byte-identical, so
+there was nothing new to fetch; it was simply cold and slow.
+
+The re-run (`100944699953`) went green in 8m29s **including the Health check**,
+which the first run never reached. Note the failed run's `Post Setup Node.js 22`
+was skipped, so the cache was never saved and the re-run started cold as well.
+
+**The state between the two runs is worth understanding**, because it is a trap:
+rsync and the `.env` upload had both succeeded, so the box held the NEW files
+while pm2 still ran the OLD process from memory. Serving was normal throughout.
+Had anything restarted pm2 in that window it would have come up against a
+possibly-incomplete `node_modules`. **Do not cancel a run stuck on this step** —
+killing it mid-`npm ci` is what actually breaks the box.
+
+Fixing this properly is `G6`.
+
+### ☑ D2 — Watch the deploy and the boot — DONE 2026-09-04
+
+Verified by public HTTPS probe rather than only by reading `pm2 logs`, because a
+green tick is not evidence the new build is running. Three independent signals:
+
+```
+POST /api/v1/webhooks/stripe                401 -> 400   route is NEW in this release,
+                                                         and 400-not-503 proves
+                                                         STRIPE_WEBHOOK_SECRET landed
+GET  /api/v1/support-money/return           200          exists only in this release
+GET  /api/v1/sdui/app/support-money-config  401          route present, wants the app key
+GET  /internal/stream-stats                 404          §2 invariant 5 holds — nginx
+                                                         never routes /internal/*
+GET  /api/v1/lines/status                   401 in 77ms  serving normally
+```
+
+The `.env` assembly log printed exactly three warnings —
+`SUPPORT_MONEY_ENABLED`, `SUPPORT_MONEY_MIN_BOARDS`, `SUPPORT_MONEY_MIN_DAYS` —
+which is `C5` working as designed: all three fall through to `.env.defaults`.
 
 Confirm the Actions run is green, then:
 
@@ -824,7 +1278,20 @@ no SQLite errors. New tables (`user_watch`, `user_revs`, `stripe_events`) are cr
 boot by `CREATE TABLE IF NOT EXISTS`, and column additions run through `migrate()` — no
 manual SQLite work is needed.
 
-### ☐ D3 — Smoke test before touching data
+### ☑ D3 — Smoke test before touching data — DONE 2026-09-04
+
+Endpoints answered as above. **A real Android device signed in on
+`testnyk67@gmail.com` and went through cleanly** — no 500, so the `C8`
+collection-group index is genuinely serving `startSession`.
+
+> **That sign-in is a DATA WRITE, inside a step described as a smoke test.** It
+> created the first `users/{uid}/devices` row in production —
+> `8cc83d8e-60cb-47a1-9fe9-1b8e46d3f372` — and `D4` duly reported one account
+> already done. Worth saying plainly in this task for the next reader.
+
+It also proved something the plan only assumed: that row exists with **0 legacy
+`sessions` entries**, so the new `startSession` writes the new store and does
+**not** dual-write the old one.
 
 - `GET /api/v1/lines/status` with the prod app key → 200, and every item carries
   `reason` (may be `null`) and `mode`.
@@ -833,7 +1300,24 @@ manual SQLite work is needed.
   `startSession` and the collection-group index. A 500 here means `C8` did not actually
   finish — stop and go back.
 
-### ☐ D4 — Backfill, dry run — and read the output
+### ☑ D4 — Backfill, dry run — DONE 2026-09-04
+
+```
+accounts with devices : 108
+accounts with none    : 3
+rows PREDICTED        : 117
+root devices          : 0 row(s), 0 account(s) named
+```
+
+The 3 skipped are the 2 long-standing `loggedIn:false` accounts plus
+`testnyk67`, which already had its row from `D3` and has no legacy session.
+
+**No `ios`-typed rows at all** — every one printed `android session`. The trap
+this task warns about (`rowFrom` defaulting `platform` to `'ios'`) did not fire,
+because every production session carried `deviceInfo`.
+
+Predicted independently from the `backup_firestore_snapshot.cjs` JSON before
+running this, and the two agreed exactly: 117 rows, 108 accounts, 3 skipped.
 
 ```bash
 node src/scripts/backfill_device_rows.cjs --key=$PROD_KEY --dry-run
@@ -848,7 +1332,19 @@ tokens). Check the row count against the account count from `C9`.
 > entry written without `deviceInfo`. Cosmetic only (it cannot join an APNs audience
 > without a token) but it is a tell worth understanding before you commit the write.
 
-### ☐ D5 — Backfill for real
+### ☑ D5 — Backfill for real — DONE 2026-09-04
+
+```
+accounts with devices : 108
+accounts with none    : 3
+rows WRITTEN          : 117
+```
+
+Matched the dry run exactly. Production now holds **118 device rows across 109
+accounts** (117 written + `testnyk67`'s from `D3`).
+
+A full pre-write snapshot was taken first — decision 6 — at
+`backups/stationly-prod-snapshot-2026-09-04T07-35-40-836Z.json`.
 
 ```bash
 node src/scripts/backfill_device_rows.cjs --key=$PROD_KEY
@@ -856,7 +1352,41 @@ node src/scripts/backfill_device_rows.cjs --key=$PROD_KEY
 
 Idempotent. Safe to re-run.
 
-### ☐ D6 — Verify the backfill ⛔
+### ☑ D6 — Verify the backfill ⛔ — PASSED 2026-09-04, with one known exception
+
+**`check_device_backfill.cjs` — clean PASS:**
+
+```
+accounts checked   : 109
+legacy sources     : 117 session map entries, 0 root device rows
+rows missing       : 0
+rows unaccounted   : 0
+field problems     : 0
+PUSH TOKEN LOSSES  : 0
+```
+
+**`check_session_state.cjs` — 1 problem, and it was predicted before the write:**
+
+```
+nykkumar@google.com   loggedIn=true  device rows: 1  live=0
+      ✗ loggedIn=true but live rows=0
+device ownership
+      ✓ every device belongs to exactly one account
+```
+
+That account's only device was last seen **91.8 days** ago against a 90-day TTL,
+so it has no *live* row and the `loggedIn ⇔ ≥1 live row` invariant fails. **It is
+pre-existing** — the legacy sessions map uses the same 90 days (*"Deliberately
+the same 90 days as the sessions map it replaces"*), so it already held that
+state; the backfill copied `lastSeen` faithfully and the probe surfaced it.
+
+It was found by scanning the pre-write snapshot **before** `D5` ran, precisely so
+a known single failure could not be mistaken for a broken migration. **Zero**
+other accounts sit in the 80–90 day band, so nothing drifted across the line
+during the window. Settling it is decision 7.
+
+**The gate is passed with that one failure recorded and explained**, which is
+what §0 rule 4 asks for — not hand-waved.
 
 ```bash
 node src/scripts/check_device_backfill.cjs --key=$PROD_KEY   # MUST PASS
@@ -868,7 +1398,22 @@ node src/scripts/check_session_state.cjs   --key=$PROD_KEY   # MUST PASS
 wrong. `check_session_state` asserts `loggedIn` ⇔ at least one live device row, and that
 no device is claimed by two accounts. **Both must hold.**
 
-### ☐ D7 — Seed the push-audience index
+### ☑ D7 — Seed the push-audience index — DONE 2026-09-04
+
+```
+{"usersScanned":111,"accountsIndexed":85,"stationRows":85,
+ "lineRows":85,"tableSize":170,"durationMs":705}
+```
+
+`accountsIndexed: 85` independently reproduces, on the box and from live data,
+the "85 of 111 accounts hold a station" figure computed from the snapshot — which
+is the evidence behind the `C9` registry correction.
+
+> **`connect.sh` does NOT forward arguments.** Both `Env/Prod/ssh/connect.sh` and
+> the staging one are a bare `ssh -i <key> ubuntu@<host>` with no `"$@"`, so
+> `connect.sh '<command>'` silently opens an interactive shell and runs nothing.
+> For a one-shot use the direct form:
+> `ssh -i ~/workspace/Projects/Stationly/Env/Prod/ssh/prod_main_key ubuntu@<host> '<cmd>'`
 
 In-process, over loopback. A second process fighting the server for the SQLite lock
 fails **silently** — `UserWatchIndex` swallows its own errors.
@@ -885,10 +1430,41 @@ ssh <PROD_HOST> 'cd ~/stationly-backend && \
 > a near-miss of exactly this class: *"a `curl` meant to prove the deployed code was
 > stale once executed the sweep instead."* Paste, do not type.
 
-### ☐ D8 — Promote and deploy the Syncer
+### ☑ D8 — Verify the Syncer — DONE 2026-09-04. **NO PROMOTION WAS NEEDED.**
 
-Same three-hop in the StationlySyncer repo. **Backend first (done at `D1`) or
-simultaneously** — never Syncer-first.
+> **REWRITTEN 2026-09-04.** This task used to say "promote and deploy the Syncer"
+> through the same three-hop. **That was already done, on 2026-08-25.**
+> `StationlySyncer` `dev_13Jul` is **0 commits ahead** of its `release_prod`,
+> which was deployed by PR #73 (green, 59s) and already carries every setting
+> this task lists as new: `livestream.enabled=true`, `livestream.backend-url`,
+> `livestream.timeout=2`, `tfl.arrival-departures.enabled=true` and
+> `max-calls-per-cycle=60`. The backend's then-current prod build already served
+> `POST /internal/line-status-updates`, so the ingest pipeline has been live
+> since 08-25 — and the "watch the TfL rate budget on day one" warning below
+> describes a day that has already passed.
+
+**What actually remained was the verification, and it PASSED:**
+
+```
+cache.writes.syncer : 4592     rejectedOutOfOrder : 0
+cache.writes.rest   : 21       unknownIds         : 0
+lines.trackedLines  : 695      lines.writes.tfl   : 701
+connections         : 0        lines.writes.syncer: 6
+```
+
+> **This closes something `C0`, `C1` and `C2` all recorded as unanswerable.**
+> Those tasks say GitHub secrets are write-only, so whether the backend's
+> `LIVESTREAM_INGEST_SECRET` matches the Syncer's cannot be established by
+> inspection. It can be established by *behaviour*: a mismatch makes every
+> ingest POST 503 and `cache.writes.syncer` **0**. It is **4592**. **The secrets
+> match.** That was the failure mode with no error message anywhere.
+
+`lines.writes.tfl: 701` against `trackedLines: 695` is **one cold-start fill**,
+not runaway fallback polling — the process had restarted ~40 minutes earlier. The
+Syncer pushes only *changed* lines, so `writes.syncer: 6` is 6 real status changes
+and the backend self-healed the rest, exactly as `lineController` documents.
+**Worth a glance each morning in `E1`:** if `writes.tfl` climbs by ~695/hour while
+`writes.syncer` stays flat, the fallback *is* doing the work.
 
 Then verify the ingest is actually landing:
 
@@ -905,10 +1481,37 @@ New Syncer defaults that go live with no config from you:
 `tfl.arrival-departures.max-calls-per-cycle=60`. That last pair adds real TfL board
 calls per cycle — **watch the TfL rate budget on day one.**
 
-### ☐ D9 — Stripe, end to end on production
+### ☐ D9 — Stripe, end to end on production — **DEFERRED 2026-09-04, by decision**
 
-With `SUPPORT_MONEY_ENABLED` still unset, the card is not served — but the webhook path
-is live and must be proven now, not on the day the first real contribution arrives.
+**Deferred to before iOS ships a contribution surface.** The shipped Android
+build reads no `support_money.*` key and has no donation screen, so no user can
+reach this path today. It is not a gate on anything in phases E, F or G.
+
+**The reachability half is already proven**, from the `D2` probe:
+`POST /api/v1/webhooks/stripe` → **400**. Not 404 (route exists, nginx routes
+it), not 503 (the fail-closed "not configured" path — so
+`STRIPE_WEBHOOK_SECRET` reached the box), and 400 is the handler correctly
+rejecting an unsigned body. Endpoint config confirmed in Stripe Workbench:
+destination `we_1UBJi9CYQb0wQOALeCDOWlPe`, **Active**, correct URL, 2 events,
+signing secret set, 0 deliveries.
+
+> **⚠️ THE PREMISE OF THIS TASK WAS WRONG, and is corrected here.** It used to
+> open *"With `SUPPORT_MONEY_ENABLED` still unset, the card is not served"*.
+> Unset does **not** mean off — `.env.defaults:56` ships `true` and no secret
+> overrides it, so **production serves the support card with the live Payment
+> Links wired**. Harmless while no client reads those keys, but the old text
+> would have had you testing the wrong thing. `C5` has been right since 09-02;
+> this task, `A6` and the appendix had not caught up. All three now fixed.
+
+> **Step 1 as written is not available to you.** Stripe does not offer "send test
+> webhook" on a **live** destination in Workbench — it refuses to inject
+> synthetic events into live data. Skip it; the 400 above proves the same thing,
+> and the real contribution in step 2 proves strictly more (genuine signature,
+> livemode fence, attribution, the Firestore write and the redirect).
+
+When you do run it, credit a real prod uid by hand —
+`?client_reference_id=EzOk8klsbJOHb8OkL5CfOuIUV9C2` is `testnyk67`. Then watch
+**Workbench → Event deliveries** for a `200`; that is the real confirmation.
 
 1. Stripe dashboard → the webhook endpoint → **Send test event**. Expect **400**
    (`livemode` fence: a test event against production is refused). That 400 is a **pass**
@@ -924,8 +1527,11 @@ is live and must be proven now, not on the day the first real contribution arriv
 > If you see **503**, `STRIPE_WEBHOOK_SECRET` did not reach the box — check the Actions
 > log for `⚠️ Warning: STRIPE_WEBHOOK_SECRET is empty` and re-check `A6` and `C5`.
 
-⛔ **GATE D** — `D6` both PASS, an Android device signs in cleanly, the stream stats show
-Syncer ingest, and the Stripe test contribution recorded.
+⛔ **GATE D — MET 2026-09-04.** `D6`'s backfill probe passed clean and its session
+probe passed with one known, pre-existing, recorded exception (decision 7); an
+Android device signed in cleanly at `D3`; the stream stats show Syncer ingest at
+`D8`. The Stripe clause is **waived with `D9`'s deferral** — it gates nothing in
+E, F or G, and the webhook is proven reachable and fail-closed.
 
 ---
 
@@ -935,16 +1541,34 @@ Syncer ingest, and the Stripe test contribution recorded.
 and real logins are exercising the new rows. This costs nothing and is the only free
 insurance in the plan.
 
-### ☐ E1 — Daily, each morning
+### ☐ E1 — Daily, each morning — **RUNNING. 2026-09-05 → 2026-09-09**
 
-- [ ] No user reports of being signed out — **nothing signs anyone out yet.**
-- [ ] Push still arriving (it goes through `fcm_tokens`, untouched).
-- [ ] `node src/scripts/check_session_state.cjs --key=$PROD_KEY` still passes.
+- [ ] No user reports of being signed out — **nothing signs anyone out yet**, and
+      production has no crontab at all until `F3`.
+- [ ] Push still arriving (it goes through `fcm_tokens`, untouched — `D6` confirmed
+      **0 push token losses**).
+- [ ] `node src/scripts/check_session_state.cjs --key=$PROD_KEY` — **expect exactly
+      ONE failure, `nykkumar@google.com`**. Any second account is a real finding.
+      **Decision 7 settled 2026-09-08: a dangling account, deliberately left.** So
+      this check is now permanently red by design — read the COUNT, not the colour.
+      `1 problem(s)` is a pass; `2` is not.
 - [ ] `pm2 logs` — no repeated errors; `p95` on `/user/sync/profile` sane (the new
       `checkRevoked: true` adds a Firebase Auth lookup per authenticated request).
 - [ ] Identity Toolkit quota in the GCP console not climbing toward a limit.
+- [ ] `/internal/stream-stats` — `cache.writes.syncer` still climbing. If
+      `lines.writes.tfl` grows ~695/hour while `writes.syncer` stays flat, the TfL
+      fallback is doing the work and the Syncer push has stopped. See `D8`.
+- [ ] **Nothing has rebooted the box.** `uptime` should keep growing.
 
 Record each day's result in §10.
+
+| Day | Date | Result |
+|---|---|---|
+| 1 | 2026-09-05 | **NOT RUN** — no record, no commits that day |
+| 2 | 2026-09-06 | **NOT RUN** |
+| 3 | 2026-09-07 | **NOT RUN** |
+| 4 | 2026-09-08 | ✅ **PASS**, 6 of 7 checked. One known failure only. See §10 |
+| 5 | 2026-09-09 | ✅ **PASS**, 6 of 7. Steadier than day 4. See §10 |
 
 ---
 
@@ -973,7 +1597,17 @@ install the crontab, and reconcile the accounts by hand.
 
 </details>
 
-### ☐ F2 — Run reconcile by hand
+### ☐ F2 — Run reconcile by hand — **DEFERRED 2026-09-08 by decision 8**
+
+> **PAUSED, not blocked.** Nothing here is unsafe; the owner has chosen to live with
+> the surplus registry keys while the Syncer has headroom. Resume when that stops
+> being true, or when `G1`/`G2` are wanted. **Read the restated numbers in decision 8
+> before running — the "~119" below is stale.**
+>
+> **`HEAL_TRUE_TO_FALSE` gates only Pass 1.** The registry recompute in Pass 2
+> (`SubscriptionService.reconcileCounts`) is **ungated and deletes for real**. The
+> word "rehearsal" below applies to the account heal ONLY. Do not read it as covering
+> the key deletion.
 
 ```bash
 ssh <PROD_HOST> '~/stationly-backend/ops/maintenance_cron.sh reconcile'
@@ -984,6 +1618,23 @@ Then grep the log for `loggedIn true→false heal SKIPPED`. With `HEAL_TRUE_TO_F
 still `false` (`A1`), this run is a **rehearsal**: every line names an account that
 *would* have been released. Zero lines is the expected result after a clean backfill.
 Any lines are a list of accounts to investigate before `G3` turns the heal on.
+
+> ⛔ **READ DECISIONS 7 AND 8 BEFORE RUNNING THIS. This is the task they land in.**
+>
+> **Expect roughly 119 registry keys to be deleted.** As of 09-04 the registry
+> carried 192 keys / 237 holds while only **73** stations are actually wanted by
+> live accounts — 85 of 111 accounts hold a station, exactly one each. That gap
+> is pre-existing drift, and clearing it is what reconcile is *for*; this plan
+> records the same shape on staging (*"104 keys against a correct 13"*). But it
+> is a large deletion, so understand it before this command acts on it, and note
+> that `C9`'s "expect 191" was wrong — see the correction there.
+>
+> **Expect exactly one heal-SKIPPED line: `nykkumar@google.com`.** It is
+> `loggedIn:true` with no *live* device row (91.8 days against a 90-day TTL) and
+> is pre-existing, not a backfill miss. **Decision 7 is settled: it is a dangling
+> account, corrupted by earlier testing, and is deliberately left alone**, so this
+> line is expected forever and is not a reason to stop. **A second account would
+> be a real finding.**
 
 ### ☐ F3 — Install the crontab, and prove cron can exec it
 
@@ -1019,6 +1670,16 @@ the thing `G2` depends on._
 
 ### ☐ G1 — Delete the legacy stores
 
+> ⛔ **THE ONLY DESTRUCTIVE STEP IN THIS PLAN, AND IT IS IRREVERSIBLE.**
+> **Do not run it before `F4`.** Until it runs, every account carries BOTH the
+> legacy `sessions` map and its new `users/{uid}/devices` rows — that duplication
+> is the rollback path (§9), and it is why seeing `sessions` still present in
+> Firestore throughout phases D, E and F is **correct**, not a missed migration.
+> Nothing in the deployed server reads those fields any more; they are inert.
+>
+> Take a fresh `backup_firestore_snapshot.cjs` immediately before this, the way
+> `D5` did. It is 45 seconds and it is the last cheap moment.
+
 ```bash
 node src/scripts/cleanup_legacy_stores.cjs --key=$PROD_KEY --dry-run
 node src/scripts/cleanup_legacy_stores.cjs --key=$PROD_KEY     # typed confirmation
@@ -1035,16 +1696,52 @@ Flip `HEAL_TRUE_TO_FALSE` to `true` on `dev_13Jul` and promote through all three
 branches. Only now: with the old stores gone there is no stale source left for it to
 ratify.
 
+**Two edits, not one** (`A9`): the constant in
+`src/services/sessionMaintenanceService.ts`, and its pin in `src/tests/run.ts`
+(`RELEASE FLAG: HEAL_TRUE_TO_FALSE is off`). `npm test` fails until you change
+both — that friction is deliberate. Re-read the preconditions listed at the
+constant's own definition and confirm they hold for **production**, not staging,
+before either edit.
+
+> **Make it three edits, and do the third FIRST** (added 2026-09-04). Promoting
+> `dev_13Jul` is what first carries `A9`'s `export` into a release branch, and
+> that form compiles the guards into mutable `exports.X` property reads — see
+> §2 invariant 3. Change both flags to
+> `const X = false; export { X };` before promoting. Same test, same export,
+> but the guards keep reading a real compile-time constant.
+
 ### ☐ G3 — Close out
 
+- **Reboot the production box.** Deferred at `C10` on 2026-09-03 for the duration
+  of the window; the reason to defer expires here, and a pending kernel update is
+  a security patch waiting on you. Confirm pm2 returns with **1** instance.
+  > **DEFERRED INDEFINITELY 2026-09-08 — OWNER-INITIATED ONLY.**
+  > `C10` deferred this until phase E ended. The owner has now extended that with
+  > **no trigger and no date: they will ask for it when they want it.** Do not
+  > schedule it, and do not raise it again unprompted.
+  >
+  > State of the box, as fact rather than as a prompt to act: uptime was **115
+  > days** at the 09-08 check, the login banner reads `*** System restart
+  > required ***`, and 17 updates including a kernel patch are outstanding. The
+  > running kernel stays unpatched until someone restarts it.
 - Update `docs/HANDOVER_SESSION_SYNC.md` §1's phase table — production is no longer ❌.
 - Update this file's STATUS block to `COMPLETE`.
 - Delete the `revert-116-dev_13Jul` / `revert-118-release_staging` remote branches if
   they are still not wanted (verified: never merged into any release branch).
+- **Optional — retire the permanently-red session check.** Decision 7 leaves
+  `nykkumar@google.com` in place: a dangling account corrupted by earlier testing.
+  That is correct for the cutover, but it means `check_session_state.cjs` exits
+  `FAIL` forever, and a check that can never be green is one people stop reading.
+  Deleting that account makes it exit clean again, so the next person to run it
+  gets a real signal instead of a remembered exception. Do it here, not earlier —
+  during the window it was the known-good baseline that made "1 problem" readable.
 
 ### ☐ G5 — Later: bring `sweep` back
 
-A separate piece of work, not part of this cutover. In order:
+A separate piece of work, not part of this cutover. Note that re-enabling it is
+now **three** edits, not two: `SWEEP_ENABLED`, its pin in `src/tests/run.ts`
+(`RELEASE FLAG: SWEEP_ENABLED is off`, added at `A9`), and the commented-out cron
+line in `ops/maintenance.crontab`. In order:
 
 1. **Make `lastSeen` measure app USE, not sign-in.** Either the Android client calls
    `syncProfile` at cold start, or add a cheap `POST /user/session/touch` that only bumps
@@ -1070,6 +1767,28 @@ them, a dead button the moment one does.
 
 If iOS is going to ship before the Stripe wiring is done, set the `SUPPORT_MONEY_ENABLED`
 repository secret to `false` to override the default, rather than leaving it unset.
+
+### ☐ G6 — Later: stop the deploy dying on a quiet SSH connection
+
+**Added 2026-09-04, after `D1` failed this way on its first attempt.** The deploy
+runs `npm ci --omit=dev --silent` over SSH with no keepalive. When npm is slow —
+which it is whenever the Actions cache has expired, i.e. after any gap of more
+than 7 days between deploys — the connection goes silent for minutes and gets
+dropped: `client_loop: send disconnect: Broken pipe`, exit 255.
+
+It leaves the box in a genuinely awkward state: new files and new `.env` in
+place, `node_modules` possibly half-installed, and pm2 still serving the old
+process from memory. Nothing is visibly wrong until something restarts pm2.
+
+In `.github/workflows/deploy-prod.yml`, the `Install deps & reload` step:
+
+1. Add `-o ServerAliveInterval=30 -o ServerAliveCountMax=10` to the `ssh` call.
+2. **Drop `--silent`** — npm's progress output is what keeps the connection warm,
+   and the deploy log is the only record of what was installed.
+
+A deploy that only works when npm happens to be fast will bite again. It is not
+urgent — the re-run is a reliable workaround and the failure is fail-safe — but
+it should not be rediscovered on the next long gap.
 
 ---
 
@@ -1306,6 +2025,563 @@ NOT DONE: B3 is still open. staging_deploy.sh rsyncs the WORKING TREE, so this
           place) also still open — the manual run proves the script and the path,
           not cron's PATH/HOME/exec-bit.
 Next:     A8 (needs approval), then B1-B3.
+
+### 2026-09-02 (d) — Phase A committed; Phase B through B4; Phase C closed out
+Did:      C0  Secrets audit. All 5 core secrets exist as repository secrets AND
+              are populated on the box. LIVESTREAM_INGEST_SECRET has existed
+              since 2026-08-02 — it was the one this task most expected to be
+              box-only. Fingerprints recorded in C0 for the post-D1 diff.
+              Read via ONE read-only SSH; the owner then asked that agents not
+              connect to production without being asked. Honour that.
+          C1/C2  ingest secret present in both repos (C2 confirmed by owner).
+          C3/C4/C5  Stripe live-mode links + webhook endpoint created by the
+              owner; all 5 secrets verified by `gh secret list`.
+          A8  COMMITTED d08f3ac and pushed. 12 files, +1897/-150.
+          B1/B2  owner merged dev_13Jul -> main (#129) -> release_staging (#130).
+              PR #131 (release_staging -> release_prod) now open. That is D1.
+          B3  Clean-checkout deploy PASSED. See the task for the full evidence.
+          B4  Crontab reinstalled at ops/; cron canary fired 3x a minute apart.
+
+THE POINT OF B3, PROVEN: ops/ and both index JSONs ARE in the committed tree,
+          and maintenance_cron.sh keeps mode 755 through git -> clone -> rsync
+          -> box. That is the A2 exec-bit risk closed with evidence rather than
+          reasoning. A working-tree deploy could never have shown this.
+
+FOUND BY RUNNING IT, not by reading it:
+          1. B3's steps were incomplete — a fresh clone has no node_modules, so
+             the first attempt died at `tsc: command not found`. It aborted
+             BEFORE rsync, so the box was untouched. `npm ci` added to the task.
+          2. staging_deploy.sh ECHOES EVERY SECRET IN PLAINTEXT as
+             "Writing override: <KEY>=<value>" — TFL_APP_KEY, RESEND_API_KEY,
+             STATIONLY_ADMIN_KEY, LIVESTREAM_INGEST_SECRET included. They land
+             in terminal scrollback on every deploy anyone has ever run. Not
+             fixed; recorded. Delete redirected logs.
+          3. FALSE ALARM worth recording so nobody re-raises it: the tree diff
+             showed `public/icons/lines/` present locally and absent from the
+             clean checkout, which looks exactly like the .scripts/ bug. It is
+             NOT. server.ts:92 generates line icons on first hit and caches them
+             to that directory — it is a RUNTIME CACHE, correctly gitignored,
+             and production already serves mildmay.png at 200 because it
+             regenerated there on demand. Check before reporting.
+
+Verified end to end on the clean-deployed staging build:
+          .env 23 keys unchanged; all 16 overrides written, no warnings;
+          support-money-config serves the 4 sandbox links correctly mapped with
+          ?client_reference_id={uid}; webhook unsigned POST -> 400 NOT 503
+          (the distinction that proves the secret reached the box);
+          return page 200 -> stationly-staging://support-money/thanks;
+          reconcile ok / sweep SKIPPED from the ops/ path.
+
+State:    Working tree CLEAN. Everything committed and pushed.
+          Production still has ONLY the two indexes. No code, no data.
+Next:     B5 (wall clock — tonight's 03:20 and tomorrow's), then B6, C9, C10.
+          Those four are all that gate D1 / PR #131.
+```
+
+### 2026-09-03 — B5 night 1; A9 done
+
+```
+Did:      B5  NIGHT 1 OF 2 PASSED. Read ~/logs/maintenance.log on staging.
+              Reconcile fired 03:20:03 UTC from the ops/ path, ok, 2447ms,
+              loggedInHealed: [], 8 users / 7 watch accounts — identical to
+              09-01 and 09-02. Full evidence in the B5 task.
+              Night 2 is 2026-09-04 03:20 UTC.
+          A9  DONE, and decided in the doing: the objection was never that it
+              was wrong, only that nobody had chosen. Both flags exported and
+              pinned. 212/212 (was 210), tsc --noEmit clean.
+
+CORRECTED A STALE TASK (plan rule 6): B5 said "BOTH scheduled jobs fire".
+          Sweep has not been scheduled since A10 commented its cron line out, so
+          taken literally B5 could never pass. It is reconcile-only; F4 is where
+          sweep gets its own two nights. Fixed in the task and in GATE B.
+
+READ FROM THE LOG, worth keeping: there is no 03:00 sweep line on 09-03, where
+          every night 08-25..09-02 had one. That is A10 confirmed on the BOX,
+          not just in the branch — a fact the crontab alone would not show you,
+          since a line can be present and the job still gated in code.
+
+A9 WIDENED, deliberately: the task named HEAL_TRUE_TO_FALSE. SWEEP_ENABLED got
+          the same treatment because it is the same class of danger (A10) and
+          was equally unasserted. Pinning one and not the other would have left
+          the plan's own reasoning half-applied.
+          Both tests carry a message naming the task that re-enables them, and
+          G2/G5 now say out loud that they are TWO edits (three for G5, with the
+          cron line). npm test failing after a deliberate flip is the design.
+
+BLOCKED, and the owner should know: C9 was AUTHORISED this session — the owner
+          said go ahead with the read-only prod survey — but the probe command
+          was refused by the LOCAL permission classifier, not by anything on
+          Google's side. Nothing connected to production. No credential was
+          read. Production remains: two indexes, no code, no data.
+          To unblock, the owner either runs the four C9 probes themselves with
+          `! node src/scripts/<probe>.cjs --key=$PROD_KEY` or adds a Bash
+          permission rule. The authorisation stands; only the mechanism failed.
+
+State:    dev_13Jul is AHEAD of main/release_staging by the A9 commit. That is
+          fine and intended — A9 is export-and-test only, changes no runtime
+          behaviour, and does not need to reach production before D1.
+Next:     B5 night 2 (09-04, one tail), C9 (authorised, needs a permission
+          path), C10, B6. Still those four gating D1 / PR #131.
+```
+
+### 2026-09-03 (b) — C9 done: production surveyed, read-only
+
+```
+Did:      C9  CLOSED. Owner ran all four probes against stationly-prod
+              themselves (the classifier had blocked the agent). Full baseline
+              is in the C9 task — that block is what D6 and F1 diff against.
+
+THE HEADLINE NUMBER: 106 of 108 production accounts would be released TODAY by
+          either job. 191 registry keys deleted, 235 holds dropped, and 71
+          stations losing their LAST subscriber — those stop being polled by
+          the Syncer and their boards go stale with no self-heal.
+          This is NOT drift and NOT a fault. Prod has no users/{uid}/devices
+          rows at all, so "has a live device row" is false for everyone and
+          both jobs correctly predict releasing the platform. It is §2
+          invariant 2 quantified, and the strongest evidence in this plan that
+          A1 and A10 were necessary. Both jobs are off. Neither ran.
+
+CAUGHT BY THE PROJECT-ID LINE, exactly as designed: the first attempt at probes
+          2 and 3 line-wrapped in the paste, so zsh dropped --key= into a
+          separate command and both ran against STAGING under the fallback key.
+          They printed "Project: mindthetimefcm" on line 1 and were spotted and
+          re-run. The staging numbers (8 users, 5 loggedIn) are NOT C9 data and
+          are recorded nowhere.
+          KEEP THAT LINE-1 HABIT. A wrapped --key= is silent otherwise: the
+          fallback is a working key, so the probe succeeds, it just answers
+          about the wrong planet.
+
+VERIFIED THE RESULTS WERE PROD independently of the header, since the good runs'
+          stdout was not captured: read the two prediction JSONs off disk and
+          cross-checked their uids against check_state_rev's prod listing.
+          05x7m6yr… and 28tpd7Zt… appear in both. 106 accounts also cannot be
+          staging, which has 8.
+
+INCIDENTAL: prod has 108 accounts to staging's 8. D5's backfill is a 108-account
+          job, not the handful staging has been rehearsing on.
+          106 not 108 because 2 accounts are already loggedIn:false — invisible
+          to both jobs, expected, not a probe miss.
+          check_state_rev's ledger half is INCONCLUSIVE (it read the LOCAL
+          sqlite, compared 0). Its exit-2 design refusing a pass it had not
+          earned. The Firestore half is complete, which is what C9 wanted.
+
+SCRATCH FILES: .reconcile-prediction.json / .sweep-prediction.json now hold PROD
+          predictions. Gitignored. Do not run a STAGING --after against them.
+
+State:    Production STILL untouched — two indexes, no code, no data. Every
+          probe is read-only; verified no .set/.update/.delete before running.
+Next:     C10 (one read-only `pm2 list`, must show 1), B5 night 2 (09-04),
+          B6 (real device). Those three now gate D1 / PR #131.
+```
+
+### 2026-09-03 (c) — C10 passed; PHASE C COMPLETE
+
+```
+Did:      C10 PASSED. One read-only SSH. pm2 shows exactly ONE
+              stationly-backend, cluster mode, online, 221.8mb, lifetime
+              restarts 3. pm2-logrotate also online, so deploy-day logging
+              will not fill the disk.
+              Cluster-at-1 is fine: the COUNT is the invariant and pm2 reload
+              inherits it, so the deploy cannot widen it.
+
+GATE C IS MET. Phase C is complete, and so is Phase A. Only B5 night 2 and B6
+          now stand between here and D1 / PR #131 (open, mergeable, 20 commits).
+
+FOUND WHILE DOING SOMETHING ELSE — the value of reading the whole screen:
+          the SSH login banner says "*** System restart required ***". The prod
+          box has a pending kernel/package update. Nothing to do with C10, and
+          it would have been easy to scroll past to the pm2 table.
+          WHY IT MATTERS: a reboot during D4-D6 restarts pm2 under the new code
+          with the backfill HALF APPLIED — some accounts with device rows, some
+          without. Neither the probes nor the jobs have a defined answer for
+          that state, and it is not one the rollback covers cleanly.
+          Cheapest moment to reboot is NOW, while prod still runs the OLD build
+          and no data has moved. Recorded as an explicit Phase D precondition
+          in C10 with both options; the owner has not decided yet.
+
+State:    Production untouched: two indexes, no code, no data. C10 was a read,
+          nothing was changed on the box.
+Next:     Decide the reboot. B5 night 2 (09-04 03:20 UTC, one tail). B6 on a
+          real device. Then D1.
+```
+
+### 2026-09-03 (d) — B6 passed on a real Android device
+
+```
+Did:      B6  PASSED, all six lifecycle steps plus the read paths. Owner drove
+              a real Android handset against staging; every step was verified
+              in Firestore with check_session_state.cjs BETWEEN steps rather
+              than inferred from the app looking right. Full table in B6.
+          Reboot DEFERRED by owner decision — recorded in C10 and booked into
+              G3, with the Automatic-Reboot check that makes deferring safe.
+
+WHY ANDROID AND NOT iOS: production is Android-only and has never had an iOS
+          install. The two platforms write DIFFERENT stores — iOS writes the
+          root `devices` collection via /device/register, which reads 0 on prod
+          and always has. An iOS pass would exercise the one part of the system
+          production has never touched and miss the store P2 actually migrates.
+
+THE RESULT THAT ONLY A DEVICE COULD PRODUCE: an FCM disruption push ARRIVED on
+          the handset. That closes bug #1 end to end, and no amount of Firestore
+          inspection could ever have established it — the store looked correct
+          the entire time the feature was broken, because `lines` was dropped in
+          the controller, the audience matched zero devices, and send() returned
+          SUCCESS. This is the reason B6 exists as a task at all.
+
+STRONGEST STRUCTURAL RESULT: on sign-out then sign-in the device id was REUSED
+          (1e39b0b2), not regenerated. A fresh id per sign-in would orphan the
+          old row and accumulate dead rows forever.
+
+FOUND WITHOUT TESTING FOR IT: signing back into testnyk67 moved the row off
+          testnyk66, and testnyk66 correctly went loggedIn=false with 0 rows.
+          That is the "last device out" release path firing correctly.
+
+LIMITS RECORDED IN THE TASK, so nobody overstates this later: no fcm_tokens
+          baseline was captured before the account switch, so the token's
+          REMOVAL from the old account is inference rather than measurement;
+          the board was not re-checked between sign-out and sign-in; and one
+          unexplained but benign stateRev asymmetry between the two accounts.
+
+COST: testnyk67 was the account deleted, so staging lost its richest fixture
+          (rev 164, 3 device rows, 4 stations). Rebuild one before the next pass.
+
+State:    Production untouched — two indexes, no code, no data. Everything this
+          session touched was staging or read-only.
+          dev_13Jul is ahead of main/release_staging by today's commits, all of
+          them docs plus the A9 test. Not pushed.
+Next:     B5 NIGHT 2, 2026-09-04 03:20 UTC. One tail of ~/logs/maintenance.log.
+          That is the last thing before D1 / PR #131.
+```
+
+### 2026-09-03 (e) — end of day: the deferred reboot verified; nothing left but the clock
+
+```
+Did:      Verified the C10 reboot deferral is actually safe rather than merely
+          hopeful. Automatic-Reboot is commented out in 50unattended-upgrades
+          (lines 94/97/98/103 all //), so it falls back to its default of
+          false. The prod box patches itself but will NOT reboot itself.
+          ONLY A PERSON CAN REBOOT IT. Recorded in C10.
+          Line 98 reads Automatic-Reboot-WithUsers "true" and is a red herring:
+          commented, AND a different setting that only applies once
+          Automatic-Reboot is already on. Do not re-raise it.
+
+WHY THIS WAS WORTH A COMMAND: it was the only risk in this window able to fire
+          with nobody doing anything. A reboot during D4-D6 restarts pm2 with
+          the backfill half-applied across 108 accounts — a state neither the
+          probes nor the jobs define, and one the rollback does not cover
+          cleanly. Deferring was the right call; deferring UNVERIFIED was not.
+
+ALSO CORRECTED IN THIS FILE, because it had gone stale within the day:
+          the STATUS box still said "DO NOT MERGE until the four tasks above
+          are done" when three of the four had closed. It is one now. A STATUS
+          block that overstates what is outstanding trains its reader to stop
+          believing it — see rule 6 in §0.
+
+END OF DAY POSITION
+          Phases A and C: COMPLETE. Gate C met.
+          Phase B: B1-B4 and B6 done; B5 night 1 of 2 done.
+          Phase D-G: not started. PR #131 open, mergeable, 20 commits.
+          Working tree clean. Six commits on dev_13Jul, NONE PUSHED.
+          Production: two Firestore indexes. No code, no data. Unchanged since
+          2026-09-02, and unchanged by anything done today.
+
+STILL OUTSTANDING, and it is one thing:
+          B5 night 2, 2026-09-04 03:20 UTC.
+            ssh <STAGING_HOST> 'tail -5 ~/logs/maintenance.log'
+          One reconcile line, ok, loggedInHealed: [], no 03:00 sweep line.
+          That closes B5, GATE B and phase B, and D1 becomes genuinely ready.
+
+CARRY INTO D1, none of them blocking:
+          - A staging log-watch agent was running during B6 and had not
+            reported when the session ended. Its verdict covers server-side
+            behaviour during the device pass — a 200-with-internal-error would
+            not appear in any of the Firestore checks. If it never reported,
+            the B6 result stands on Firestore state evidence alone; say so
+            rather than implying the logs were reviewed.
+          - Prod is 108 accounts to staging's 8. D5 runs at 13x anything that
+            has been rehearsed.
+          - D1-D9 is ONE session. Do not start it late in the day.
+          - Staging lost testnyk67, its richest fixture, to B6 step 6.
+```
+
+### 2026-09-04 — **THE DEPLOY WINDOW. Production is migrated.**
+
+```
+Did:      B5 NIGHT 2 CLEAN -> GATE B MET -> D1 through D8 all closed in one
+          sitting, 07:06 to ~08:55 UTC. D9 deferred by decision.
+          PRODUCTION IS MIGRATED: 117 device rows across 108 accounts.
+
+          B5   night 2 fired 03:20:03Z, ok, loggedInHealed [], 2319ms, no
+               03:00 sweep line. Backed by crontab -l (sweep commented, only
+               reconcile active on the ops/ path) and by grep -v ": ok "
+               returning nothing across the whole log.
+          D1   PR #131 merged 07:06:15Z. release_prod = 51e2e76.
+               FAILED FIRST TIME: broken pipe / exit 255 at Install deps &
+               reload, after 4m47s of silence. NOT a code fault - the SSH
+               call has no ServerAliveInterval and npm ci --silent prints
+               nothing. Root cause: GitHub evicts an unused Actions cache
+               after 7 days and the last prod deploy was 26 days earlier, so
+               both ends did cold installs (the runner's own npm ci: 3m59s).
+               Re-run went green in 8m29s INCLUDING the Health check.
+          D2   New build confirmed live by THREE public probes, not by the
+               green tick: stripe webhook 401->400, support-money/return 200,
+               sdui config 401. /internal/* still 404 (invariant 5 holds).
+          D3   Real Android sign-in on testnyk67 - clean, so the C8 index is
+               genuinely serving startSession. It also wrote prod's first
+               device row, and proved the new code does NOT dual-write the
+               legacy sessions map (1 row, 0 sessions).
+          D4   Dry run: 117 rows / 108 accounts / 3 skipped, root devices 0,
+               and NOT ONE ios-typed row. Predicted identically from the
+               snapshot beforehand; the two methods agreed exactly.
+          D5   Applied. 117 written. Prod now 118 rows across 109 accounts.
+          D6   check_device_backfill CLEAN PASS - 0 missing, 0 unaccounted,
+               0 field problems, 0 PUSH TOKEN LOSSES.
+               check_session_state: 1 failure, nykkumar@google.com, PREDICTED
+               BEFORE THE WRITE from the snapshot. Device ownership clean.
+          D7   reindex-watch: 111 scanned, 85 indexed, 170 rows, 705ms.
+          D8   NO PROMOTION NEEDED - the Syncer went to prod on 2026-08-25.
+               Verified instead: cache.writes.syncer 4592.
+
+DECISION 6 SETTLED, and it had never been recorded anywhere but §9:
+          TAKE A BACKUP. gcloud is not installed and no export is configured,
+          so a managed export would have meant an IAM grant plus a GCS bucket
+          mid-window. Wrote src/scripts/backup_firestore_snapshot.cjs instead
+          - read-only, 45s, 211 KB, every user doc + fcm_tokens + devices +
+          the registry. Taken BEFORE D5. That snapshot then did double duty:
+          every D4/D6 expectation below was computed from it in advance.
+
+THE HABIT THAT PAID OFF (§0 rule: verify by running, not by reasoning):
+          Predicting each probe's output from the snapshot BEFORE running it
+          turned two would-be scares into non-events.
+          1. nykkumar@google.com fails the loggedIn invariant. Found before
+             D5, so when D6 reported it, it was a confirmation rather than a
+             reason to stop a good migration. Pre-existing: the legacy map
+             uses the same 90d TTL, so the account already held that state.
+             ZERO other accounts sit in the 80-90 day band.
+          2. The registry recompute is ~73, NOT the 191 C9 told you to
+             expect. Corroborated independently at D7 (accountsIndexed 85).
+
+FOUR THINGS IN THIS FILE WERE WRONG. All corrected (§0 rule 6):
+          - STATUS said the 09-03 commits were NOT PUSHED. They were, and
+            are. They are un-PROMOTED. Different thing.
+          - A6, D9 and the appendix all said SUPPORT_MONEY_ENABLED is false
+            via defaults. It is TRUE. D1's log printed the warning proving
+            it. Prod serves the support card with live Payment Links wired.
+            C5 has been right since 09-02; three other places had not caught
+            up, and D9's whole premise rested on the wrong one.
+          - D8 said to promote the Syncer. Already done 08-25.
+          - C9 said to expect a recomputed registry of 191. It is ~73.
+            Following that literally would have aborted a healthy migration.
+
+ALSO FOUND, not blocking:
+          - A9's `export` is NOT the no-op the 09-03 log called it. tsc turns
+            every use site into exports.X, i.e. a MUTABLE property read at
+            call time, weakening §2 invariant 3. Prod is unaffected -
+            release_staging still has the plain const. Fix on dev_13Jul
+            before it promotes; recorded at invariant 3 and G2.
+          - connect.sh (prod AND staging) does not forward arguments. It
+            silently opens an interactive shell and runs nothing. Cost one
+            round trip at D7. Use the direct ssh form.
+          - The kiosk fix 3f63f1f can never reach production: web-temp/src is
+            dropped by --exclude src at any depth, and web-temp/dist is
+            untracked.
+
+END OF DAY POSITION
+          Phases A, B, C, D: COMPLETE. Gates A, B, C, D met.
+          Phase E: RUNNING, day 1 of 5. First check 2026-09-05.
+          Production: 51e2e76, 111 accounts, 118 device rows, legacy stores
+          untouched and still present. No crontab on prod at all yet.
+          Both release jobs still off. Nothing scheduled runs on prod.
+
+OPEN, none blocking phase E:
+          - Decision 7: nykkumar@google.com. Settle before F2. It is the LAST
+            holder of station 910GCLDNNRB, so setting loggedIn:false drops
+            that station at the first reconcile. Signing in on it is cleaner.
+          - Decision 8: ~119 stale registry keys. Understand them before F2.
+          - D9 Stripe, deferred to before iOS ships a contribution surface.
+          - G6: the SSH keepalive fix, so D1's failure does not recur.
+
+CARRY INTO PHASE E:
+          - NOTHING REBOOTS THE BOX until E ends. The banner still says
+            *** System restart required *** and 17 updates pending. That is
+            the deliberate C10 deferral. Reboot at G3, not before.
+          - E1's session check will report ONE failure every morning until
+            decision 7 is settled. A check that always fails is a check you
+            stop reading.
+          - Do not promote dev_13Jul yet. release_staging @ c9b5285 is the
+            exact tree B3/B5/B6 proved, and none of the 12 commits reach the
+            box anyway.
+```
+
+
+### 2026-09-08 — E1 day 4. First soak check actually run. **PASS.**
+
+```
+CONTEXT   Days 1-3 (09-05/06/07) were never run — the table was empty and no
+          commit touched this file after 09-04. Day 4 is the FIRST soak check
+          performed. Owner authorised read-only production access for it.
+          Read-only throughout: no write probe, no config change, no restart.
+
+E1 RESULTS
+  1 signed out?    ✅ Owner reports 4-5 days of normal app use, no sign-out.
+                      Corroborated: `crontab -l` on prod = "no crontab for
+                      ubuntu". Nothing scheduled runs. Nothing CAN sign anyone
+                      out yet.
+  2 push           ✅ POST /api/v1/user/fcm/register → 200 in 291ms from a real
+                      Ktor (Android) client. Owner confirms push arriving.
+  3 session state  ✅ EXPECTED RESULT. `Project : stationly-prod` on line 1.
+                      "✗ FAIL — 1 problem(s)" — and the one problem is exactly
+                      nykkumar@google.com, "loggedIn=true but live rows=0"
+                      (device d8ab8bae:android, live=0). NO SECOND ACCOUNT.
+                      Also "✓ every device belongs to exactly one account".
+  4 pm2 logs       ✅ Error log is ONE LINE for the whole 4-day run:
+                      "[TflApi] Failed to fetch arrivals for 910GLEYTNMR:
+                      timeout of 30000ms exceeded". Single transient.
+                      /user/sync/profile on real traffic: 229-357ms, clustered
+                      285-300ms. That INCLUDES the new checkRevoked Auth
+                      lookup. No regression worth acting on.
+  5 IT quota       ⬜ NOT CHECKED — needs the GCP console in a browser.
+                      Mitigating: the 1,930 scanner 401s below are rejected in
+                      <1ms, i.e. BEFORE any Firebase Auth call, so they burn no
+                      Identity Toolkit quota. Only real traffic does, and real
+                      authenticated traffic is ~10 requests/16h. No pressure.
+  6 stream-stats   ✅ cache.writes.syncer = 1,210,728 (was 4,592 at D8 on
+                      09-04). The Syncer is feeding hard.
+                      lines.writes.syncer 3,641 vs lines.writes.tfl 3,630.
+                      D8's ALARM SIGNATURE IS ABSENT: tfl would have to climb
+                      ~695/hr with syncer FLAT. tfl is ~38/hr and syncer went
+                      6 → 3,641. Both healthy.
+                      unknownIds 0. rejectedOutOfOrder 49 — 0.004% of 1.2M
+                      writes, the cache correctly discarding stale updates.
+  7 uptime         ✅ 115 days, 59 min. THE BOX HAS NOT REBOOTED. pm2 process
+                      uptime 4D, matching the 09-04 deploy — no restart since.
+                      C10 deferral still intact.
+
+NEW FINDING — unidentified automated client, NOT harmful, but unowned
+          An external client, UA "node", arriving via Cloudflare, runs every
+          5 minutes on the dot: fetches /openapi.json, then POSTs all ELEVEN
+          user endpoints — including /user/delete-account and /user/logout.
+          193 cycles today, 1,930 requests, EVERY ONE 401 in under 1ms.
+          Spec-driven enumeration: it reads the published spec, then walks it.
+          Correctly rejected at validateApiKey, before any auth lookup. Costs
+          nothing and reaches nothing. But nobody has identified it. If it is
+          not ours, the published /openapi.json is what makes it possible.
+          ASK THE OWNER whether this is a monitor they configured.
+          Separately: /.env, /app/.env, /compose/.env probes → nginx 444.
+          Ordinary internet background noise, correctly refused.
+
+POSITION  Phase E: day 4 of 5, PASS. One check left, 2026-09-09.
+
+DECISIONS TAKEN LATER THE SAME DAY
+  Decision 7  SETTLED — leave nykkumar@google.com. Owner clarified it is a
+              DANGLING account (a real account corrupted by earlier testing),
+              not a test account. So the invariant failure is a known artefact
+              of test activity, NOT evidence of a backfill defect.
+  Decision 8  SETTLED — DEFER F2. Owner: the surplus keys only cost Syncer
+              polling, and prod is not strained (load 0.20, CPU 0%, 264 MB).
+              Not a risk judgement — the prediction below shows it is safe.
+              Consequence recorded: this parks F3, F4, G1 and G2 as well.
+  G3 reboot   DEFERRED INDEFINITELY, owner-initiated only. Not to be
+              scheduled or raised again. Kernel patch remains unapplied.
+
+F2 PREDICTION, read-only, run 2026-09-08 — supersedes the 09-04 numbers
+          121 users scanned · 196 keys now · 76 recomputed
+          153 changes = 120 REMOVALS + 33 DECREMENTS · 1 predicted heal
+          The plan's "expect ~119 deletions" was stale. C9's "expect 191" was
+          already known wrong; both are now superseded.
+          The 33 decrements are stations that SURVIVE (910GWOLWXR 6→5,
+          910GWEALING 3→2) — a stale hold drops, the station stays polled.
+          Removals are keys whose only holder is not live. Safe by
+          construction: `target` is built solely from accounts with a live
+          device row, and exactly ONE account lacks one (the dangling one).
+          ⚠️ CORRECTION TO THIS FILE: F2's own text called the run "a
+          rehearsal". That is true of Pass 1 ONLY. HEAL_TRUE_TO_FALSE does not
+          gate Pass 2 — SubscriptionService.reconcileCounts is UNGATED and
+          deletes for real. F2 has been amended.
+          Probe wrote .reconcile-prediction.json to the repo root (gitignored);
+          `--after` needs it, so keep it while F2 is pending.
+
+PROMOTION VERIFIED BLOCKED
+          Owner asked whether dev_13Jul → main → release_staging → release_prod
+          is safe. It is NOT, and the reason was confirmed by compiling the
+          current source, not by reading the diff: A9's `export` emits
+          `exports.SWEEP_ENABLED` / `exports.HEAL_TRUE_TO_FALSE` at every use
+          site — mutable, runtime-settable, where release_staging has a folded
+          `const`. It is also the ONLY one of the 14 commits that reaches the
+          box, so promoting today would ship exactly one thing: the regression.
+          The stale local dist/ (built 09-02) hides this; ignore it.
+          Un-exporting alone breaks src/tests/run.ts:60, which imports both
+          flags. Full detail at the promotion gate in §STATUS.
+
+STATE OF THE REPO, unchanged by any of this
+          Nothing sensitive is tracked: backups/ is caught by the blanket
+          *.json ignore, no service-account keys are committed, and .env.remote
+          is an empty-valued schema template.
+          Snapshot backups/stationly-prod-snapshot-2026-09-04….json (211 KB)
+          remains the ONLY pre-write rollback while G1 is parked. It carries
+          real user emails and uids in plaintext on the owner's laptop.
+          Cleanup deliberately NOT done: 5 probes are still called by parked
+          tasks (cleanup_legacy_stores→G1, check_drift_reconcile→F2,
+          check_session_state→E1/F4, run_maintenance + check_session_sweep→G5).
+          The genuinely spent scripts are auditTimestamps.cjs and
+          standardizeTimestamps.cjs, both 2026-06-02 and from an EARLIER
+          migration — unrelated to this cutover.
+
+STILL OPEN, none urgent, none blocking
+          - C11: 4 prod secrets pasted into a 09-01 transcript, rotation
+            deferred as "separate work after the cutover". The cutover is now
+            parked, so this should not be parked behind it.
+          - The A9 export fix (blocks promotion, above).
+          - An unidentified client, UA "node" via Cloudflare, walks all 11 user
+            endpoints every 5 min off /openapi.json. 1,930 requests on 09-08,
+            every one 401 in <1ms. Harmless; still unidentified. Ask the owner.
+```
+
+
+### 2026-09-09 — E1 day 5. Soak window closed. **PASS.**
+
+```
+E1 DAY 5 — all deltas measured against day 4 (09-08)
+  session state  ✅ Project: stationly-prod. "1 problem(s)" — still only the
+                    dangling account. "✓ every device belongs to exactly one
+                    account". No second account appeared across the window.
+  uptime         ✅ 116 days, 26 min (115d on day 4). NOT rebooted.
+  pm2            ✅ online, 5D (was 4D), restarts still 5 — no restart.
+                    mem 234.5 MB (was 263.6), CPU 0%.
+                    load 0.10/0.06/0.06 — QUIETER than day 4's 0.20/0.23/0.25.
+  stream-stats   ✅ cache.writes.syncer 1,486,689 (was 1,210,728)
+                    → +275,961 in ~23.5h. Feeding hard.
+                    lines.writes.syncer 5,430 (was 3,641)  +1,789
+                    lines.writes.tfl    4,850 (was 3,630)  +1,220 ≈ 52/hr
+                    D8's alarm needs tfl ~695/hr with syncer FLAT. Neither
+                    holds: syncer is climbing FASTER than tfl. Healthy.
+                    unknownIds 0. rejectedOutOfOrder 56 (+7). restHitRate
+                    0.728, flat. cache.size 196.
+  crontab        ✅ "no crontab for ubuntu". Still nothing scheduled.
+  error log      ✅ 4 lines for the whole day, and NONE is a failure:
+                    2× "STATUS: TfL refresh failed for bus: timeout" —
+                      transient upstream, same class as day 4's single line.
+                    2× "PRED: [departure-board] No usable board rows for
+                      <line> at <station> — serving countdown arrivals for
+                      them." That is the FALLBACK ANNOUNCING ITSELF, written
+                      to stderr as a warning. Working as designed, not a fault.
+                    No stack traces. Nothing repeating.
+  IT quota       ⬜ NOT CHECKED — browser-only, same as day 4.
+
+VERDICT   Day 5 PASS, and the box is measurably calmer than day 4.
+          PHASE E's WINDOW IS CLOSED. But it ran 2 checks of 5: days 1, 2 and 3
+          were never performed and cannot be recovered. Recorded as 2/5.
+          Both checks that did run passed, and the two independent long-run
+          signals — 116 days uptime and 1.49M syncer writes — corroborate a
+          system that has been stable across the whole window, not just on the
+          two mornings someone looked.
+
+NOTHING ELSE MOVED
+          No code changed. The A9 promotion blocker is exactly as found on
+          09-08 and still blocks dev_13Jul → main → release_staging →
+          release_prod. F2/F3/F4/G1/G2 remain parked on decision 8; the G3
+          reboot remains owner-initiated with no trigger.
+          docs/PROD_CUTOVER_PLAN.md is still UNCOMMITTED.
 ```
 
 ---
@@ -1324,7 +2600,7 @@ Next:     A8 (needs approval), then B1-B3.
 | `LIVESTREAM_INGEST_SECRET` | secret | **`C1`** | must equal the Syncer's |
 | `STRIPE_WEBHOOK_SECRET` | secret | **`C5`** | absent ⇒ webhook 503s |
 | `SUPPORT_MONEY_PAYMENT_URL_{T4,T8,T12,ONEOFF}` | secret | **`C5`** | live-mode links |
-| `SUPPORT_MONEY_ENABLED` | secret | **unset** | `false` via defaults until `G4` |
+| `SUPPORT_MONEY_ENABLED` | secret | **unset** | **`false`** via `.env.defaults:65` — **DISABLED 2026-09-09 by decision, both envs.** Was `true`; the old warning that "unset does NOT mean off" no longer applies, because the default itself is now off. ⚠️ **Inert until a deploy carries it** — and the promotion chain is blocked, see the promotion gate. ⚠️ If a `SUPPORT_MONEY_ENABLED` (or `STAGING_…`) repo secret exists and is `true`, it OVERRIDES this file and must be cleared too — secrets are write-only, so this cannot be verified by inspection, only by behaviour |
 | `VERSION_GATE_ENABLED` | defaults | **unset** | `false`. Never raise the Android floor above `1.0` — it is the only build in the Play Store |
 | `FIREBASE_KEY_PATH` | defaults | `/home/ubuntu/config/firebase-service-account.json` | deployed out of band |
 | `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_P8_PATH` | defaults | present, key file absent | iOS only; a missing `.p8` logs and degrades, it does not fail boot |
@@ -1340,6 +2616,7 @@ All read-only unless marked. All take `--key=` and all print their project id.
 
 ```
 check_session_sweep.cjs      read-only   --before / --after
+backup_firestore_snapshot.cjs read-only  --out=  full JSON snapshot (added D5)
 check_drift_reconcile.cjs    read-only   --before / --after / --email= / --uid=
 check_state_rev.cjs          read-only   master vs ledger
 check_device_indexes.cjs     read-only   RUNS the real queries; reports root collection size
