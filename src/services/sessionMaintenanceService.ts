@@ -78,7 +78,7 @@ import { SubscriptionService } from './subscriptionService';
  * Note this gates the RECONCILE only. `sweep` performs the same release and is
  * gated by nothing but the crontab not being installed — see plan task F3.
  */
-export const HEAL_TRUE_TO_FALSE = false;
+const HEAL_TRUE_TO_FALSE = false;
 
 /**
  * Whether [sweep] may release an account it believes has no live device rows.
@@ -124,7 +124,41 @@ export const HEAL_TRUE_TO_FALSE = false;
  * errs in: over-counting polls a station nobody needs, under-counting takes a
  * live station from someone who does.
  */
-export const SWEEP_ENABLED = false;
+const SWEEP_ENABLED = false;
+
+/**
+ * The two release flags above, surfaced for the pins in `src/tests/run.ts` —
+ * and deliberately NOT exported individually.
+ *
+ * ⚠️ This shape is load-bearing. Under `"module": "commonjs"`, `export const X`
+ * compiles EVERY use site to `exports.X`:
+ *
+ * ```js
+ * const  (this file)              export const  (what A9 briefly shipped)
+ * if (!SWEEP_ENABLED)             if (!exports.SWEEP_ENABLED)
+ * ```
+ *
+ * `exports.X` is a mutable property read at call time, so anything holding this
+ * module's object could set it at runtime and the next reconcile would begin
+ * releasing accounts. A module-local `const` cannot be reached from outside
+ * this file at all. That difference IS invariant 3 of `docs/PROD_CUTOVER_PLAN.md`
+ * — "the value in the branch is the value production runs, and it cannot be
+ * changed from the box" — which `A9` made quietly untrue on 2026-09-03 by adding
+ * `export` so the tests could import the flags. Found 2026-09-08 by compiling
+ * the branch; fixed 2026-09-09 by this indirection.
+ *
+ * So: the use sites above read the module-local constants and stay unreachable,
+ * while the tests read a frozen copy. `Object.freeze` is belt-and-braces — a
+ * mutation here would not reach the use sites anyway — but it keeps the exported
+ * surface honest about being read-only.
+ *
+ * If you are re-enabling a flag (G2 for heal, G5 for sweep): change the `const`
+ * above, not this object.
+ */
+export const RELEASE_FLAGS = Object.freeze({
+    HEAL_TRUE_TO_FALSE,
+    SWEEP_ENABLED,
+});
 
 export class SessionMaintenanceService {
 

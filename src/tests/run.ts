@@ -56,9 +56,7 @@ import {
 } from '../middleware/versionGateMiddleware';
 import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
-import {
-    HEAL_TRUE_TO_FALSE, SWEEP_ENABLED,
-} from '../services/sessionMaintenanceService';
+import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -3811,15 +3809,21 @@ test('WIDGET GUIDE: the stat row covers all three plural cases', () => {
 // Turning them back on is plan task G2 (heal) and G5 (sweep), and each has
 // per-environment preconditions listed at the constant's own definition. Check
 // those hold for the environment you are shipping to, then update these.
+//
+// They are read through the frozen `RELEASE_FLAGS` object rather than imported
+// directly, and that is deliberate: exporting the constants individually makes
+// tsc compile every use site in the service to a mutable `exports.X` lookup,
+// which is the very thing invariant 3 promises cannot happen. See the comment
+// on RELEASE_FLAGS. Do not "simplify" this back to named imports.
 
 test('RELEASE FLAG: HEAL_TRUE_TO_FALSE is off', () => {
-    assert.strictEqual(HEAL_TRUE_TO_FALSE, false,
+    assert.strictEqual(RELEASE_FLAGS.HEAL_TRUE_TO_FALSE, false,
         'the reconcile true->false heal releases every account with no device row. '
         + 'It stays false until the legacy stores are deleted — plan task G2.');
 });
 
 test('RELEASE FLAG: SWEEP_ENABLED is off', () => {
-    assert.strictEqual(SWEEP_ENABLED, false,
+    assert.strictEqual(RELEASE_FLAGS.SWEEP_ENABLED, false,
         'sweep releases on a 90-day lastSeen that the shipped Android build only '
         + 'refreshes on explicit sign-in, so it would release daily users — plan task G5.');
 });
