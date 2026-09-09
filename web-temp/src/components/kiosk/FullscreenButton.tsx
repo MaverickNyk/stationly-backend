@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 /**
  * Tiny fullscreen toggle. Uses the browser Fullscreen API.
@@ -6,6 +6,21 @@ import { useState, useCallback, useEffect } from 'react';
  */
 export function FullscreenButton() {
     const [isFs, setIsFs] = useState(false);
+    const btnRef = useRef<HTMLButtonElement>(null);
+
+    // Focused on arrival so a Fire TV remote goes fullscreen with one press of
+    // OK — but with `preventScroll`, which the JSX `autoFocus` prop cannot pass.
+    //
+    // This button is the LAST child of `.kiosk`, and `.kiosk` is a fixed
+    // `100dvh` box with `overflow: hidden`. Where the content does not fit (the
+    // clamp() floors bind on a short window), a plain focus scrolls the button
+    // into view — scrolling a container that has no scrollbar, so the header and
+    // hero cards silently vanish off the TOP with nothing on screen to explain
+    // it. The board must never scroll; if something does not fit, it is clipped
+    // from the bottom where the layout intends.
+    useEffect(() => {
+        btnRef.current?.focus({ preventScroll: true });
+    }, []);
 
     useEffect(() => {
         const onChange = () => setIsFs(!!document.fullscreenElement);
@@ -24,11 +39,7 @@ export function FullscreenButton() {
     return (
         <button
             className="fs-btn"
-            // The only focusable thing on the board, focused on arrival so a
-            // Fire TV remote can go fullscreen with one press of OK. Without
-            // it the viewer has to raise Silk's cursor and steer it, which is
-            // the worst interaction on the device.
-            autoFocus
+            ref={btnRef}
             onClick={toggle}
             title={isFs ? 'Exit fullscreen' : 'Go fullscreen'}
             aria-label={isFs ? 'Exit fullscreen' : 'Go fullscreen'}
