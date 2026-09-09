@@ -64,14 +64,20 @@ CUTOVER:      ◐ NOT COMPLETE, and deliberately so. F2/F3/F4/G1/G2 are parked
               but do NOT stamp this file COMPLETE while they are open.
 
 COMMITTED:    dev_13Jul is fully PUSHED (0 ahead of origin/dev_13Jul), and is
-              **14** commits ahead of release_staging — not the 12 an earlier
-              STATUS claimed; the two 09-04 docs commits were missed.
-              RE-VERIFIED 2026-09-08: 3f63f1f cannot reach prod (`build` is
-              plain `tsc`, so web-temp never compiles, and `--exclude src`
-              drops it regardless). Of the 14, exactly ONE change reaches the
-              box — a03be92's compiled sessionMaintenanceService.js — and that
-              one is the A9 regression. So "none of them reach production" is
-              no longer true. See the promotion gate below.
+              **16** commits ahead of release_staging as of 2026-09-09.
+              (Earlier STATUS said 12, then 14; each was right when written and
+              stale by the next commit. Recount before trusting this line.)
+              3f63f1f still cannot reach prod — `build` is plain `tsc`, so
+              web-temp never compiles, and `--exclude src` drops it anyway.
+              **TWO of the 16 now reach the box, not one:**
+                1. a03be92 → compiled sessionMaintenanceService.js. This is the
+                   A9 regression, and it is UNWANTED. See the promotion gate.
+                2. 197270a → .env.defaults. WANTED: it is the SUPPORT_MONEY
+                   disable. `--exclude .env` matches that exact name only, so
+                   .env.defaults ships.
+              These two travel together. There is no way to deliver the
+              support-money change without also shipping the A9 regression —
+              which is the practical reason to fix A9 rather than defer it.
 
 PRODUCTION:   MIGRATED AND LIVE on 51e2e76. Re-measured 2026-09-08: 121
               accounts (was 111 on 09-04), 196 registry keys, 76 recomputed.
