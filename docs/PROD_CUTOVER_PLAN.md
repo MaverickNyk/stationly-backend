@@ -19,49 +19,70 @@ Companion reading:
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  RESUME HERE ▸  PHASE E, DAY 1 OF 5. The deploy window is DONE.          ║
-║                 D1-D8 all closed 2026-09-04. D9 (Stripe) DEFERRED by     ║
-║                 decision. The next action is the morning soak check,     ║
-║                 and it is the only thing due before 2026-09-09.          ║
+║  ▸ THE DEPLOYMENT IS DONE. THE CUTOVER IS NOT. Those are different       ║
+║    things and this box keeps them apart on purpose.                      ║
 ║                                                                          ║
-║  PRODUCTION IS MIGRATED. 117 device rows across 108 accounts, written    ║
-║  09-04 and verified by BOTH probes. A full pre-write snapshot is at      ║
-║  backups/stationly-prod-snapshot-2026-09-04T07-35-40-836Z.json.          ║
+║  DONE ──  Production migrated and LIVE on 51e2e76 since 2026-09-04.      ║
+║           Phases A, B, C, D complete; gates A-D met. Verified healthy on ║
+║           09-08 by a full read-only E1 pass: 6 of 7 checks green, the    ║
+║           7th (GCP quota) not reachable from the CLI. Syncer feeding     ║
+║           (1.2M writes), 1 error line in 4 days, box at load 0.20.       ║
 ║                                                                          ║
-║  DO NOT REBOOT THE BOX until phase E ends. The pending kernel update     ║
-║  stays deferred (C10), and nothing restarts pm2 either. Reboot at G3.    ║
+║  PARKED ─ F2 deferred by decision 8 (09-08): surplus registry keys stay  ║
+║           while the Syncer has headroom. That parks F3, F4, G1, G2 too,  ║
+║           because reconcile IS the nightly job F3 installs.              ║
+║           G3 reboot deferred INDEFINITELY, owner-initiated only — do not ║
+║           schedule it, do not raise it again. Kernel patch stays pending.║
+║           D9/G4 Stripe, G5 sweep, G6 keepalive: deferred earlier.        ║
 ║                                                                          ║
-║  BOTH RELEASE JOBS ARE STILL OFF, and production has NO crontab at all   ║
-║  yet — F3 installs it. Until then prod runs no scheduled job whatever.   ║
+║  SOAK ──  WINDOW CLOSED 09-09. Days 4 and 5 run, both PASS. Days 1-3     ║
+║           never run — 2 of 5, not 5 of 5. Nothing scheduled remains.     ║
 ║                                                                          ║
-║  TWO OPEN ITEMS BEFORE F2, neither urgent — see the decisions table:     ║
-║    - nykkumar@google.com fails the loggedIn invariant (expected, D6)     ║
-║    - the registry holds 192 keys against 73 actually wanted (see C9)     ║
+║  ⛔ DO NOT PROMOTE dev_13Jul. VERIFIED BLOCKING 2026-09-08 — see §2       ║
+║     invariant 3 and the 09-08 log. A9's `export` is the ONLY behavioural ║
+║     change that reaches production, and it is a REGRESSION: the flags    ║
+║     compile to mutable `exports.X` reads. Fix before any promotion.      ║
+║                                                                          ║
+║  Prod has NO crontab and both release jobs are OFF. Nothing scheduled    ║
+║  runs. Nothing can sign anyone out. That is the safe resting state.      ║
+║  Decision 7 SETTLED: nykkumar@google.com is a dangling account, left as  ║
+║  is. E1 reports that ONE failure forever. Two is a finding.              ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-04 (a)
-COUNT:        37 tasks done, 11 open.  (B5 and D1-D8 closed today; D9 deferred,
-              G6 added)
-              PHASES A, B, C AND D COMPLETE. Gates A, B, C and D met.
-              Phase E is RUNNING: 5 morning checks, 09-05 through 09-09.
+UPDATED:      2026-09-09 — E1 day 5 PASSED; soak window CLOSED at 2 checks
+              of 5. No code changed; the A9 promotion blocker still stands.
 
-COMMITTED:    dev_13Jul is fully PUSHED (0 ahead of origin/dev_13Jul). It is
-              12 commits ahead of release_staging, but NONE of them reach
-              production: 9 are docs (*.md is excluded from the deploy),
-              a03be92 is export-and-test only, and 3f63f1f lives under
-              web-temp/src, which `--exclude src` drops at any depth.
-              Promote after the soak, or fold it into G2.
-              CORRECTING THE PREVIOUS STATUS: those commits WERE pushed. They
-              are un-PROMOTED, which is a different thing, and the old text
-              said the wrong one.
+COUNT:        38 tasks done, 10 open. Phases A, B, C, D COMPLETE, gates A-D met.
+              Phase E: day 4 of 5 passed. F and G parked by decision.
 
-PRODUCTION:   MIGRATED AND LIVE on 51e2e76. 111 accounts, 118 device rows,
-              117 fcm_tokens. The legacy stores are untouched and still
-              present — G1 deletes them, not before F4.
-              The deploy took TWO attempts; the first died on an SSH idle
-              timeout, not a code fault. See D1.
+DEPLOYMENT:   ✅ DONE. This is the part that is finished, and it is finished.
+              Production migrated 2026-09-04 and serving normally since.
 
-BLOCKED ON:   the calendar. Phase E ends 2026-09-09.
+CUTOVER:      ◐ NOT COMPLETE, and deliberately so. F2/F3/F4/G1/G2 are parked
+              on decision 8; G3's reboot is owner-initiated with no trigger.
+              None of that is a defect and none of it is blocking anything —
+              but do NOT stamp this file COMPLETE while they are open.
+
+COMMITTED:    dev_13Jul is fully PUSHED (0 ahead of origin/dev_13Jul), and is
+              **14** commits ahead of release_staging — not the 12 an earlier
+              STATUS claimed; the two 09-04 docs commits were missed.
+              RE-VERIFIED 2026-09-08: 3f63f1f cannot reach prod (`build` is
+              plain `tsc`, so web-temp never compiles, and `--exclude src`
+              drops it regardless). Of the 14, exactly ONE change reaches the
+              box — a03be92's compiled sessionMaintenanceService.js — and that
+              one is the A9 regression. So "none of them reach production" is
+              no longer true. See the promotion gate below.
+
+PRODUCTION:   MIGRATED AND LIVE on 51e2e76. Re-measured 2026-09-08: 121
+              accounts (was 111 on 09-04), 196 registry keys, 76 recomputed.
+              Legacy stores untouched and still present — G1 deletes them, and
+              G1 is parked. Snapshot at backups/stationly-prod-snapshot-
+              2026-09-04T07-35-40-836Z.json is therefore STILL the live
+              rollback artefact. It holds real user emails and uids in
+              plaintext, untracked, on the owner's laptop.
+
+BLOCKED ON:   nothing external. E1 day 5 is the last scheduled item. Promotion
+              is blocked on a code fix, not on a date.
 ```
 
 **Decisions pending — do not lose these between sessions**
@@ -74,8 +95,8 @@ BLOCKED ON:   the calendar. Phase E ends 2026-09-09.
 | 4 | ~~Run the read-only production survey (`C9`) now?~~ | ☑ **DONE 2026-09-03.** Authorised by the owner and run by the owner. Numbers in `C9`. That authorisation covered the read-only survey only — it is **not** standing permission to connect to or write to production |
 | 5 | ~~Reboot the prod box before `D1`, or defer?~~ | ☑ **DECIDED 2026-09-03: DEFER** until after Phase E, and **VERIFIED SAFE** the same day — `Automatic-Reboot` is commented out, so nothing but a person can reboot that box (`C10`). Reboot at `G3` |
 | 6 | ~~Take a Firestore backup before `D5`?~~ | ☑ **DECIDED 2026-09-04: YES — and TAKEN.** §9 raised this and no earlier session recorded a decision. No managed export is configured and `gcloud` is not installed, so a managed export would have meant an IAM grant plus a GCS bucket mid-window. A direct JSON snapshot was written instead by a new probe, `src/scripts/backup_firestore_snapshot.cjs` — 211 KB, read-only, taken before any write |
-| 7 | **`nykkumar@google.com`** — `loggedIn: true` with no live device row | ☐ **OPEN, not urgent.** Pre-existing; `D6` surfaced it rather than caused it. Either sign in on that account (refreshes `lastSeen` honestly) or set `loggedIn: false`. It is the **last holder** of station `910GCLDNNRB`, so the second option drops that station at the first reconcile. **Settle before `F2`.** Until then the daily `E1` check reports one known failure |
-| 8 | The registry carries **192 keys / 237 holds** against **73** stations actually wanted | ☐ **OPEN, settle before `F2`.** Reconcile will want to delete ~119 stale keys. `C9` told you to expect a recomputed size of `191` — **that target is wrong**, see the correction in `C9`. Do not read ~73 as a failed backfill |
+| 7 | **`nykkumar@google.com`** — `loggedIn: true` with no live device row | ☑ **SETTLED 2026-09-08: LEAVE IT.** The owner confirms it is a **dangling account — a real account left in a broken state by earlier testing**, not a test account and not a live user. So its `loggedIn`/device mismatch is a **known artefact of test activity, not evidence of a backfill defect** (consistent with `D6` calling it pre-existing), and losing station `910GCLDNNRB` costs nothing real. Consequences, all acceptable: (a) `E1` and `F2` keep reporting this ONE known failure permanently — **a second account is still a real finding**; (b) at `F2` the heal is off (`A1`), so reconcile only logs `heal SKIPPED` for it and does not act; (c) `910GCLDNNRB` is dropped by the registry recompute anyway, as one of the ~119 stale keys in decision 8; (d) at `G2`, when `HEAL_TRUE_TO_FALSE` returns, reconcile will flip it to `loggedIn: false` on its own. **No longer blocks `F2`.** *Optional at `G3`: deleting the dangling account outright would retire the permanently-red check — see `G3`.* |
+| 8 | The registry carries **196 keys** against **76** stations actually wanted | ☑ **SETTLED 2026-09-08: DEFER `F2`. The extra keys stay, for now.** The owner's call: the surplus costs only Syncer polling on stations nobody watches, and prod is not close to strained (load 0.20, CPU 0%, 264 MB, verified 09-08). Not a risk decision — the 09-08 read-only prediction showed the deletion is **safe** (see below); it is a "not worth doing yet" decision. **NUMBERS RESTATED 2026-09-08** from a live `--before` run, superseding both the 09-04 figures and `C9`'s wrong `191`: 121 users, 196 keys now, 76 recomputed, **153 changes = 120 removals + 33 decrements**, 1 predicted heal. The 33 decrements are stations that **survive** (e.g. `910GWOLWXR: 6 → 5`) — a stale hold drops, the station stays. Removals are keys whose only holder is stale. **⚠️ CONSEQUENCE: this parks `F3`, `F4`, `G1` and `G2` too** — reconcile *is* the nightly job `F3` installs. See `G3` for the one thing that must NOT wait for this |
 
 **Phase checklist**
 
@@ -83,7 +104,7 @@ BLOCKED ON:   the calendar. Phase E ends 2026-09-09.
 - [x] **B** — Staging re-proof — B1–B6 ✅ **complete**; B5 closed 09-04, **gate B met**
 - [x] **C** — Production prerequisites — C0–C11 ✅ **complete**; gate C met 09-03
 - [x] **D** — The deploy window — D1–D8 ✅ **complete 2026-09-04**; D9 deferred by decision
-- [~] **E** — Soak — **RUNNING.** 5 morning checks, 2026-09-05 → 2026-09-09
+- [~] **E** — Soak — **WINDOW CLOSED 2026-09-09.** Both checks that were actually run (days 4 and 5) PASSED. Days 1-3 were never run, so this is 2 of 5, not 5 of 5 — recorded honestly rather than ticked
 - [ ] **F** — Enable maintenance — **reconcile only**; sweep disabled at `A10`, returns at `G5`
 - [ ] **G** — Legacy cleanup and finish
 
@@ -127,10 +148,43 @@ phase A         d08f3ac
 PR #131         MERGED 2026-09-04 07:06:15 UTC. That was D1.
 ```
 
-> **Do not promote `dev_13Jul` before phase E ends.** Not because the commits are
-> risky — none of them reach the box at all — but because `release_staging` at
-> `c9b5285` is the exact tree `B3`, `B5` and `B6` proved. Moving it spends gate B
-> to ship nothing. Promote after the soak, or fold it into `G2`.
+> ## ⛔ PROMOTION GATE — `dev_13Jul` → `main` → `release_staging` → `release_prod`
+>
+> **VERDICT 2026-09-08: NOT SAFE. Do not promote.** One blocker, verified by
+> compiling the current source rather than by reading the diff:
+>
+> **A9's `export` is a regression, and it is the ONLY change that reaches prod.**
+> `dev_13Jul` has `export const HEAL_TRUE_TO_FALSE = false`; `release_staging`
+> has plain `const`. Under `"module": "commonjs"` those compile differently, and
+> a fresh `tsc` of today's source confirms it:
+>
+> ```js
+> // release_staging (live in prod)      // dev_13Jul, if promoted
+> if (!SWEEP_ENABLED)                    if (!exports.SWEEP_ENABLED)
+> else if (!HEAL_TRUE_TO_FALSE)          else if (!exports.HEAL_TRUE_TO_FALSE)
+> ```
+>
+> A `const` is folded at compile time and cannot be altered on the box. An
+> `exports.X` is a **mutable property read at call time** — anything holding the
+> module object can set it at runtime, and the next reconcile would begin
+> releasing accounts. That is precisely the failure mode §2 invariant 3 exists to
+> prevent, and the one "If you are a new agent" calls the thing that can go badly
+> wrong. Shipping it would weaken the guard while `G1` has not run.
+>
+> *(The local `dist/` still shows plain `const` — it was built 09-02, before A9
+> landed on 09-03. Do not read that as evidence the problem is absent.)*
+>
+> **The fix is not simply deleting `export`:** `src/tests/run.ts:60` imports both
+> flags to pin them (`RELEASE FLAG: … is off`), so un-exporting breaks the tests
+> A9 added. The two goals — testable, and compile-time constant — need
+> reconciling; the cleanest is an internal `const` for the use sites plus a
+> frozen exported object for the test to assert against. Decide, implement, run
+> the suite, and only then promote.
+>
+> **Second, softer reason to wait:** `release_staging` at `c9b5285` is the exact
+> tree `B3`, `B5` and `B6` proved. Moving it spends gate B to ship nothing of
+> value — the other 13 commits are docs and `web-temp`, neither of which reaches
+> the box.
 
 ## 0. How to run this across sessions
 
@@ -1560,9 +1614,10 @@ insurance in the plan.
 - [ ] Push still arriving (it goes through `fcm_tokens`, untouched — `D6` confirmed
       **0 push token losses**).
 - [ ] `node src/scripts/check_session_state.cjs --key=$PROD_KEY` — **expect exactly
-      ONE failure, `nykkumar@google.com`**, until decision 7 is settled. Any second
-      account is a real finding. *(A check that always fails is a check you stop
-      reading — that is the argument for settling it.)*
+      ONE failure, `nykkumar@google.com`**. Any second account is a real finding.
+      **Decision 7 settled 2026-09-08: a dangling account, deliberately left.** So
+      this check is now permanently red by design — read the COUNT, not the colour.
+      `1 problem(s)` is a pass; `2` is not.
 - [ ] `pm2 logs` — no repeated errors; `p95` on `/user/sync/profile` sane (the new
       `checkRevoked: true` adds a Firebase Auth lookup per authenticated request).
 - [ ] Identity Toolkit quota in the GCP console not climbing toward a limit.
@@ -1575,11 +1630,11 @@ Record each day's result in §10.
 
 | Day | Date | Result |
 |---|---|---|
-| 1 | 2026-09-05 | |
-| 2 | 2026-09-06 | |
-| 3 | 2026-09-07 | |
-| 4 | 2026-09-08 | |
-| 5 | 2026-09-09 | |
+| 1 | 2026-09-05 | **NOT RUN** — no record, no commits that day |
+| 2 | 2026-09-06 | **NOT RUN** |
+| 3 | 2026-09-07 | **NOT RUN** |
+| 4 | 2026-09-08 | ✅ **PASS**, 6 of 7 checked. One known failure only. See §10 |
+| 5 | 2026-09-09 | ✅ **PASS**, 6 of 7. Steadier than day 4. See §10 |
 
 ---
 
@@ -1608,7 +1663,17 @@ install the crontab, and reconcile the accounts by hand.
 
 </details>
 
-### ☐ F2 — Run reconcile by hand
+### ☐ F2 — Run reconcile by hand — **DEFERRED 2026-09-08 by decision 8**
+
+> **PAUSED, not blocked.** Nothing here is unsafe; the owner has chosen to live with
+> the surplus registry keys while the Syncer has headroom. Resume when that stops
+> being true, or when `G1`/`G2` are wanted. **Read the restated numbers in decision 8
+> before running — the "~119" below is stale.**
+>
+> **`HEAL_TRUE_TO_FALSE` gates only Pass 1.** The registry recompute in Pass 2
+> (`SubscriptionService.reconcileCounts`) is **ungated and deletes for real**. The
+> word "rehearsal" below applies to the account heal ONLY. Do not read it as covering
+> the key deletion.
 
 ```bash
 ssh <PROD_HOST> '~/stationly-backend/ops/maintenance_cron.sh reconcile'
@@ -1630,10 +1695,12 @@ Any lines are a list of accounts to investigate before `G3` turns the heal on.
 > is a large deletion, so understand it before this command acts on it, and note
 > that `C9`'s "expect 191" was wrong — see the correction there.
 >
-> **Expect exactly one heal-SKIPPED line: `nykkumar@google.com`**, unless
-> decision 7 has been settled by then. It is `loggedIn:true` with no *live*
-> device row (91.8 days against a 90-day TTL) and is pre-existing, not a
-> backfill miss. **A second account would be a real finding.**
+> **Expect exactly one heal-SKIPPED line: `nykkumar@google.com`.** It is
+> `loggedIn:true` with no *live* device row (91.8 days against a 90-day TTL) and
+> is pre-existing, not a backfill miss. **Decision 7 is settled: it is a dangling
+> account, corrupted by earlier testing, and is deliberately left alone**, so this
+> line is expected forever and is not a reason to stop. **A second account would
+> be a real finding.**
 
 ### ☐ F3 — Install the crontab, and prove cron can exec it
 
@@ -1714,10 +1781,26 @@ before either edit.
 - **Reboot the production box.** Deferred at `C10` on 2026-09-03 for the duration
   of the window; the reason to defer expires here, and a pending kernel update is
   a security patch waiting on you. Confirm pm2 returns with **1** instance.
+  > **DEFERRED INDEFINITELY 2026-09-08 — OWNER-INITIATED ONLY.**
+  > `C10` deferred this until phase E ended. The owner has now extended that with
+  > **no trigger and no date: they will ask for it when they want it.** Do not
+  > schedule it, and do not raise it again unprompted.
+  >
+  > State of the box, as fact rather than as a prompt to act: uptime was **115
+  > days** at the 09-08 check, the login banner reads `*** System restart
+  > required ***`, and 17 updates including a kernel patch are outstanding. The
+  > running kernel stays unpatched until someone restarts it.
 - Update `docs/HANDOVER_SESSION_SYNC.md` §1's phase table — production is no longer ❌.
 - Update this file's STATUS block to `COMPLETE`.
 - Delete the `revert-116-dev_13Jul` / `revert-118-release_staging` remote branches if
   they are still not wanted (verified: never merged into any release branch).
+- **Optional — retire the permanently-red session check.** Decision 7 leaves
+  `nykkumar@google.com` in place: a dangling account corrupted by earlier testing.
+  That is correct for the cutover, but it means `check_session_state.cjs` exits
+  `FAIL` forever, and a check that can never be green is one people stop reading.
+  Deleting that account makes it exit clean again, so the next person to run it
+  gets a real signal instead of a remembered exception. Do it here, not earlier —
+  during the window it was the known-good baseline that made "1 problem" readable.
 
 ### ☐ G5 — Later: bring `sweep` back
 
@@ -2396,6 +2479,177 @@ CARRY INTO PHASE E:
             box anyway.
 ```
 
+
+### 2026-09-08 — E1 day 4. First soak check actually run. **PASS.**
+
+```
+CONTEXT   Days 1-3 (09-05/06/07) were never run — the table was empty and no
+          commit touched this file after 09-04. Day 4 is the FIRST soak check
+          performed. Owner authorised read-only production access for it.
+          Read-only throughout: no write probe, no config change, no restart.
+
+E1 RESULTS
+  1 signed out?    ✅ Owner reports 4-5 days of normal app use, no sign-out.
+                      Corroborated: `crontab -l` on prod = "no crontab for
+                      ubuntu". Nothing scheduled runs. Nothing CAN sign anyone
+                      out yet.
+  2 push           ✅ POST /api/v1/user/fcm/register → 200 in 291ms from a real
+                      Ktor (Android) client. Owner confirms push arriving.
+  3 session state  ✅ EXPECTED RESULT. `Project : stationly-prod` on line 1.
+                      "✗ FAIL — 1 problem(s)" — and the one problem is exactly
+                      nykkumar@google.com, "loggedIn=true but live rows=0"
+                      (device d8ab8bae:android, live=0). NO SECOND ACCOUNT.
+                      Also "✓ every device belongs to exactly one account".
+  4 pm2 logs       ✅ Error log is ONE LINE for the whole 4-day run:
+                      "[TflApi] Failed to fetch arrivals for 910GLEYTNMR:
+                      timeout of 30000ms exceeded". Single transient.
+                      /user/sync/profile on real traffic: 229-357ms, clustered
+                      285-300ms. That INCLUDES the new checkRevoked Auth
+                      lookup. No regression worth acting on.
+  5 IT quota       ⬜ NOT CHECKED — needs the GCP console in a browser.
+                      Mitigating: the 1,930 scanner 401s below are rejected in
+                      <1ms, i.e. BEFORE any Firebase Auth call, so they burn no
+                      Identity Toolkit quota. Only real traffic does, and real
+                      authenticated traffic is ~10 requests/16h. No pressure.
+  6 stream-stats   ✅ cache.writes.syncer = 1,210,728 (was 4,592 at D8 on
+                      09-04). The Syncer is feeding hard.
+                      lines.writes.syncer 3,641 vs lines.writes.tfl 3,630.
+                      D8's ALARM SIGNATURE IS ABSENT: tfl would have to climb
+                      ~695/hr with syncer FLAT. tfl is ~38/hr and syncer went
+                      6 → 3,641. Both healthy.
+                      unknownIds 0. rejectedOutOfOrder 49 — 0.004% of 1.2M
+                      writes, the cache correctly discarding stale updates.
+  7 uptime         ✅ 115 days, 59 min. THE BOX HAS NOT REBOOTED. pm2 process
+                      uptime 4D, matching the 09-04 deploy — no restart since.
+                      C10 deferral still intact.
+
+NEW FINDING — unidentified automated client, NOT harmful, but unowned
+          An external client, UA "node", arriving via Cloudflare, runs every
+          5 minutes on the dot: fetches /openapi.json, then POSTs all ELEVEN
+          user endpoints — including /user/delete-account and /user/logout.
+          193 cycles today, 1,930 requests, EVERY ONE 401 in under 1ms.
+          Spec-driven enumeration: it reads the published spec, then walks it.
+          Correctly rejected at validateApiKey, before any auth lookup. Costs
+          nothing and reaches nothing. But nobody has identified it. If it is
+          not ours, the published /openapi.json is what makes it possible.
+          ASK THE OWNER whether this is a monitor they configured.
+          Separately: /.env, /app/.env, /compose/.env probes → nginx 444.
+          Ordinary internet background noise, correctly refused.
+
+POSITION  Phase E: day 4 of 5, PASS. One check left, 2026-09-09.
+
+DECISIONS TAKEN LATER THE SAME DAY
+  Decision 7  SETTLED — leave nykkumar@google.com. Owner clarified it is a
+              DANGLING account (a real account corrupted by earlier testing),
+              not a test account. So the invariant failure is a known artefact
+              of test activity, NOT evidence of a backfill defect.
+  Decision 8  SETTLED — DEFER F2. Owner: the surplus keys only cost Syncer
+              polling, and prod is not strained (load 0.20, CPU 0%, 264 MB).
+              Not a risk judgement — the prediction below shows it is safe.
+              Consequence recorded: this parks F3, F4, G1 and G2 as well.
+  G3 reboot   DEFERRED INDEFINITELY, owner-initiated only. Not to be
+              scheduled or raised again. Kernel patch remains unapplied.
+
+F2 PREDICTION, read-only, run 2026-09-08 — supersedes the 09-04 numbers
+          121 users scanned · 196 keys now · 76 recomputed
+          153 changes = 120 REMOVALS + 33 DECREMENTS · 1 predicted heal
+          The plan's "expect ~119 deletions" was stale. C9's "expect 191" was
+          already known wrong; both are now superseded.
+          The 33 decrements are stations that SURVIVE (910GWOLWXR 6→5,
+          910GWEALING 3→2) — a stale hold drops, the station stays polled.
+          Removals are keys whose only holder is not live. Safe by
+          construction: `target` is built solely from accounts with a live
+          device row, and exactly ONE account lacks one (the dangling one).
+          ⚠️ CORRECTION TO THIS FILE: F2's own text called the run "a
+          rehearsal". That is true of Pass 1 ONLY. HEAL_TRUE_TO_FALSE does not
+          gate Pass 2 — SubscriptionService.reconcileCounts is UNGATED and
+          deletes for real. F2 has been amended.
+          Probe wrote .reconcile-prediction.json to the repo root (gitignored);
+          `--after` needs it, so keep it while F2 is pending.
+
+PROMOTION VERIFIED BLOCKED
+          Owner asked whether dev_13Jul → main → release_staging → release_prod
+          is safe. It is NOT, and the reason was confirmed by compiling the
+          current source, not by reading the diff: A9's `export` emits
+          `exports.SWEEP_ENABLED` / `exports.HEAL_TRUE_TO_FALSE` at every use
+          site — mutable, runtime-settable, where release_staging has a folded
+          `const`. It is also the ONLY one of the 14 commits that reaches the
+          box, so promoting today would ship exactly one thing: the regression.
+          The stale local dist/ (built 09-02) hides this; ignore it.
+          Un-exporting alone breaks src/tests/run.ts:60, which imports both
+          flags. Full detail at the promotion gate in §STATUS.
+
+STATE OF THE REPO, unchanged by any of this
+          Nothing sensitive is tracked: backups/ is caught by the blanket
+          *.json ignore, no service-account keys are committed, and .env.remote
+          is an empty-valued schema template.
+          Snapshot backups/stationly-prod-snapshot-2026-09-04….json (211 KB)
+          remains the ONLY pre-write rollback while G1 is parked. It carries
+          real user emails and uids in plaintext on the owner's laptop.
+          Cleanup deliberately NOT done: 5 probes are still called by parked
+          tasks (cleanup_legacy_stores→G1, check_drift_reconcile→F2,
+          check_session_state→E1/F4, run_maintenance + check_session_sweep→G5).
+          The genuinely spent scripts are auditTimestamps.cjs and
+          standardizeTimestamps.cjs, both 2026-06-02 and from an EARLIER
+          migration — unrelated to this cutover.
+
+STILL OPEN, none urgent, none blocking
+          - C11: 4 prod secrets pasted into a 09-01 transcript, rotation
+            deferred as "separate work after the cutover". The cutover is now
+            parked, so this should not be parked behind it.
+          - The A9 export fix (blocks promotion, above).
+          - An unidentified client, UA "node" via Cloudflare, walks all 11 user
+            endpoints every 5 min off /openapi.json. 1,930 requests on 09-08,
+            every one 401 in <1ms. Harmless; still unidentified. Ask the owner.
+```
+
+
+### 2026-09-09 — E1 day 5. Soak window closed. **PASS.**
+
+```
+E1 DAY 5 — all deltas measured against day 4 (09-08)
+  session state  ✅ Project: stationly-prod. "1 problem(s)" — still only the
+                    dangling account. "✓ every device belongs to exactly one
+                    account". No second account appeared across the window.
+  uptime         ✅ 116 days, 26 min (115d on day 4). NOT rebooted.
+  pm2            ✅ online, 5D (was 4D), restarts still 5 — no restart.
+                    mem 234.5 MB (was 263.6), CPU 0%.
+                    load 0.10/0.06/0.06 — QUIETER than day 4's 0.20/0.23/0.25.
+  stream-stats   ✅ cache.writes.syncer 1,486,689 (was 1,210,728)
+                    → +275,961 in ~23.5h. Feeding hard.
+                    lines.writes.syncer 5,430 (was 3,641)  +1,789
+                    lines.writes.tfl    4,850 (was 3,630)  +1,220 ≈ 52/hr
+                    D8's alarm needs tfl ~695/hr with syncer FLAT. Neither
+                    holds: syncer is climbing FASTER than tfl. Healthy.
+                    unknownIds 0. rejectedOutOfOrder 56 (+7). restHitRate
+                    0.728, flat. cache.size 196.
+  crontab        ✅ "no crontab for ubuntu". Still nothing scheduled.
+  error log      ✅ 4 lines for the whole day, and NONE is a failure:
+                    2× "STATUS: TfL refresh failed for bus: timeout" —
+                      transient upstream, same class as day 4's single line.
+                    2× "PRED: [departure-board] No usable board rows for
+                      <line> at <station> — serving countdown arrivals for
+                      them." That is the FALLBACK ANNOUNCING ITSELF, written
+                      to stderr as a warning. Working as designed, not a fault.
+                    No stack traces. Nothing repeating.
+  IT quota       ⬜ NOT CHECKED — browser-only, same as day 4.
+
+VERDICT   Day 5 PASS, and the box is measurably calmer than day 4.
+          PHASE E's WINDOW IS CLOSED. But it ran 2 checks of 5: days 1, 2 and 3
+          were never performed and cannot be recovered. Recorded as 2/5.
+          Both checks that did run passed, and the two independent long-run
+          signals — 116 days uptime and 1.49M syncer writes — corroborate a
+          system that has been stable across the whole window, not just on the
+          two mornings someone looked.
+
+NOTHING ELSE MOVED
+          No code changed. The A9 promotion blocker is exactly as found on
+          09-08 and still blocks dev_13Jul → main → release_staging →
+          release_prod. F2/F3/F4/G1/G2 remain parked on decision 8; the G3
+          reboot remains owner-initiated with no trigger.
+          docs/PROD_CUTOVER_PLAN.md is still UNCOMMITTED.
+```
+
 ---
 
 ## 11. Appendix — production environment matrix
@@ -2412,7 +2666,7 @@ CARRY INTO PHASE E:
 | `LIVESTREAM_INGEST_SECRET` | secret | **`C1`** | must equal the Syncer's |
 | `STRIPE_WEBHOOK_SECRET` | secret | **`C5`** | absent ⇒ webhook 503s |
 | `SUPPORT_MONEY_PAYMENT_URL_{T4,T8,T12,ONEOFF}` | secret | **`C5`** | live-mode links |
-| `SUPPORT_MONEY_ENABLED` | secret | **unset** | ⚠️ **`true`** via `.env.defaults:56` — unset does NOT mean off. Confirmed live 09-04 |
+| `SUPPORT_MONEY_ENABLED` | secret | **unset** | **`false`** via `.env.defaults:65` — **DISABLED 2026-09-09 by decision, both envs.** Was `true`; the old warning that "unset does NOT mean off" no longer applies, because the default itself is now off. ⚠️ **Inert until a deploy carries it** — and the promotion chain is blocked, see the promotion gate. ⚠️ If a `SUPPORT_MONEY_ENABLED` (or `STAGING_…`) repo secret exists and is `true`, it OVERRIDES this file and must be cleared too — secrets are write-only, so this cannot be verified by inspection, only by behaviour |
 | `VERSION_GATE_ENABLED` | defaults | **unset** | `false`. Never raise the Android floor above `1.0` — it is the only build in the Play Store |
 | `FIREBASE_KEY_PATH` | defaults | `/home/ubuntu/config/firebase-service-account.json` | deployed out of band |
 | `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_P8_PATH` | defaults | present, key file absent | iOS only; a missing `.p8` logs and degrades, it does not fail boot |
