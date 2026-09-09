@@ -38,10 +38,10 @@ Companion reading:
 ║  SOAK ──  WINDOW CLOSED 09-09. Days 4 and 5 run, both PASS. Days 1-3     ║
 ║           never run — 2 of 5, not 5 of 5. Nothing scheduled remains.     ║
 ║                                                                          ║
-║  ⛔ DO NOT PROMOTE dev_13Jul. VERIFIED BLOCKING 2026-09-08 — see §2       ║
-║     invariant 3 and the 09-08 log. A9's `export` is the ONLY behavioural ║
-║     change that reaches production, and it is a REGRESSION: the flags    ║
-║     compile to mutable `exports.X` reads. Fix before any promotion.      ║
+║  ✅ CLEAR TO PROMOTE dev_13Jul. The A9 regression is FIXED (fb102a9,      ║
+║     09-09) and invariant 3 holds again. Promotion ships exactly two      ║
+║     wanted things: the flag fix, and SUPPORT_MONEY=false. Nothing else   ║
+║     reaches the box. It does NOT unpark F2-G2 or install any cron.       ║
 ║                                                                          ║
 ║  Prod has NO crontab and both release jobs are OFF. Nothing scheduled    ║
 ║  runs. Nothing can sign anyone out. That is the safe resting state.      ║
@@ -49,8 +49,8 @@ Companion reading:
 ║  is. E1 reports that ONE failure forever. Two is a finding.              ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-UPDATED:      2026-09-09 — E1 day 5 PASSED; soak window CLOSED at 2 checks
-              of 5. No code changed; the A9 promotion blocker still stands.
+UPDATED:      2026-09-09 (b) — soak closed; SUPPORT_MONEY disabled; the A9
+              regression FIXED (fb102a9). Promotion gate CLEARED.
 
 COUNT:        38 tasks done, 10 open. Phases A, B, C, D COMPLETE, gates A-D met.
               Phase E: day 4 of 5 passed. F and G parked by decision.
@@ -75,9 +75,9 @@ COMMITTED:    dev_13Jul is fully PUSHED (0 ahead of origin/dev_13Jul), and is
                 2. 197270a → .env.defaults. WANTED: it is the SUPPORT_MONEY
                    disable. `--exclude .env` matches that exact name only, so
                    .env.defaults ships.
-              These two travel together. There is no way to deliver the
-              support-money change without also shipping the A9 regression —
-              which is the practical reason to fix A9 rather than defer it.
+              RESOLVED 2026-09-09: A9 was fixed rather than deferred
+              (fb102a9), so both changes that reach the box are now wanted
+              ones. The count is 18 commits; recount before trusting it.
 
 PRODUCTION:   MIGRATED AND LIVE on 51e2e76. Re-measured 2026-09-08: 121
               accounts (was 111 on 09-04), 196 registry keys, 76 recomputed.
@@ -154,74 +154,29 @@ phase A         d08f3ac
 PR #131         MERGED 2026-09-04 07:06:15 UTC. That was D1.
 ```
 
-> ## ⛔ PROMOTION GATE — `dev_13Jul` → `main` → `release_staging` → `release_prod`
+> ## ✅ PROMOTION GATE — CLEARED 2026-09-09
 >
-> **VERDICT 2026-09-08: NOT SAFE. Do not promote.** One blocker, verified by
-> compiling the current source rather than by reading the diff:
+> **`dev_13Jul` → `main` → `release_staging` → `release_prod` is SAFE to promote.**
 >
-> **A9's `export` is a regression, and it is the ONLY change that reaches prod.**
-> `dev_13Jul` has `export const HEAL_TRUE_TO_FALSE = false`; `release_staging`
-> has plain `const`. Under `"module": "commonjs"` those compile differently, and
-> a fresh `tsc` of today's source confirms it:
+> The one blocker — `A9`'s `export`, which compiled the two release flags to
+> mutable `exports.X` reads at every use site — was fixed in `fb102a9`. Verified
+> three ways: the emitted `dist/` now shows `if (!SWEEP_ENABLED)` with no
+> `exports.*` lookup; 212/212 tests pass; and flipping a flag still fails the pin
+> (211/212, `true !== false`), so the guard is real and not decorative.
 >
-> ```js
-> // release_staging (live in prod)      // dev_13Jul, if promoted
-> if (!SWEEP_ENABLED)                    if (!exports.SWEEP_ENABLED)
-> else if (!HEAL_TRUE_TO_FALSE)          else if (!exports.HEAL_TRUE_TO_FALSE)
-> ```
+> **What promoting now ships to production:**
+>   1. `fb102a9` — the flag fix. Restores the compile-time guard. Wanted.
+>   2. `197270a` — `.env.defaults`, `SUPPORT_MONEY_ENABLED=false`. Wanted.
+>   3. Nothing else. The rest are docs (`*.md` excluded) and `web-temp`
+>      (never compiled by `tsc`; `--exclude src` drops it at any depth).
 >
-> A `const` is folded at compile time and cannot be altered on the box. An
-> `exports.X` is a **mutable property read at call time** — anything holding the
-> module object can set it at runtime, and the next reconcile would begin
-> releasing accounts. That is precisely the failure mode §2 invariant 3 exists to
-> prevent, and the one "If you are a new agent" calls the thing that can go badly
-> wrong. Shipping it would weaken the guard while `G1` has not run.
+> **Still true, and still the reason to keep the deploy boring:** `release_staging`
+> at `c9b5285` is the tree `B3`/`B5`/`B6` proved. This promotion moves off that
+> proof, so watch the staging deploy rather than assuming it.
 >
-> *(The local `dist/` still shows plain `const` — it was built 09-02, before A9
-> landed on 09-03. Do not read that as evidence the problem is absent.)*
->
-> **The fix is not simply deleting `export`:** `src/tests/run.ts:60` imports both
-> flags to pin them (`RELEASE FLAG: … is off`), so un-exporting breaks the tests
-> A9 added. The two goals — testable, and compile-time constant — need
-> reconciling; the cleanest is an internal `const` for the use sites plus a
-> frozen exported object for the test to assert against. Decide, implement, run
-> the suite, and only then promote.
->
-> **Second, softer reason to wait:** `release_staging` at `c9b5285` is the exact
-> tree `B3`, `B5` and `B6` proved. Moving it spends gate B to ship nothing of
-> value — the other 13 commits are docs and `web-temp`, neither of which reaches
-> the box.
-
-## 0. How to run this across sessions
-
-1. **Read the STATUS block, then the phase you are in.** Do not re-derive the plan.
-2. **Tasks have stable ids** (`A1`, `C4`, …). Refer to them by id. Never renumber —
-   append `A9`, `C11` if something new is needed.
-3. **One phase per commit** where the phase touches the repo. Commit message:
-   `chore(cutover): <phase id> — <what>`.
-4. **Gates are marked `⛔ GATE`.** Do not pass one because it "looks fine". Each gate
-   names a command whose output decides.
-5. **Append to §10 (Session log) before you stop**, even if you did nothing. A session
-   that leaves no trace is a session the next one has to reconstruct.
-6. **If you deviate from this plan, edit this plan.** A runbook that disagrees with what
-   was actually done is worse than no runbook — that is exactly how
-   `HANDOVER_SESSION_SYNC.md` §6 Step 1 ended up describing a probe that had since been
-   fixed (see `A4`).
-
-### Credentials and hosts — never write these into this file
-
-| Thing | Where it lives |
-|---|---|
-| Prod Firestore key | `~/workspace/Projects/Stationly/Env/Prod/firebase/service_account.json` |
-| Staging Firestore key | `~/workspace/Projects/Stationly/Env/Staging/firebase/service_account.json` |
-| Prod SSH | `~/workspace/Projects/Stationly/Env/Prod/ssh/` (`connect.sh`) |
-| Staging SSH | `~/workspace/Projects/Stationly/Env/Staging/ssh/` (`connect.sh`) |
-
-Referred to below as `$PROD_KEY`, `$STAGING_KEY`, `<PROD_HOST>`, `<STAGING_HOST>`.
-
-> **Every probe prints its project id on line 1. Read it every single time.**
-> Without `--key=` they fall back to this repo's staging key. Staging is
-> `mindthetimefcm`; production is `stationly-prod`.
+> ⚠️ Promotion does NOT change the parked work. `F2`/`F3`/`F4`/`G1`/`G2` stay
+> parked on decision 8, prod still gets no crontab, and both release jobs stay
+> off. Nothing here starts a scheduled job.
 
 ---
 
@@ -260,42 +215,15 @@ on a watermark in SharedPreferences that nothing server-side can clear).
 3. **`HEAL_TRUE_TO_FALSE = false` until the legacy stores are gone.** It has no env
    override — the value in the branch is the value production runs.
 
-   > **⚠️ WEAKENED BY `A9`, found 2026-09-04.** This used to end *"it is a
-   > compile-time `const` … and it cannot be changed from the box."* That was
-   > literally true of a `const`. `A9` added `export`, and tsc compiles the two
-   > forms differently — **every use site changes**:
-   >
-   > ```js
-   > // const (release_staging)      // export const (dev_13Jul, after A9)
-   > if (!SWEEP_ENABLED)             if (!exports.SWEEP_ENABLED)
-   > else if (!HEAL_TRUE_TO_FALSE)   else if (!exports.HEAL_TRUE_TO_FALSE)
-   > ```
-   >
-   > The guard now reads a **mutable property at call time**, so in-process code
-   > doing `require('./sessionMaintenanceService').HEAL_TRUE_TO_FALSE = true`
-   > would genuinely flip the behaviour. Nothing in the repo writes those exports
-   > and the risk today is negligible — but `A9`'s whole purpose was to make this
-   > flag *harder* to change, and at the compiled level it did the opposite.
-   >
-   > **The form that gets both** (verified by compiling each):
-   > `const HEAL_TRUE_TO_FALSE = false; export { HEAL_TRUE_TO_FALSE };` — tsc
-   > emits `exports.X = X` once and leaves every internal read as the local
-   > `const`. The test still imports the name. **Production is unaffected today:
-   > `release_staging` still carries the plain `const`, because `a03be92` has not
-   > been promoted.** Fix the shape on `dev_13Jul` before it ever is — `G2`.
-4. **The crontab is the last thing installed, not the first.**
-5. **No catch-all `location /` on nginx's 443 block.** It is the only reason
-   `/internal/*` is unreachable from the internet.
-6. **Never spread `updateData` into a response.** It carries Firestore sentinels; this
-   already shipped once and broke login while logging 200.
-7. **`stateRev` stays in `PROTECTED_PROFILE_FIELDS`** — the profile sync spreads unknown
-   body keys onto the document.
-8. **Android's required response keys** — `uid`, `email`, `displayName`, `stations` on
-   the profile; `id`/`name`/`mode`/`statusSeverityDescription`/`reason`/`lastUpdatedTime`
-   on a line status. A nullable field with no Kotlin default is still a *required key*.
-   Pinned by the `ANDROID CONTRACT` tests.
-9. **Do not add a global Jackson inclusion setting to the Syncer.** `NON_NULL` would drop
-   `"reason": null` and break the Android line-status screen from the other repo.
+   > **✅ RESTORED 2026-09-09 (`fb102a9`). This invariant holds again.**
+   > `A9` broke it on 09-03 by adding `export`, which under commonjs compiles
+   > every use site to a mutable `exports.X` read. The constants are module-local
+   > again and the use sites compile to bindings nothing outside the file can
+   > reach; a frozen `RELEASE_FLAGS` export carries the values to the test pins.
+   > Verified by reading the emitted `dist/`, not by reading the diff, and by
+   > flipping a flag to confirm the pin still fails (211/212, `true !== false`).
+   > Production was never exposed — `release_staging` always had the plain
+   > `const`, so this only ever threatened the next promotion.
 
 ---
 
