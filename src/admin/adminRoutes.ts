@@ -65,6 +65,10 @@ adminRouter.get('/device-push/status', DevicePushController.status);
 //   Send the Android launch notification email. Supports target: "test" or "all".
 adminRouter.post('/email/android-launch', AdminEmailController.sendAndroidLaunch);
 
+// POST /admin/email/ios-launch
+//   Send the iOS launch notification email. Supports target: "test" or "all".
+adminRouter.post('/email/ios-launch', AdminEmailController.sendIosLaunch);
+
 // GET /admin/notifications/history
 //   Recent admin sends from the LOCAL audit log (SQLite — zero Firestore
 //   cost). Raw tokens are never stored, so never returned.

@@ -4,6 +4,7 @@ import { forgotPasswordEmailHtml } from '../templates/forgotPasswordTemplate';
 import { verifyEmailHtml } from '../templates/verifyEmailTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
 import { androidLaunchNotificationHtml } from '../templates/androidLaunchNotificationTemplate';
+import { iosLaunchNotificationHtml } from '../templates/iosLaunchNotificationTemplate';
 import { isStaging } from '../utils/formatters';
 import { db } from '../config/firebase';
 import * as admin from 'firebase-admin';
@@ -134,6 +135,28 @@ export class EmailService {
         } catch (err: any) {
             console.error(`[EmailService] Failed to send Android launch notification email (exception) to ${email}:`, err);
             this.logEmailToFirestore('android_launch', email, subject, 'error', err.message || String(err), bcc);
+        }
+    }
+
+    static async sendIosLaunchNotificationEmail(email: string, bcc?: string[]): Promise<void> {
+        const subject = `${pfx()}Stationly’s next chapter: live on the Apple App Store 🚇`;
+        try {
+            const { error } = await resend.emails.send({
+                from: FROM,
+                to: email,
+                bcc: bcc,
+                subject,
+                html: iosLaunchNotificationHtml(),
+            });
+            if (error) {
+                console.error(`[EmailService] Failed to send iOS launch notification email to ${email}:`, error);
+                this.logEmailToFirestore('ios_launch', email, subject, 'error', error.message || JSON.stringify(error), bcc);
+            } else {
+                this.logEmailToFirestore('ios_launch', email, subject, 'success', undefined, bcc);
+            }
+        } catch (err: any) {
+            console.error(`[EmailService] Failed to send iOS launch notification email (exception) to ${email}:`, err);
+            this.logEmailToFirestore('ios_launch', email, subject, 'error', err.message || String(err), bcc);
         }
     }
 }
