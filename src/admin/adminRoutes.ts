@@ -9,15 +9,24 @@ import { DevicePushController } from '../controllers/devicePushController';
 /**
  * Admin-only routes — guarded by [AdminAuthMiddleware] which checks
  * the dedicated `X-Stationly-Admin-Key` header (NOT the client
- * `X-Stationly-Key`). Mounted in server.ts at `/admin/*` so it lives
- * outside `/api/v1/*` and stays off the swagger-generated OpenAPI
- * doc (the spec scanner only walks `apiRoutes.ts`).
+ * `X-Stationly-Key`). Mounted in server.ts at `/api/v1/admin/*` —
+ * NOT at a bare `/admin/*`, because staging + prod nginx only forward
+ * `/api/v1/*` upstream; see the mount site for the full reason.
+ *
+ * This file is not walked by the swagger spec scanner, which globs
+ * `src/controllers/*`. That is NOT the same as "admin operations
+ * cannot reach the public spec" — the scanner follows FILES, not
+ * routers, so a handler that lives in `src/controllers/` and is
+ * mounted here is scanned like any other. That is exactly what
+ * happened: `DevicePushController.send` / `.status` sit in
+ * `src/controllers/devicePushController.ts` and carried `@swagger`
+ * blocks, which published `/admin/device-push/*` to `/docs`.
  *
  * Important:
  *   - Do NOT register controllers here that have `@swagger` JSDoc
- *     annotations. The spec scanner doesn't walk this file today
- *     but a future scanner change could; better to keep admin
- *     handlers free of swagger comments as a defence-in-depth.
+ *     annotations — see above; this has already bitten once. If a
+ *     shared controller must be mounted here, its admin handlers get
+ *     plain JSDoc, never `@swagger`.
  *   - Do NOT mix this with the public `validateApiKey` middleware.
  *     The admin key is a different trust class.
  *   - Add operations to this router VERY sparingly. Anything here
@@ -55,6 +64,10 @@ adminRouter.get('/device-push/status', DevicePushController.status);
 // POST /admin/email/android-launch
 //   Send the Android launch notification email. Supports target: "test" or "all".
 adminRouter.post('/email/android-launch', AdminEmailController.sendAndroidLaunch);
+
+// POST /admin/email/ios-launch
+//   Send the iOS launch notification email. Supports target: "test" or "all".
+adminRouter.post('/email/ios-launch', AdminEmailController.sendIosLaunch);
 
 // GET /admin/notifications/history
 //   Recent admin sends from the LOCAL audit log (SQLite — zero Firestore

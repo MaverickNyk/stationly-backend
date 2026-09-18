@@ -1,9 +1,11 @@
-import { getBaseUrl, getWebUrl } from '../utils/formatters';
+import { getBaseUrl, getWebUrl, getUrlScheme, getGreetingName } from '../utils/formatters';
 
 export function welcomeEmailHtml(name: string): string {
-    const displayName = name || 'there';
+    const displayName = getGreetingName(name);
     const baseUrl = getBaseUrl();
     const encodedWebUrl = encodeURIComponent(getWebUrl());
+    const scheme = getUrlScheme();
+    const deepLink = encodeURIComponent(`${scheme}://home`);
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
@@ -60,7 +62,7 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
         <h1 class="hero-title"
             style="color:#111111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
                    font-size:34px;font-weight:800;letter-spacing:-1px;line-height:1.15;margin:0 0 16px 0;">
-          Hey ${displayName}<br/>
+          Hey ${displayName},<br/>
           <span style="color:#CC8800;">no more guessing<br/>if the train's coming.</span>
         </h1>
         <p style="color:#555;font-family:sans-serif;font-size:15px;line-height:1.7;margin:0;">
@@ -99,14 +101,14 @@ body { margin:0!important; padding:0!important; background-color:#f0f0f0!importa
       <tr><td align="center" style="padding:0 40px 44px 40px;">
         <!--[if mso]>
         <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-            href="${baseUrl}/open?deep=stationly%3A%2F%2Fhome&web=${encodedWebUrl}"
+            href="${baseUrl}/open?deep=${deepLink}&web=${encodedWebUrl}"
             style="height:56px;v-text-anchor:middle;width:280px;" arcsize="28%" stroke="f" fillcolor="#FFB81C">
         <w:anchorlock/>
         <center style="color:#000000;font-family:sans-serif;font-size:16px;font-weight:900;">Open My Live Board</center>
         </v:roundrect>
         <![endif]--><!--[if !mso]><!-->
         <a class="btn-link"
-           href="${baseUrl}/open?deep=stationly%3A%2F%2Fhome&web=${encodedWebUrl}"
+           href="${baseUrl}/open?deep=${deepLink}&web=${encodedWebUrl}"
            style="background-color:#FFB81C;color:#000000;padding:18px 44px;border-radius:14px;
                   text-decoration:none;font-family:sans-serif;font-weight:800;font-size:16px;
                   display:inline-block;white-space:nowrap;letter-spacing:0.2px;">
