@@ -58,6 +58,7 @@ import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
 import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
+import { sanitizeDisplayName, getGreetingName } from '../utils/formatters';
 import { buildSpecs, buildPublicSpec } from '../config/openapi';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -3985,6 +3986,49 @@ test('no admin operation is annotated anywhere the spec scanner can see it', () 
     assert.deepStrictEqual(adminPaths, [],
         `these admin operations are annotated with @swagger and reachable by the spec `
         + `scanner: ${adminPaths.join(', ')}. Admin handlers get plain JSDoc, never @swagger.`);
+});
+
+test('sanitizeDisplayName rejects Null Null, undefined, and dummy placeholders', () => {
+    assert.strictEqual(sanitizeDisplayName('Null Null'), null);
+    assert.strictEqual(sanitizeDisplayName('null null'), null);
+    assert.strictEqual(sanitizeDisplayName('null'), null);
+    assert.strictEqual(sanitizeDisplayName('undefined'), null);
+    assert.strictEqual(sanitizeDisplayName('Stationly User'), null);
+    assert.strictEqual(sanitizeDisplayName('stationly user'), null);
+    assert.strictEqual(sanitizeDisplayName(''), null);
+    assert.strictEqual(sanitizeDisplayName('   '), null);
+    assert.strictEqual(sanitizeDisplayName(null), null);
+    assert.strictEqual(sanitizeDisplayName(undefined), null);
+});
+
+test('sanitizeDisplayName rejects Apple private relay hashes matching prefix', () => {
+    const relayEmail = 'k4zsf776j5@privaterelay.appleid.com';
+    assert.strictEqual(sanitizeDisplayName('k4zsf776j5', relayEmail), null);
+    assert.strictEqual(sanitizeDisplayName('a9b8c7d6e5', 'a9b8c7d6e5@private.icloud.com'), null);
+    // Real names are preserved even for private relay users
+    assert.strictEqual(sanitizeDisplayName('Fatema Kapadia', relayEmail), 'Fatema Kapadia');
+    assert.strictEqual(sanitizeDisplayName('Alexander', relayEmail), 'Alexander');
+    assert.strictEqual(sanitizeDisplayName('Na'), 'Na');
+});
+
+test('getGreetingName extracts first name and capitalizes properly', () => {
+    const relayEmail = 'k4zsf776j5@privaterelay.appleid.com';
+    assert.strictEqual(getGreetingName('Fatema Kapadia'), 'Fatema');
+    assert.strictEqual(getGreetingName('fatema kapadia'), 'Fatema');
+    assert.strictEqual(getGreetingName('Alexander', relayEmail), 'Alexander');
+    assert.strictEqual(getGreetingName('Na'), 'Na');
+    assert.strictEqual(getGreetingName('Nikhil'), 'Nikhil');
+    assert.strictEqual(getGreetingName('nikhil'), 'Nikhil');
+});
+
+test('getGreetingName falls back to there for invalid, null null, or relay hash names', () => {
+    assert.strictEqual(getGreetingName('Null Null'), 'there');
+    assert.strictEqual(getGreetingName('null null'), 'there');
+    assert.strictEqual(getGreetingName('null'), 'there');
+    assert.strictEqual(getGreetingName('Stationly User'), 'there');
+    assert.strictEqual(getGreetingName('k4zsf776j5', 'k4zsf776j5@privaterelay.appleid.com'), 'there');
+    assert.strictEqual(getGreetingName('', 'user@example.com'), 'there');
+    assert.strictEqual(getGreetingName(undefined), 'there');
 });
 
 

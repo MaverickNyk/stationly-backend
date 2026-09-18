@@ -1,4 +1,4 @@
-import { getBaseUrl } from '../utils/formatters';
+import { getBaseUrl, getGreetingName } from '../utils/formatters';
 
 /**
  * Email verification template — light theme, identical visual language to the
@@ -6,7 +6,7 @@ import { getBaseUrl } from '../utils/formatters';
  * sender, same footer. The two emails should feel like a pair.
  */
 export function verifyEmailHtml(name: string, verifyLink: string): string {
-    const displayName = name || 'there';
+    const displayName = getGreetingName(name);
     const baseUrl = getBaseUrl();
     return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">

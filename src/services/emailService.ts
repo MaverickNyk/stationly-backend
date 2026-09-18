@@ -5,7 +5,7 @@ import { verifyEmailHtml } from '../templates/verifyEmailTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
 import { androidLaunchNotificationHtml } from '../templates/androidLaunchNotificationTemplate';
 import { iosLaunchNotificationHtml } from '../templates/iosLaunchNotificationTemplate';
-import { isStaging } from '../utils/formatters';
+import { isStaging, getGreetingName } from '../utils/formatters';
 import { db } from '../config/firebase';
 import * as admin from 'firebase-admin';
 
@@ -33,13 +33,14 @@ export class EmailService {
     }
 
     static async sendWelcomeEmail(email: string, name: string): Promise<void> {
-        const subject = `${pfx()}Hey ${name || 'there'}, Welcome to Stationly 🎉`;
+        const greetingName = getGreetingName(name, email);
+        const subject = `${pfx()}Hey ${greetingName}, Welcome to Stationly 🎉`;
         try {
             const { error } = await resend.emails.send({
                 from: FROM,
                 to: email,
                 subject,
-                html: welcomeEmailHtml(name),
+                html: welcomeEmailHtml(greetingName),
             });
             if (error) {
                 console.error('[EmailService] Failed to send welcome email:', error);
@@ -75,13 +76,14 @@ export class EmailService {
     }
 
     static async sendVerifyEmail(email: string, name: string, verifyLink: string): Promise<void> {
+        const greetingName = getGreetingName(name, email);
         const subject = `${pfx()}Verify your Stationly email`;
         try {
             const { error } = await resend.emails.send({
                 from: FROM,
                 to: email,
                 subject,
-                html: verifyEmailHtml(name, verifyLink),
+                html: verifyEmailHtml(greetingName, verifyLink),
             });
             if (error) {
                 this.logEmailToFirestore('verify_email', email, subject, 'error', error.message || JSON.stringify(error));

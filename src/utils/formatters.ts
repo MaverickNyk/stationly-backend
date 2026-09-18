@@ -137,3 +137,72 @@ export function getIconUrl(modeName?: string): string | null {
     if (!path) return null;
     return `${getBaseUrl()}${path}`;
 }
+
+/**
+ * Sanitizes a user's display name, stripping garbage artifacts (e.g. "Null Null", "undefined",
+ * "Stationly User", or random relay hashes) and returning a clean name or null.
+ */
+export function sanitizeDisplayName(name?: string | null, email?: string | null): string | null {
+    if (!name || typeof name !== 'string') return null;
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+
+    const lower = trimmed.toLowerCase();
+    const alphaOnly = lower.replace(/[^a-z]/g, '');
+
+    // Catch null variations, undefined, placeholders, and dummy accounts
+    const garbageKeywords = new Set([
+        'null',
+        'null null',
+        'undefined',
+        'stationly user',
+        'stationly',
+        'user',
+        'anonymous',
+        'none',
+        'n/a',
+        'test'
+    ]);
+    if (garbageKeywords.has(lower)) return null;
+
+    // Check if stripped of non-alpha characters it equals 'null', 'nullnull', or 'undefined'
+    if (alphaOnly === 'null' || alphaOnly === 'nullnull' || alphaOnly === 'undefined') return null;
+
+    // If email is an Apple private relay (e.g. k4zsf776j5@privaterelay.appleid.com)
+    // or if the name matches the email's random hash prefix, reject it
+    if (email) {
+        const prefix = email.split('@')[0]?.toLowerCase();
+        if (prefix && (lower === prefix || alphaOnly === prefix.replace(/[^a-z0-9]/g, ''))) {
+            return null;
+        }
+        const isAppleRelay = email.toLowerCase().includes('privaterelay.appleid.com') ||
+                             email.toLowerCase().includes('private.icloud.com');
+        // Apple relay hashes are mixed alphanumeric (contain digits).
+        // A real name like "Alexander" (pure letters) is never rejected.
+        if (isAppleRelay && /^[a-z0-9]{8,16}$/i.test(trimmed) && /\d/.test(trimmed)) {
+            return null;
+        }
+    }
+
+    return trimmed;
+}
+
+/**
+ * Returns a conversational greeting name (e.g. first name, capitalized),
+ * or "there" if no valid human name is available.
+ */
+export function getGreetingName(name?: string | null, email?: string | null): string {
+    const clean = sanitizeDisplayName(name, email);
+    if (!clean) return 'there';
+
+    // Extract first word (first name)
+    const firstWord = clean.split(/\s+/)[0];
+    if (!firstWord || firstWord.length < 2) return 'there';
+
+    // If first word itself is "null" (case-insensitive) or matches garbage, fallback
+    const firstLower = firstWord.toLowerCase();
+    if (firstLower === 'null' || firstLower === 'undefined' || firstLower === 'user') return 'there';
+
+    // Capitalize first letter properly (e.g. "fatema" -> "Fatema")
+    return firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
+}
