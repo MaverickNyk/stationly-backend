@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { URL } from 'url';
 import { auth } from '../config/firebase';
 import { EmailService } from '../services/emailService';
-import { getBaseUrl, getWebUrl } from '../utils/formatters';
+import { getBaseUrl, getWebUrl, sanitizeDisplayName } from '../utils/formatters';
 
 /**
  * Wrapper around auth.generateEmailVerificationLink with bounded retries on
@@ -69,19 +69,21 @@ export class AuthController {
             const smartLink = `${getBaseUrl()}/open?deep=${encodeURIComponent(deepLink)}&web=${encodeURIComponent(webLink)}`;
 
             // Display name: prefer Firebase Auth's displayName (set during signup),
-            // then Firestore (also populated at signup), then email prefix as a
-            // last resort. Previously we ALWAYS hit the email-prefix path because
-            // req.user only had {uid, email} — never `name`.
+            // then Firestore (also populated at signup). Never use Apple private relay
+            // random hashes as names.
             let displayName = '';
             try {
                 const fbUser = await auth.getUser(user.uid);
                 displayName = fbUser.displayName ?? '';
             } catch (_) {
-                // ignore — fall through to email prefix
+                // ignore — fall through
             }
-            if (!displayName) displayName = user.email.split('@')[0];
+            let clean = sanitizeDisplayName(displayName, user.email);
+            if (!clean && !user.email.includes('privaterelay.appleid.com') && !user.email.includes('private.icloud.com')) {
+                clean = sanitizeDisplayName(user.email.split('@')[0], user.email);
+            }
 
-            await EmailService.sendVerifyEmail(user.email, displayName, smartLink);
+            await EmailService.sendVerifyEmail(user.email, clean || '', smartLink);
 
             res.status(200).json({ success: true });
         } catch (err: any) {

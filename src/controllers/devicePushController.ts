@@ -191,18 +191,22 @@ export class DevicePushController {
     }
 
     /**
-     * @swagger
-     * /admin/device-push/send:
-     *   post:
-     *     summary: Trigger an immediate widget update
-     *     description: >
-     *       Body: { kind, stations?, tierId?, minutes?, reason? }.
-     *       `widget.refresh` makes boards refetch now (scope it with `stations`
-     *       for a closure); `policy.update` makes clients refetch the refresh
-     *       schedule even when the app is not running; `boost.start` promotes to
-     *       a denser tier for up to the policy's ceiling; `boost.stop` ends one
-     *       early. Boosts self-expire on the device, so a dropped stop is safe.
-     *     tags: [Admin, Widget Push]
+     * POST /api/v1/admin/device-push/send — trigger an immediate widget update.
+     *
+     * NOT an `@swagger` block, deliberately. This handler is mounted on the
+     * ADMIN router (`src/admin/adminRoutes.ts`), which requires
+     * `X-Stationly-Admin-Key` and states as a rule that admin handlers carry no
+     * swagger annotations. It lives in `src/controllers/` — which the spec
+     * scanner globs — so an `@swagger` marker here published an admin operation
+     * to the public `/docs`, exactly the "future scanner change" that rule was
+     * written to survive. Keep it plain JSDoc.
+     *
+     * Body: { kind, stations?, tierId?, minutes?, reason? }.
+     * `widget.refresh` makes boards refetch now (scope it with `stations` for a
+     * closure); `policy.update` makes clients refetch the refresh schedule even
+     * when the app is not running; `boost.start` promotes to a denser tier for
+     * up to the policy's ceiling; `boost.stop` ends one early. Boosts
+     * self-expire on the device, so a dropped stop is safe.
      */
     static async send(req: Request, res: Response) {
         const { kind, stations, tierId, minutes, reason } = req.body ?? {};
@@ -233,11 +237,11 @@ export class DevicePushController {
     }
 
     /**
-     * @swagger
-     * /admin/device-push/status:
-     *   get:
-     *     summary: Whether APNs is configured, and how many devices are registered
-     *     tags: [Admin, Widget Push]
+     * GET /api/v1/admin/device-push/status — whether APNs is configured, and how
+     * many devices are registered.
+     *
+     * Plain JSDoc, not `@swagger`, for the same reason as [send] above: admin
+     * router, admin key, must never reach the public spec.
      */
     static async status(_req: Request, res: Response) {
         try {
