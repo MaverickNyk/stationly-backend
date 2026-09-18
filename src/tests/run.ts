@@ -58,6 +58,8 @@ import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
 import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
+import { sanitizeDisplayName, getGreetingName } from '../utils/formatters';
+import { buildSpecs, buildPublicSpec } from '../config/openapi';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
 
@@ -3827,5 +3829,207 @@ test('RELEASE FLAG: SWEEP_ENABLED is off', () => {
         'sweep releases on a 90-day lastSeen that the shipped Android build only '
         + 'refreshes on explicit sign-in, so it would release daily users — plan task G5.');
 });
+
+// ─── The published API surface (what third-party developers can see) ─────────
+//
+// `/openapi.json` and `/docs` are a SECURITY BOUNDARY, not a nicety: whatever
+// appears there is advertised to anyone holding an `X-Stationly-Key`. The
+// boundary is enforced by `buildPublicSpec`, and until these tests existed it
+// was enforced by nobody checking.
+//
+// It had already failed. The filter was written in June as a DENY-LIST of
+// internal tags, which can only hide the categories it was told about. The
+// August widget-push work added two tags it had never heard of — `Widget Push`
+// and `Admin` — and four operations published themselves: `/device/register`,
+// `/device/unregister`, and the two `/admin/device-push/*` ADMIN routes. Nobody
+// made a mistake; the default did it, and it sat there for a month.
+//
+// So the tests below deliberately assert two different things. The exact-set
+// test pins today's inventory. The property tests pin the RULE — a spec with a
+// brand-new unknown tag must stay hidden — and that is the half that would have
+// caught August before it shipped. Keep both: an inventory test alone goes
+// stale, a property test alone lets a real endpoint slip in unnoticed.
+
+/** The complete published surface. Changing this list is a publishing decision. */
+const PUBLIC_SURFACE = [
+    '/lines/mode/{mode}',
+    '/lines/status',
+    '/lines/{lineId}/route',
+    '/modes',
+    '/stations/line/{lineId}',
+    '/stations/predictions/{naptanId}',
+    '/stations/resolve',
+    '/stations/search',
+].sort();
+
+const SPEC_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'trace'] as const;
+
+/** Every [route, method, operation] triple in a spec. */
+function operationsOf(spec: any): Array<{ route: string; method: string; op: any }> {
+    const out: Array<{ route: string; method: string; op: any }> = [];
+    for (const [route, item] of Object.entries<any>(spec.paths ?? {})) {
+        for (const method of SPEC_METHODS) {
+            if (item[method]) out.push({ route, method, op: item[method] });
+        }
+    }
+    return out;
+}
+
+test('published spec is EXACTLY the eight transport endpoints', () => {
+    const { published } = buildSpecs();
+    assert.deepStrictEqual(
+        Object.keys(published.paths ?? {}).sort(),
+        PUBLIC_SURFACE,
+        'the published API surface changed. If you added a public transport endpoint, '
+        + 'add it to PUBLIC_SURFACE. If you did NOT expect a change, something '
+        + 'internal just leaked onto /docs — read the note above this test.',
+    );
+});
+
+test('no private, app-only or admin route is published', () => {
+    const { published } = buildSpecs();
+    const forbidden = Object.keys(published.paths ?? {}).filter((route) =>
+        /^\/(admin|device|user|sdui|waitlist)\b/.test(route) || route.startsWith('/stations/subscribed-ids'));
+    assert.deepStrictEqual(forbidden, [],
+        `these are not third-party endpoints and must never be advertised: ${forbidden.join(', ')}`);
+});
+
+test('every published operation carries a public tag and no internal tag', () => {
+    const PUBLIC = new Set(['Stations', 'Modes', 'Lines']);
+    const INTERNAL = new Set(['Users', 'User', 'SDUI', 'Auth', 'Theme', 'Waitlist', 'Widget Push', 'Admin']);
+    for (const { route, method, op } of operationsOf(buildSpecs().published)) {
+        const tags: string[] = op.tags ?? [];
+        assert.ok(tags.some((t) => PUBLIC.has(t)),
+            `${method.toUpperCase()} ${route} is published with tags [${tags}] — none of them public`);
+        assert.ok(!tags.some((t) => INTERNAL.has(t)),
+            `${method.toUpperCase()} ${route} is published despite the internal tag in [${tags}]`);
+    }
+});
+
+test('the app-only endpoints still exist in the FULL spec — hidden, not deleted', () => {
+    // The annotations stay in code as a contract for the in-house app team;
+    // only the published copy is filtered. If these vanish from the full spec
+    // someone deleted documentation rather than hiding it.
+    const routes = new Set(Object.keys(buildSpecs().full.paths ?? {}));
+    for (const route of ['/device/register', '/user/sync/profile', '/sdui/app/layout']) {
+        assert.ok(routes.has(route), `${route} disappeared from the full spec entirely`);
+    }
+});
+
+test('FAIL CLOSED: an operation with an unrecognised tag is not published', () => {
+    // The exact regression that shipped in August, as a property. A tag the
+    // filter has never heard of must default to HIDDEN.
+    const published = buildPublicSpec({
+        paths: { '/experimental/thing': { get: { tags: ['Something Brand New'], summary: 'x' } } },
+    });
+    assert.deepStrictEqual(Object.keys(published.paths ?? {}), [],
+        'a brand-new tag was published by default — the filter is a deny-list again, '
+        + 'and the next feature to invent a tag will leak exactly as widget-push did');
+});
+
+test('FAIL CLOSED: an operation with no tags at all is not published', () => {
+    const published = buildPublicSpec({
+        paths: { '/experimental/untagged': { get: { summary: 'x' } } },
+    });
+    assert.deepStrictEqual(Object.keys(published.paths ?? {}), [],
+        'an untagged operation was published');
+});
+
+test('an internal tag beats a public one: [Stations, Users] stays hidden', () => {
+    // An allow-list alone asks "is this transport data?", never "is this ALSO
+    // someone's private data?". /stations/subscribed-ids is exactly that shape.
+    const published = buildPublicSpec({
+        paths: { '/stations/mine': { get: { tags: ['Stations', 'Users'], summary: 'x' } } },
+    });
+    assert.deepStrictEqual(Object.keys(published.paths ?? {}), [],
+        'a user-private endpoint was published because it also carried a transport tag');
+});
+
+test('buildPublicSpec does not mutate the spec it is given', () => {
+    // It is publish-only. If it mutated in place, filtering the docs would edit
+    // the very object the in-house contract is read from.
+    const input = {
+        paths: {
+            '/modes': { get: { tags: ['Modes'] } },
+            '/user/logout': { post: { tags: ['Users'] } },
+        },
+    };
+    const snapshot = JSON.stringify(input);
+    buildPublicSpec(input);
+    assert.strictEqual(JSON.stringify(input), snapshot, 'buildPublicSpec mutated its input');
+});
+
+test('every $ref in the published spec resolves to a kept schema', () => {
+    // Schema pruning walks refs transitively; if it ever over-prunes, /docs
+    // renders broken models rather than failing loudly.
+    const { published } = buildSpecs();
+    const kept = new Set(Object.keys(published.components?.schemas ?? {}));
+    const refs = JSON.stringify(published.paths ?? {}).match(/#\/components\/schemas\/[A-Za-z0-9_.-]+/g) ?? [];
+    for (const ref of refs) {
+        const name = ref.split('/').pop()!;
+        assert.ok(kept.has(name), `${ref} is referenced by a published path but was pruned from components.schemas`);
+    }
+});
+
+test('no admin operation is annotated anywhere the spec scanner can see it', () => {
+    // adminRoutes.ts states this rule, and the August leak is what broke it.
+    // DevicePushController lives in src/controllers/ — inside the scanner's
+    // glob — while two of its handlers are mounted on the ADMIN router, so an
+    // @swagger block there published an admin operation to /docs.
+    //
+    // Asserted against the FULL spec rather than by grepping the source: it is
+    // the scanner's own view, it covers every controller rather than the one
+    // that happened to fail, and it cannot be fooled by a comment that merely
+    // discusses @swagger and /admin/ in prose (an earlier version of this test
+    // was, by the comment above).
+    const adminPaths = Object.keys(buildSpecs().full.paths ?? {}).filter((r) => r.startsWith('/admin'));
+    assert.deepStrictEqual(adminPaths, [],
+        `these admin operations are annotated with @swagger and reachable by the spec `
+        + `scanner: ${adminPaths.join(', ')}. Admin handlers get plain JSDoc, never @swagger.`);
+});
+
+test('sanitizeDisplayName rejects Null Null, undefined, and dummy placeholders', () => {
+    assert.strictEqual(sanitizeDisplayName('Null Null'), null);
+    assert.strictEqual(sanitizeDisplayName('null null'), null);
+    assert.strictEqual(sanitizeDisplayName('null'), null);
+    assert.strictEqual(sanitizeDisplayName('undefined'), null);
+    assert.strictEqual(sanitizeDisplayName('Stationly User'), null);
+    assert.strictEqual(sanitizeDisplayName('stationly user'), null);
+    assert.strictEqual(sanitizeDisplayName(''), null);
+    assert.strictEqual(sanitizeDisplayName('   '), null);
+    assert.strictEqual(sanitizeDisplayName(null), null);
+    assert.strictEqual(sanitizeDisplayName(undefined), null);
+});
+
+test('sanitizeDisplayName rejects Apple private relay hashes matching prefix', () => {
+    const relayEmail = 'k4zsf776j5@privaterelay.appleid.com';
+    assert.strictEqual(sanitizeDisplayName('k4zsf776j5', relayEmail), null);
+    assert.strictEqual(sanitizeDisplayName('a9b8c7d6e5', 'a9b8c7d6e5@private.icloud.com'), null);
+    // Real names are preserved even for private relay users
+    assert.strictEqual(sanitizeDisplayName('Fatema Kapadia', relayEmail), 'Fatema Kapadia');
+    assert.strictEqual(sanitizeDisplayName('Alexander', relayEmail), 'Alexander');
+    assert.strictEqual(sanitizeDisplayName('Na'), 'Na');
+});
+
+test('getGreetingName extracts first name and capitalizes properly', () => {
+    const relayEmail = 'k4zsf776j5@privaterelay.appleid.com';
+    assert.strictEqual(getGreetingName('Fatema Kapadia'), 'Fatema');
+    assert.strictEqual(getGreetingName('fatema kapadia'), 'Fatema');
+    assert.strictEqual(getGreetingName('Alexander', relayEmail), 'Alexander');
+    assert.strictEqual(getGreetingName('Na'), 'Na');
+    assert.strictEqual(getGreetingName('Nikhil'), 'Nikhil');
+    assert.strictEqual(getGreetingName('nikhil'), 'Nikhil');
+});
+
+test('getGreetingName falls back to there for invalid, null null, or relay hash names', () => {
+    assert.strictEqual(getGreetingName('Null Null'), 'there');
+    assert.strictEqual(getGreetingName('null null'), 'there');
+    assert.strictEqual(getGreetingName('null'), 'there');
+    assert.strictEqual(getGreetingName('Stationly User'), 'there');
+    assert.strictEqual(getGreetingName('k4zsf776j5', 'k4zsf776j5@privaterelay.appleid.com'), 'there');
+    assert.strictEqual(getGreetingName('', 'user@example.com'), 'there');
+    assert.strictEqual(getGreetingName(undefined), 'there');
+});
+
 
 main();

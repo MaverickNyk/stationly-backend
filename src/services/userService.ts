@@ -7,9 +7,8 @@ import { DeviceLifecycleService } from './deviceLifecycleService';
 import { UserRevLedger } from './userRevLedger';
 import { UserDeviceService } from './userDeviceService';
 import { UserWatchIndex } from './userWatchIndex';
-// Only for the badge window. `supportMoneyConfigService` imports nothing from
-// here, so this direction adds no cycle.
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { sanitizeDisplayName } from '../utils/formatters';
 
 const FieldValue = admin.firestore.FieldValue;
 
@@ -1195,7 +1194,8 @@ export class UserService {
             await this.purgeOrphanDocsForEmail(email, uid);
 
             const sendWelcome = shouldSendWelcome(snapshot);
-            const displayName = data.displayName || 'Stationly User';
+            const cleanName = sanitizeDisplayName(data.displayName, email);
+            const displayName = cleanName || 'Stationly User';
             const newUser: UserProfile = {
                 uid,
                 email,
@@ -1255,7 +1255,7 @@ export class UserService {
             if (deviceId) await this.startSession(uid, deviceId, deviceInfo);
             if (sendWelcome) {
                 // Fire-and-forget — never block signup on email delivery
-                EmailService.sendWelcomeEmail(email, displayName);
+                EmailService.sendWelcomeEmail(email, cleanName || '');
             }
             return newUser;
         } else {
@@ -1273,6 +1273,14 @@ export class UserService {
             const cleanedData = Object.fromEntries(
                 Object.entries(data).filter(([k, v]) => v !== undefined && !PROTECTED_PROFILE_FIELDS.has(k))
             );
+            if (typeof cleanedData.displayName === 'string') {
+                const clean = sanitizeDisplayName(cleanedData.displayName, email);
+                if (clean) {
+                    cleanedData.displayName = clean;
+                } else {
+                    delete cleanedData.displayName;
+                }
+            }
 
             const existingData = snapshot.data();
 
@@ -1368,8 +1376,8 @@ export class UserService {
             }
 
             if (sendWelcome) {
-                const displayName = (data.displayName || existingData?.displayName || 'Stationly User');
-                EmailService.sendWelcomeEmail(email, displayName);
+                const cleanName = sanitizeDisplayName(data.displayName || existingData?.displayName, email);
+                EmailService.sendWelcomeEmail(email, cleanName || '');
             }
 
             // ⚠️ NEVER spread `updateData` raw into a response.
