@@ -32,15 +32,15 @@ export class EmailService {
         });
     }
 
-    static async sendWelcomeEmail(email: string, name: string): Promise<void> {
+    static async sendWelcomeEmail(email: string, name: string, platform?: string): Promise<void> {
         const greetingName = getGreetingName(name, email);
-        const subject = `${pfx()}Hey ${greetingName}, Welcome to Stationly 🎉`;
+        const subject = `${pfx()}Welcome to Stationly, ${greetingName}`;
         try {
             const { error } = await resend.emails.send({
                 from: FROM,
                 to: email,
                 subject,
-                html: welcomeEmailHtml(greetingName),
+                html: welcomeEmailHtml(greetingName, platform),
             });
             if (error) {
                 console.error('[EmailService] Failed to send welcome email:', error);
