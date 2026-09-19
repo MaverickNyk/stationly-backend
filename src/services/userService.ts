@@ -1255,7 +1255,10 @@ export class UserService {
             if (deviceId) await this.startSession(uid, deviceId, deviceInfo);
             if (sendWelcome) {
                 // Fire-and-forget — never block signup on email delivery
-                EmailService.sendWelcomeEmail(email, cleanName || '');
+                const platform = deviceInfo?.platform || (
+                    email.includes('privaterelay.appleid.com') || email.includes('private.icloud.com') ? 'ios' : undefined
+                );
+                EmailService.sendWelcomeEmail(email, cleanName || '', platform);
             }
             return newUser;
         } else {
@@ -1377,7 +1380,10 @@ export class UserService {
 
             if (sendWelcome) {
                 const cleanName = sanitizeDisplayName(data.displayName || existingData?.displayName, email);
-                EmailService.sendWelcomeEmail(email, cleanName || '');
+                const platform = deviceInfo?.platform || (
+                    email.includes('privaterelay.appleid.com') || email.includes('private.icloud.com') ? 'ios' : undefined
+                );
+                EmailService.sendWelcomeEmail(email, cleanName || '', platform);
             }
 
             // ⚠️ NEVER spread `updateData` raw into a response.

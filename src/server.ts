@@ -120,6 +120,14 @@ app.use('/assets', express.static(path.join(process.cwd(), 'public', 'assets')))
 app.get('/open', (req, res) => {
     const deep = typeof req.query.deep === 'string' ? decodeURIComponent(req.query.deep) : 'stationly://';
     const web  = typeof req.query.web  === 'string' ? decodeURIComponent(req.query.web)  : getWebUrl();
+    const ua   = req.headers['user-agent'] || '';
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(ua);
+
+    // If opened on desktop/laptop browser, redirect straight to web with no scheme popup
+    if (!isMobile) {
+        return res.redirect(302, web);
+    }
+
     res.setHeader('Content-Type', 'text/html');
     res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
