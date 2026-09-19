@@ -8,11 +8,13 @@ import { NetworkStatusPanel } from '../../components/kiosk/NetworkStatusPanel';
 import { ModeRoundel } from '../../components/kiosk/ModeRoundel';
 import { LinePills } from '../../components/kiosk/LinePills';
 import { FullscreenButton } from '../../components/kiosk/FullscreenButton';
+import { RotateButton } from '../../components/kiosk/RotateButton';
 
 import { useKioskStream } from '../../features/departures/hooks/useKioskStream';
 import { useMinuteTick } from '../../features/departures/hooks/useMinuteTick';
 import { useKioskAutoUpdate } from '../../features/departures/hooks/useKioskAutoUpdate';
 import { useScreenWakeLock } from '../../features/departures/hooks/useScreenWakeLock';
+import { useKioskOrientation } from '../../features/departures/hooks/useKioskOrientation';
 import {
     dropUnassignedWhenPossible,
     flatten,
@@ -54,6 +56,7 @@ export function KioskRoute() {
     const { stationId } = useParams();
     const { search } = useLocation();
     const config = useMemo(() => readKioskConfig(search), [search]);
+    const { rotation, rotateNext, isPortrait } = useKioskOrientation(search);
 
     const valid = isValidNaptan(stationId);
     const { station, statuses, lineModes, lastUpdatedMs, isOnline, isLoading, clockSkewMs } =
@@ -158,97 +161,115 @@ export function KioskRoute() {
         return state ? fallbackCopy(state) : null;
     }, [groups.length, isOnline, lastUpdatedMs, now, primaryStatus]);
 
+    const kioskControls = (
+        <div className="kiosk__fs-row">
+            <FullscreenButton />
+            <RotateButton rotation={rotation} onRotate={rotateNext} />
+        </div>
+    );
+
     if (!valid) {
         return (
-            <KioskSplash
-                message="Station not set."
-                hint={`Add a valid NaPTAN ID to the URL (e.g. /kiosk/${DEFAULT_STATION})`}
-            />
+            <>
+                <div className={`kiosk-wrapper kiosk-wrapper--rotate-${rotation}`}>
+                    <KioskSplash
+                        message="Station not set."
+                        hint={`Add a valid NaPTAN ID to the URL (e.g. /kiosk/${DEFAULT_STATION})`}
+                    />
+                </div>
+                {kioskControls}
+            </>
         );
     }
 
     if (isLoading || !station) {
         return (
-            <KioskSplash
-                pulse
-                message="Connecting to live TfL signaling..."
-                hint={`Station: ${stationId}`}
-            />
+            <>
+                <div className={`kiosk-wrapper kiosk-wrapper--rotate-${rotation}`}>
+                    <KioskSplash
+                        pulse
+                        message="Connecting to live TfL signaling..."
+                        hint={`Station: ${stationId}`}
+                    />
+                </div>
+                {kioskControls}
+            </>
         );
     }
 
     const stationName = formatDestinationShort(station.name);
 
     return (
-        <main
-            className="kiosk"
-            style={
-                // vh/vw, not `%`: percentage padding resolves against the
-                // containing block's WIDTH on all four sides, so `padding: 3%`
-                // on a 16:9 screen insets the top and bottom by 5.3% of their
-                // own axis. Overscan crops both axes evenly and the correction
-                // has to as well.
-                config.overscanPercent
-                    ? {
-                        padding: `${config.overscanPercent}vh ${config.overscanPercent}vw`,
+        <>
+            <div className={`kiosk-wrapper kiosk-wrapper--rotate-${rotation}`}>
+                <main
+                    className={`kiosk ${isPortrait ? 'kiosk--portrait' : ''}`}
+                    style={
+                        // vh/vw, not `%`: percentage padding resolves against the
+                        // containing block's WIDTH on all four sides, so `padding: 3%`
+                        // on a 16:9 screen insets the top and bottom by 5.3% of their
+                        // own axis. Overscan crops both axes evenly and the correction
+                        // has to as well.
+                        config.overscanPercent
+                            ? {
+                                padding: `${config.overscanPercent}vh ${config.overscanPercent}vw`,
+                            }
+                            : undefined
                     }
-                    : undefined
-            }
-        >
-            <section className="kiosk__top">
-                <header className="kiosk__head">
-                    <ModeRoundel mode={primaryMode} lineColor={lineVar(primaryLine?.id)} />
-                    <h1 className="kiosk__station">{stationName}</h1>
-                    <LinePills lines={lines} statuses={stationStatuses} />
+                >
+                    <section className="kiosk__top">
+                        <header className="kiosk__head">
+                            <ModeRoundel mode={primaryMode} lineColor={lineVar(primaryLine?.id)} />
+                            <h1 className="kiosk__station">{stationName}</h1>
+                            <LinePills lines={lines} statuses={stationStatuses} />
 
-                    <div className="kiosk__brand">
-                        <img className="kiosk__brandmark" src={BRAND_MARK_URL} alt="" aria-hidden="true" />
-                        <span className="kiosk__brandname">Stationly</span>
-                    </div>
-                </header>
+                            <div className="kiosk__brand">
+                                <img className="kiosk__brandmark" src={BRAND_MARK_URL} alt="" aria-hidden="true" />
+                                <span className="kiosk__brandname">Stationly</span>
+                            </div>
+                        </header>
 
-                <div className="heroes">
-                    {cardGroups.length > 0 ? (
-                        cardGroups.map(group => (
-                            <NextDepartureCard
-                                key={group.platform}
-                                platform={group.platform}
-                                row={group.rows[0]}
-                                lineColor={lineVar(group.rows[0]?.lineId ?? primaryLine?.id)}
-                                emptyHeadline={emptyHeadline}
-                            />
-                        ))
-                    ) : (
-                        <NextDepartureCard
-                            platform=""
-                            lineColor={lineVar(primaryLine?.id)}
-                            emptyHeadline={emptyHeadline}
+                        <div className="heroes">
+                            {cardGroups.length > 0 ? (
+                                cardGroups.map(group => (
+                                    <NextDepartureCard
+                                        key={group.platform}
+                                        platform={group.platform}
+                                        row={group.rows[0]}
+                                        lineColor={lineVar(group.rows[0]?.lineId ?? primaryLine?.id)}
+                                        emptyHeadline={emptyHeadline}
+                                    />
+                                ))
+                            ) : (
+                                <NextDepartureCard
+                                    platform=""
+                                    lineColor={lineVar(primaryLine?.id)}
+                                    emptyHeadline={emptyHeadline}
+                                />
+                            )}
+                        </div>
+
+                        <DotMatrixBoard
+                            groups={groups}
+                            fallback={fallback}
+                            statuses={stationStatuses}
+                            rowsPerPlatform={config.rowsPerPlatform}
                         />
-                    )}
-                </div>
+                    </section>
 
-                <DotMatrixBoard
-                    groups={groups}
-                    fallback={fallback}
-                    statuses={stationStatuses}
-                    rowsPerPlatform={config.rowsPerPlatform}
-                />
-            </section>
+                    <section className="kiosk__bottom">
+                        <NetworkStatusPanel statuses={statuses} />
+                        <QrPanel caption={config.qrCaption} />
+                    </section>
 
-            <section className="kiosk__bottom">
-                <NetworkStatusPanel statuses={statuses} />
-                <QrPanel caption={config.qrCaption} />
-            </section>
-
-            {/* Bottom-right corner timestamp */}
-            <footer className="kiosk__footnote">
-                <LastUpdatedBadge lastUpdatedMs={lastUpdatedMs} />
-            </footer>
-
-            <div className="kiosk__fs-row">
-                <FullscreenButton />
+                    {/* Bottom-right corner timestamp */}
+                    <footer className="kiosk__footnote">
+                        <LastUpdatedBadge lastUpdatedMs={lastUpdatedMs} />
+                    </footer>
+                </main>
             </div>
-        </main>
+            {kioskControls}
+        </>
     );
 }
 
