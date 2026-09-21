@@ -70,6 +70,8 @@ export interface SupportMoneyTier {
      * `cta.url_oneoff` (the customer-chooses-amount link) when this is "".
      */
     url: string;
+    /** Apple In-App Purchase Consumable Product ID for native StoreKit 2 flow */
+    apple_product_id?: string;
 }
 
 export interface SupportMoneyBoardLine {
@@ -203,10 +205,50 @@ function envCheckoutUrl(name: string): string {
     return withUidPlaceholder(envStr(name));
 }
 
+function envAppleProduct(tierId: string, defaultId: string): string {
+    const explicit = envStr(`SUPPORT_MONEY_APPLE_PRODUCT_${tierId.toUpperCase()}`);
+    if (explicit) return explicit;
+    return process.env.APP_ENV === 'staging'
+        ? `uk.co.stationly.support.staging.${tierId}`
+        : defaultId;
+}
+
 export class SupportMoneyConfigService {
-    /** The master switch. `false` unless `SUPPORT_MONEY_ENABLED=true` (case-insensitive). */
-    static enabled(): boolean {
-        return (process.env.SUPPORT_MONEY_ENABLED ?? '').trim().toLowerCase() === 'true';
+    /** iOS switch. Enabled by default (`true`) unless `SUPPORT_MONEY_IOS_ENABLED=false`. */
+    static isIosEnabled(): boolean {
+        const raw = process.env.SUPPORT_MONEY_IOS_ENABLED;
+        if (raw === undefined || raw.trim() === '') return true;
+        return raw.trim().toLowerCase() === 'true';
+    }
+
+    /** Android switch. Disabled by default (`false`) unless `SUPPORT_MONEY_ANDROID_ENABLED=true`. */
+    static isAndroidEnabled(): boolean {
+        const raw = process.env.SUPPORT_MONEY_ANDROID_ENABLED;
+        if (raw === undefined || raw.trim() === '') return false;
+        return raw.trim().toLowerCase() === 'true';
+    }
+
+    /** Web switch. Disabled by default (`false`) unless `SUPPORT_MONEY_WEB_ENABLED=true`. */
+    static isWebEnabled(): boolean {
+        const raw = process.env.SUPPORT_MONEY_WEB_ENABLED;
+        if (raw === undefined || raw.trim() === '') return false;
+        return raw.trim().toLowerCase() === 'true';
+    }
+
+    /**
+     * Per-platform support switches:
+     * - iOS: SUPPORT_MONEY_IOS_ENABLED (default true)
+     * - Android: SUPPORT_MONEY_ANDROID_ENABLED (default false)
+     * - Web: SUPPORT_MONEY_WEB_ENABLED (default false)
+     *
+     * Note: SUPPORT_MONEY_ENABLED is deprecated and will be removed; clients only use the per-platform toggles.
+     */
+    static enabled(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): boolean {
+        const p = (platform || 'ios').trim().toLowerCase();
+        if (p === 'android') return this.isAndroidEnabled();
+        if (p === 'web') return this.isWebEnabled();
+        if (p === 'unknown') return false;
+        return this.isIosEnabled();
     }
 
     /** Days a one-off tip keeps the Supporter badge. Kept in sync with {SupportMoneyService}. */
@@ -228,11 +270,15 @@ export class SupportMoneyConfigService {
         return `${getBaseUrl()}/api/v1/support-money/return`;
     }
 
-    static getSupportMoneyConfig(): SupportMoneyCardConfig {
+    static getSupportMoneyConfig(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): SupportMoneyCardConfig {
+        const p = platform ? platform.trim().toLowerCase() : undefined;
+        const isIos = p === 'ios';
+        const isEnabled = this.enabled(p || 'ios');
+
         return {
             type: 'support_money_card',
             id: 'support_main',
-            enabled: this.enabled(),
+            enabled: isEnabled,
             icon: envStr('SUPPORT_MONEY_ICON', 'heart'),
             heading: 'Keep Stationly free',
             // The single most important paragraph in the feature. Everything
@@ -281,19 +327,17 @@ export class SupportMoneyConfigService {
                     label: '1 day live',
                     hint: 'A full day of live data. Every Victoria line departure, for everyone watching one.',
                     thanks: '{amount} keeps the live data running for a full day, for everyone watching a board.',
-                    url: envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T4'),
+                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T4'),
+                    apple_product_id: envAppleProduct('t4', 'uk.co.stationly.support.t4'),
                 },
                 {
                     id: 't8',
                     amount_minor: 800,
-                    // The default rung, and the one carrying the best sentence
-                    // in the feature: someone standing on a pavement at Manor
-                    // House where there is no screen to look at, holding a phone
-                    // that tells them anyway.
                     label: '3 days live',
                     hint: 'Three days running. Enough for stops like Manor House, where the street has no board at all.',
                     thanks: '{amount} helps people waiting at stops like Manor House, where the street has no departure board at all.',
-                    url: envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T8'),
+                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T8'),
+                    apple_product_id: envAppleProduct('t8', 'uk.co.stationly.support.t8'),
                 },
                 {
                     id: 't12',
@@ -301,7 +345,17 @@ export class SupportMoneyConfigService {
                     label: '1 week live',
                     hint: 'A full week of the servers and live data behind every board in the app.',
                     thanks: '{amount} covers a full week of the servers and live data behind every board in the app.',
-                    url: envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T12'),
+                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T12'),
+                    apple_product_id: envAppleProduct('t12', 'uk.co.stationly.support.t12'),
+                },
+                {
+                    id: 't25',
+                    amount_minor: 2500,
+                    label: 'Generous',
+                    hint: 'A full month of running costs for data pipelines and background sync.',
+                    thanks: '{amount} generously covers a month of running costs for data pipelines and server sync.',
+                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T25'),
+                    apple_product_id: envAppleProduct('t25', 'uk.co.stationly.support.t25'),
                 },
             ],
             currency: 'GBP',
@@ -310,7 +364,7 @@ export class SupportMoneyConfigService {
             // worst-yielding one — £4 keeps ~93%, £8 keeps ~96%.
             default_tier_id: 't8',
             custom_amount: {
-                enabled: true,
+                enabled: !isIos,
                 min_minor: 100,
                 max_minor: 50_000,
                 // Rendered by the client from `support_money.sheet.custom_hint`
@@ -339,8 +393,8 @@ export class SupportMoneyConfigService {
                 // when a checkout cannot be opened, which is what that slot is
                 // actually worth keeping for.
                 note: '',
-                url_oneoff: envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_ONEOFF'),
-                url_monthly: envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_MONTHLY'),
+                url_oneoff: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_ONEOFF'),
+                url_monthly: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_MONTHLY'),
             },
             social_proof: {
                 enabled: false,
@@ -396,8 +450,10 @@ export class SupportMoneyConfigService {
      * "after you add a board" contextual card and match the existing
      * `home.promo.widget.*` / `home.promo.dream.*` shape, `show` switch and all.
      */
-    static homeConfigKeys(): Record<string, string> {
-        const cfg = this.getSupportMoneyConfig();
+    static homeConfigKeys(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): Record<string, string> {
+        const p = platform ? platform.trim().toLowerCase() : undefined;
+        const cfg = this.getSupportMoneyConfig(p);
+        const isEnabled = this.enabled(p || 'ios');
         return {
             'support_money.card.json': JSON.stringify(cfg),
 
@@ -412,7 +468,7 @@ export class SupportMoneyConfigService {
             'home.promo.support_money.show': String(
                 (process.env.SUPPORT_MONEY_PROMO_ENABLED ?? '').trim().toLowerCase() === 'false'
                     ? false
-                    : this.enabled(),
+                    : isEnabled,
             ),
             // Env-driven because these are the two numbers most likely to be
             // wrong on the first guess, and the only way to learn the right
