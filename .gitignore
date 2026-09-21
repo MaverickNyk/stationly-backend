@@ -33,6 +33,7 @@ test-key.json
 *.pem
 *.key
 *.pub
+*.p8
 auth_key*
 firebase-*.json
 

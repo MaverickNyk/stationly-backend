@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { SduiService } from '../services/sduiService';
 import { RefreshPolicyService } from '../services/refreshPolicyService';
-import { AppReleaseService } from '../services/appReleaseService';
+import { AppReleaseService, parseClientIdentity } from '../services/appReleaseService';
 
 export class SduiController {
     /**
@@ -113,7 +113,9 @@ export class SduiController {
     }
 
     static getHomeConfig(req: Request, res: Response) {
-        res.json(SduiService.getHomeConfig());
+        const client = parseClientIdentity(req.headers['x-stationly-client'] as string);
+        const platform = (req.query.platform as string) || client.platform;
+        res.json(SduiService.getHomeConfig(platform));
     }
 
     /**
