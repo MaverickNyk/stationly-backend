@@ -621,7 +621,7 @@ export class SduiService {
      * Flat string map controlling all hardcoded labels in the home / empty-state / explore UI.
      * Update any value here and it takes effect on next app launch — no app update required.
      */
-    static getHomeConfig(): object {
+    static getHomeConfig(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): object {
         return {
             id: "home_config",
             strings: {
@@ -1087,8 +1087,8 @@ export class SduiService {
                 // both platforms consume is unchanged). `home.promo.support_money.*`
                 // drives the "after you add a board" contextual card, same
                 // shape and `show` switch as the widget/dream promos above.
-                // All owned by SupportMoneyConfigService; `SUPPORT_MONEY_ENABLED` gates it.
-                ...SupportMoneyConfigService.homeConfigKeys(),
+                // All owned by SupportMoneyConfigService; `SUPPORT_MONEY_*_ENABLED` gates it per platform.
+                ...SupportMoneyConfigService.homeConfigKeys(platform),
             }
         };
     }
