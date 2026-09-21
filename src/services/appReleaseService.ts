@@ -48,7 +48,7 @@
 
 /** How a client identifies itself. Parsed from the `X-Stationly-Client` header. */
 export interface ClientIdentity {
-    platform: 'ios' | 'android' | 'unknown';
+    platform: 'ios' | 'android' | 'web' | 'unknown';
     /** Marketing version, e.g. "1.2.0" (CFBundleShortVersionString / versionName). */
     version: string;
     /** Build number, e.g. "47". Informational — never gated on. */
@@ -145,7 +145,7 @@ export function parseClientIdentity(header: string | undefined): ClientIdentity 
     const [platformRaw, versionRaw, buildRaw] = raw.split(';');
     const platform = String(platformRaw ?? '').trim().toLowerCase();
     return {
-        platform: platform === 'ios' ? 'ios' : platform === 'android' ? 'android' : 'unknown',
+        platform: platform === 'ios' ? 'ios' : platform === 'android' ? 'android' : platform === 'web' ? 'web' : 'unknown',
         // Capped: these land in log lines and in a 426 body, and an unbounded
         // client-controlled string has no business in either.
         version: String(versionRaw ?? '').trim().slice(0, 32),

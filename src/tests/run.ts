@@ -1098,29 +1098,71 @@ test('stripe sig: a non-hex v1 value is rejected, not thrown', () => {
 
 // ─── SUPPORT_MONEY: config service ───────────────────────────────────────────────
 
-test('support config: disabled by default (no SUPPORT_MONEY_ENABLED)', () => {
-    const saved = process.env.SUPPORT_MONEY_ENABLED;
+test('support config: per-platform defaults (iOS enabled by default, Android and Web disabled)', () => {
+    const savedIos = process.env.SUPPORT_MONEY_IOS_ENABLED;
+    const savedAndroid = process.env.SUPPORT_MONEY_ANDROID_ENABLED;
+    const savedWeb = process.env.SUPPORT_MONEY_WEB_ENABLED;
+    const savedMaster = process.env.SUPPORT_MONEY_ENABLED;
+    delete process.env.SUPPORT_MONEY_IOS_ENABLED;
+    delete process.env.SUPPORT_MONEY_ANDROID_ENABLED;
+    delete process.env.SUPPORT_MONEY_WEB_ENABLED;
     delete process.env.SUPPORT_MONEY_ENABLED;
     try {
-        assert.strictEqual(SupportMoneyConfigService.enabled(), false);
-        assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().enabled, false);
-        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys()['home.promo.support_money.show'], 'false');
+        assert.strictEqual(SupportMoneyConfigService.isIosEnabled(), true);
+        assert.strictEqual(SupportMoneyConfigService.isAndroidEnabled(), false);
+        assert.strictEqual(SupportMoneyConfigService.isWebEnabled(), false);
+
+        assert.strictEqual(SupportMoneyConfigService.enabled('ios'), true);
+        assert.strictEqual(SupportMoneyConfigService.enabled('android'), false);
+        assert.strictEqual(SupportMoneyConfigService.enabled('web'), false);
+
+        // iOS config has enabled: true and empty Stripe URLs (only apple_product_id)
+        const iosCfg = SupportMoneyConfigService.getSupportMoneyConfig('ios');
+        assert.strictEqual(iosCfg.enabled, true);
+        assert.strictEqual(iosCfg.tiers[0].url, '');
+        assert.ok(iosCfg.tiers[0].apple_product_id);
+        assert.strictEqual(iosCfg.cta.url_oneoff, '');
+
+        // Android config has enabled: false
+        const androidCfg = SupportMoneyConfigService.getSupportMoneyConfig('android');
+        assert.strictEqual(androidCfg.enabled, false);
+
+        // Web config has enabled: false
+        const webCfg = SupportMoneyConfigService.getSupportMoneyConfig('web');
+        assert.strictEqual(webCfg.enabled, false);
     } finally {
-        if (saved === undefined) delete process.env.SUPPORT_MONEY_ENABLED;
-        else process.env.SUPPORT_MONEY_ENABLED = saved;
+        if (savedIos !== undefined) process.env.SUPPORT_MONEY_IOS_ENABLED = savedIos;
+        if (savedAndroid !== undefined) process.env.SUPPORT_MONEY_ANDROID_ENABLED = savedAndroid;
+        if (savedWeb !== undefined) process.env.SUPPORT_MONEY_WEB_ENABLED = savedWeb;
+        if (savedMaster !== undefined) process.env.SUPPORT_MONEY_ENABLED = savedMaster;
     }
 });
 
-test('support config: SUPPORT_MONEY_ENABLED=true flips both switches', () => {
-    const saved = process.env.SUPPORT_MONEY_ENABLED;
-    process.env.SUPPORT_MONEY_ENABLED = 'true';
+test('support config: per-platform toggles are authoritative and SUPPORT_MONEY_ENABLED is deprecated', () => {
+    const savedMaster = process.env.SUPPORT_MONEY_ENABLED;
+    const savedIos = process.env.SUPPORT_MONEY_IOS_ENABLED;
+    const savedAndroid = process.env.SUPPORT_MONEY_ANDROID_ENABLED;
     try {
-        assert.strictEqual(SupportMoneyConfigService.enabled(), true);
-        assert.strictEqual(SupportMoneyConfigService.getSupportMoneyConfig().enabled, true);
-        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys()['home.promo.support_money.show'], 'true');
+        // Even with deprecated SUPPORT_MONEY_ENABLED=false, platform toggles decide
+        process.env.SUPPORT_MONEY_ENABLED = 'false';
+        process.env.SUPPORT_MONEY_IOS_ENABLED = 'true';
+        process.env.SUPPORT_MONEY_ANDROID_ENABLED = 'false';
+        assert.strictEqual(SupportMoneyConfigService.enabled('ios'), true);
+        assert.strictEqual(SupportMoneyConfigService.enabled('android'), false);
+
+        process.env.SUPPORT_MONEY_IOS_ENABLED = 'false';
+        assert.strictEqual(SupportMoneyConfigService.enabled('ios'), false);
+
+        process.env.SUPPORT_MONEY_ANDROID_ENABLED = 'true';
+        assert.strictEqual(SupportMoneyConfigService.enabled('android'), true);
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('android')['home.promo.support_money.show'], 'true');
     } finally {
-        if (saved === undefined) delete process.env.SUPPORT_MONEY_ENABLED;
-        else process.env.SUPPORT_MONEY_ENABLED = saved;
+        if (savedMaster === undefined) delete process.env.SUPPORT_MONEY_ENABLED;
+        else process.env.SUPPORT_MONEY_ENABLED = savedMaster;
+        if (savedIos === undefined) delete process.env.SUPPORT_MONEY_IOS_ENABLED;
+        else process.env.SUPPORT_MONEY_IOS_ENABLED = savedIos;
+        if (savedAndroid === undefined) delete process.env.SUPPORT_MONEY_ANDROID_ENABLED;
+        else process.env.SUPPORT_MONEY_ANDROID_ENABLED = savedAndroid;
     }
 });
 
@@ -1888,6 +1930,66 @@ test('recordSupportMoney: a garbage stored field is replaced rather than crashin
         },
     );
 });
+
+// ─── APPLE IAP: AppleIAPService ──────────────────────────────────────────────
+test('apple iap: rejects missing uid or missing payload', async () => {
+    const { AppleIAPService } = await import('../services/appleIAPService');
+    const r1 = await AppleIAPService.verifyAndRecord('', 'payload');
+    assert.strictEqual(r1.ok, false);
+    assert.strictEqual(r1.reason, 'missing_uid');
+
+    const r2 = await AppleIAPService.verifyAndRecord('u', '');
+    assert.strictEqual(r2.ok, false);
+    assert.strictEqual(r2.reason, 'missing_signed_payload');
+});
+
+test('apple iap: rejects invalid bundle id or unknown product id', async () => {
+    const { AppleIAPService } = await import('../services/appleIAPService');
+    const fakePayloadWrongBundle = 'header.' + Buffer.from(JSON.stringify({
+        bundleId: 'com.other.app',
+        productId: 'uk.co.stationly.support.t4',
+        transactionId: '1001',
+    })).toString('base64url') + '.sig';
+
+    const r1 = await AppleIAPService.verifyAndRecord('u', fakePayloadWrongBundle);
+    assert.strictEqual(r1.ok, false);
+    assert.strictEqual(r1.reason, 'bundle_id_mismatch');
+
+    const fakePayloadWrongProduct = 'header.' + Buffer.from(JSON.stringify({
+        bundleId: 'com.stationly.mobile',
+        productId: 'com.something.else',
+        transactionId: '1002',
+    })).toString('base64url') + '.sig';
+
+    const r2 = await AppleIAPService.verifyAndRecord('u', fakePayloadWrongProduct);
+    assert.strictEqual(r2.ok, false);
+    assert.strictEqual(r2.reason, 'unknown_product_id');
+});
+
+test('apple iap: records verified transaction and credits user', async () => {
+    const { AppleIAPService } = await import('../services/appleIAPService');
+    const purchaseDate = Date.now();
+    const token = 'header.' + Buffer.from(JSON.stringify({
+        bundleId: 'com.stationly.mobile',
+        productId: 'uk.co.stationly.support.t8',
+        transactionId: '987654321',
+        originalTransactionId: '987654321',
+        purchaseDate,
+        currency: 'GBP',
+    })).toString('base64url') + '.sig';
+
+    await withSupportMoneyUserDoc({ stateRev: 1 }, async written => {
+        const r = await AppleIAPService.verifyAndRecord('u', token);
+        assert.strictEqual(r.ok, true);
+        assert.strictEqual(r.transactionId, '987654321');
+        assert.strictEqual(r.amountMinor, 800);
+        assert.strictEqual(written.length, 1);
+        const patch: any = written[0];
+        assert.strictEqual(patch.supportMoney[0].txnId, 'apple_987654321');
+        assert.strictEqual(patch.supportMoney[0].amountMinor, 800);
+    });
+});
+
 
 test('LOGIN CONTRACT: the stored ledger is projected on the login response, not spread raw', async () => {
     const now = Date.now();

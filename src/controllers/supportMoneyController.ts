@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { SupportMoneyConfigService } from '../services/supportMoneyConfigService';
+import { parseClientIdentity } from '../services/appReleaseService';
 
 export class SupportMoneyController {
     /**
@@ -22,7 +23,43 @@ export class SupportMoneyController {
      *       200:
      *         description: JSON support-card config
      */
-    static getConfig(_req: Request, res: Response): void {
-        res.json(SupportMoneyConfigService.getSupportMoneyConfig());
+    static getConfig(req: Request, res: Response): void {
+        const client = parseClientIdentity(req.headers['x-stationly-client'] as string);
+        const platform = (req.query.platform as string) || client.platform;
+        res.json(SupportMoneyConfigService.getSupportMoneyConfig(platform));
+    }
+
+    /**
+     * Verify a StoreKit 2 in-app purchase JWS transaction from iOS.
+     */
+    static async verifyIAP(req: Request, res: Response): Promise<void> {
+        const user = (req as any).user;
+        const uid = user?.uid || req.body.uid;
+
+        if (!uid || typeof uid !== 'string') {
+            res.status(401).json({ ok: false, error: 'Unauthorized: missing user uid' });
+            return;
+        }
+
+        const signedPayload = req.body.signedPayload;
+        if (!signedPayload || typeof signedPayload !== 'string') {
+            res.status(400).json({ ok: false, error: 'Missing signedPayload' });
+            return;
+        }
+
+        try {
+            const { AppleIAPService } = await import('../services/appleIAPService');
+            const result = await AppleIAPService.verifyAndRecord(uid, signedPayload);
+
+            if (!result.ok) {
+                res.status(400).json({ ok: false, error: result.reason || 'Verification failed' });
+                return;
+            }
+
+            res.json(result);
+        } catch (err: any) {
+            console.error('SUPPORT_MONEY: ❌ verifyIAP route threw', err);
+            res.status(500).json({ ok: false, error: 'Internal server error' });
+        }
     }
 }
