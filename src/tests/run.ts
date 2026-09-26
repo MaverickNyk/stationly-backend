@@ -1706,6 +1706,42 @@ test('support service: a missing client_reference_id is unattributed, not credit
     });
 });
 
+test('support service: anonymous web donation captures email and sends thank you', async () => {
+    const webDonationsSaved: any[] = [];
+    const savedRecord = SupportMoneyService.recordWebDonation;
+    SupportMoneyService.recordWebDonation = async (d) => { webDonationsSaved.push(d); };
+
+    const emailsSent: any[] = [];
+    const savedEmail = EmailService.sendSupportThankYouEmail;
+    EmailService.sendSupportThankYouEmail = async (email, name, amountMinor, currency, txnId) => {
+        emailsSent.push({ email, name, amountMinor, currency, txnId });
+    };
+
+    try {
+        await withStripeEventLedger(async () => {
+            const ev = checkoutEvent({
+                client_reference_id: undefined,
+                customer_details: { email: 'donor@example.com', name: 'Kind Supporter' },
+                amount_total: 800,
+                currency: 'gbp',
+            });
+            const out = await SupportMoneyService.processStripeEvent(ev);
+            assert.strictEqual(out.status, 'unattributed');
+            assert.strictEqual(webDonationsSaved.length, 1);
+            assert.strictEqual(webDonationsSaved[0].email, 'donor@example.com');
+            assert.strictEqual(webDonationsSaved[0].name, 'Kind Supporter');
+            assert.strictEqual(webDonationsSaved[0].amountMinor, 800);
+            assert.strictEqual(webDonationsSaved[0].currency, 'GBP');
+            assert.strictEqual(emailsSent.length, 1);
+            assert.strictEqual(emailsSent[0].email, 'donor@example.com');
+            assert.strictEqual(emailsSent[0].amountMinor, 800);
+        });
+    } finally {
+        SupportMoneyService.recordWebDonation = savedRecord;
+        EmailService.sendSupportThankYouEmail = savedEmail;
+    }
+});
+
 test('support service: an unpaid completed session is ignored', async () => {
     await withStripeEventLedger(async () => {
         await withRecordSupportMoneySpy(
