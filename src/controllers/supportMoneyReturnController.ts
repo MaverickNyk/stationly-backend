@@ -6,7 +6,7 @@ import { getUrlScheme, getWebUrl, getBaseUrl } from '../utils/formatters';
  *
  * Where Stripe sends the browser after a contribution checkout. Stripe's
  * "redirect after payment" only accepts an `https://` URL, so it cannot point
- * straight at `stationly-staging://` — this page is the bounce: it renders a
+ * straight at `stationly-staging://`: this page is the bounce: it renders a
  * branded holding screen and immediately tries the app's deep link
  * (`<scheme>://support-money/thanks?...`), falling back to a "Back to Stationly"
  * button and the website after ~1.5s for anyone without the app.
@@ -14,12 +14,12 @@ import { getUrlScheme, getWebUrl, getBaseUrl } from '../utils/formatters';
  * Same two-step pattern as the existing `/verified` and `/open` pages. Mounted
  * in `server.ts` before `apiRoutes` so it is not behind `X-Stationly-Key` (a
  * browser arriving from Stripe carries no key). Under `/api/v1/*` so nginx
- * proxies it — there is no catch-all `location /`.
+ * proxies it: there is no catch-all `location /`.
  *
  * ## Untrusted input
  * `session_id`, `tier`, `amount` are Stripe-templated query params but reach us
  * through the user's browser, so every one is JSON-encoded and `<`-escaped
- * before it touches the page — the same hardening the reset-password page uses.
+ * before it touches the page: the same hardening the reset-password page uses.
  * They are passed straight through to the deep link and are not trusted by the
  * app either; the authoritative record is the webhook write.
  */
@@ -34,12 +34,32 @@ export class SupportMoneyReturnController {
         const sid = pick(req.query.session_id);
         const tier = pick(req.query.tier);
         const amount = pick(req.query.amount);
+        const source = pick(req.query.source);
+        const clientRef = pick(req.query.client_reference_id);
+
         if (sid) params.set('session_id', sid);
         if (tier) params.set('tier', tier);
         if (amount) params.set('amount', amount);
-        const qs = params.toString();
 
-        const deepLink = `${scheme}://support-money/thanks${qs ? `?${qs}` : ''}`;
+        // The website only needs to know it should say thank you. The Stripe
+        // session id and amount stay out of its URL, where they would sit in
+        // browser history and could reach analytics or a Referer header.
+        const webSuccessUrl = `${webUrl}/support/?support=success`;
+
+        const ua = (req.headers['user-agent'] || '').toLowerCase();
+        const isMobile = /iphone|ipad|ipod|android/i.test(ua) && !/windows|macintosh|linux/i.test(ua);
+        const isWeb = source === 'web' || clientRef === 'web' || !isMobile;
+
+        // Paid from the website, or on a desktop where no app exists: straight
+        // back to the support page, which shows the thank-you.
+        if (isWeb) {
+            res.redirect(302, webSuccessUrl);
+            return;
+        }
+
+        // Mobile app flow: try deep link into the mobile app, falling back to website
+        const appQs = params.toString();
+        const deepLink = `${scheme}://support-money/thanks${appQs ? `?${appQs}` : ''}`;
         const enc = (s: string) => JSON.stringify(s).replace(/</g, '\\u003c');
 
         res.setHeader('Content-Type', 'text/html');
@@ -49,7 +69,7 @@ export class SupportMoneyReturnController {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Thank you — Stationly</title>
+<title>Thank you: Stationly</title>
 <style>
   *{box-sizing:border-box;}
   body{margin:0;padding:0;min-height:100vh;background:#000;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;}
@@ -81,7 +101,7 @@ export class SupportMoneyReturnController {
       <h1>You're a <span>supporter.</span></h1>
       <p>The board's yours. Tap below to jump back into Stationly.</p>
       <a class="btn" href="${deepLink.replace(/"/g, '&quot;')}">Back to Stationly &#8594;</a>
-      <a class="secondary" href="${webUrl}">Open stationly.co.uk instead</a>
+      <a class="secondary" href="${webSuccessUrl}">Open stationly.co.uk instead</a>
     </div>
   </div>
 </div>
