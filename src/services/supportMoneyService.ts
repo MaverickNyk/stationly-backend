@@ -1,5 +1,5 @@
 import { LocalDbService } from './localDbService';
-import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { SupportMoneyConfigService, WEB_CLIENT_REFERENCE } from './supportMoneyConfigService';
 import { UserService } from './userService';
 import { EmailService } from './emailService';
 import { isStaging } from '../utils/formatters';
@@ -72,7 +72,15 @@ export function txnIdFor(session: any, eventId: string): string {
  * be attributed.
  */
 export function isUsableUid(value: unknown): value is string {
-    return typeof value === 'string' && value.length >= 1 && value.length <= 128;
+    return (
+        typeof value === 'string' &&
+        value.length >= 1 &&
+        value.length <= 128 &&
+        // The website's marker (`?client_reference_id=web`): paid on
+        // stationly.co.uk with no account, so it takes the web contribution
+        // path directly rather than costing a lookup of `users/web`.
+        value !== WEB_CLIENT_REFERENCE
+    );
 }
 
 // ─── idempotency ledger (SQLite `stripe_events`) ────────────────────────────

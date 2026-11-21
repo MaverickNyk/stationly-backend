@@ -1368,6 +1368,56 @@ test('support: txnIdFor falls back to the event id rather than an empty key', ()
     assert.strictEqual(txnIdFor({ id: '' }, 'evt_9'), 'evt_9');
 });
 
+test('support web config: closed until the switch is on and all four links are Stripe links', () => {
+    const keys = ['T4', 'T8', 'T12', 'CUSTOM'].map((k) => `SUPPORT_MONEY_WEB_PAYMENT_URL_${k}`);
+    const saved = Object.fromEntries([...keys, 'SUPPORT_MONEY_WEB_ENABLED'].map((k) => [k, process.env[k]]));
+    const setLinks = (fn: (k: string) => string) => keys.forEach((k) => { process.env[k] = fn(k); });
+    try {
+        process.env.SUPPORT_MONEY_WEB_ENABLED = 'true';
+        keys.forEach((k) => delete process.env[k]);
+        let cfg = SupportMoneyConfigService.getWebConfig();
+        assert.strictEqual(cfg.enabled, false, 'no links -> closed');
+        assert.ok(cfg.tiers.every((t) => t.url === ''));
+
+        // One non-Stripe link closes the whole ladder, and no url leaks out.
+        setLinks((k) => (k.endsWith('T8') ? 'https://evil.example/pay' : `https://buy.stripe.com/test_${k}`));
+        cfg = SupportMoneyConfigService.getWebConfig();
+        assert.strictEqual(cfg.enabled, false, 'foreign host -> closed');
+        assert.ok(cfg.tiers.every((t) => t.url === ''));
+
+        setLinks((k) => (k.endsWith('T8') ? 'http://buy.stripe.com/test_x' : `https://buy.stripe.com/test_${k}`));
+        assert.strictEqual(SupportMoneyConfigService.getWebConfig().enabled, false, 'http -> closed');
+
+        // All valid: open, tagged as web, any pre-set reference overwritten.
+        setLinks((k) => `https://buy.stripe.com/test_${k}?client_reference_id=someone`);
+        cfg = SupportMoneyConfigService.getWebConfig();
+        assert.strictEqual(cfg.enabled, true);
+        assert.deepStrictEqual(cfg.tiers.map((t) => t.id), ['t4', 't8', 't12', 'custom']);
+        assert.deepStrictEqual(cfg.tiers.map((t) => t.display), ['£4', '£8', '£12', 'Your call']);
+        for (const t of cfg.tiers) {
+            const u = new URL(t.url);
+            assert.strictEqual(u.hostname, 'buy.stripe.com');
+            assert.strictEqual(u.searchParams.get('client_reference_id'), 'web');
+        }
+        assert.ok(cfg.thanks.title && cfg.thanks.note);
+
+        process.env.SUPPORT_MONEY_WEB_ENABLED = 'false';
+        cfg = SupportMoneyConfigService.getWebConfig();
+        assert.strictEqual(cfg.enabled, false, 'switch off -> closed');
+        assert.ok(cfg.tiers.every((t) => t.url === ''));
+
+        // Voice rules hold for the website copy too.
+        const copy = JSON.stringify(SupportMoneyConfigService.getWebConfig());
+        assert.ok(!/[\u2013\u2014]/.test(copy), 'no en or em dashes');
+        assert.ok(!/coffee|donat|subscri/i.test(copy), 'no coffee, donate or subscribe');
+    } finally {
+        for (const [k, v] of Object.entries(saved)) {
+            if (v === undefined) delete process.env[k];
+            else process.env[k] = v;
+        }
+    }
+});
+
 test('support: isUsableUid rejects the un-attributable', () => {
     assert.strictEqual(isUsableUid('abc123'), true);
     assert.strictEqual(isUsableUid(''), false);
@@ -1375,6 +1425,8 @@ test('support: isUsableUid rejects the un-attributable', () => {
     assert.strictEqual(isUsableUid(null), false);
     assert.strictEqual(isUsableUid(123 as unknown), false);
     assert.strictEqual(isUsableUid('x'.repeat(129)), false);
+    // The website's marker is not an account, it is the web contribution path.
+    assert.strictEqual(isUsableUid('web'), false);
 });
 
 // ─── SUPPORT_MONEY: projectSupportMoneyForClient (the read projection) ───────

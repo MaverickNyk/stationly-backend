@@ -40,26 +40,27 @@ export class SupportMoneyReturnController {
         if (sid) params.set('session_id', sid);
         if (tier) params.set('tier', tier);
         if (amount) params.set('amount', amount);
-        params.set('support', 'success');
-        const qs = params.toString();
+
+        // The website only needs to know it should say thank you. The Stripe
+        // session id and amount stay out of its URL, where they would sit in
+        // browser history and could reach analytics or a Referer header.
+        const webSuccessUrl = `${webUrl}/support/?support=success`;
 
         const ua = (req.headers['user-agent'] || '').toLowerCase();
         const isMobile = /iphone|ipad|ipod|android/i.test(ua) && !/windows|macintosh|linux/i.test(ua);
         const isWeb = source === 'web' || clientRef === 'web' || !isMobile;
 
-        // If payment originated from the web, or arrived on desktop where no native app
-        // exists, redirect immediately to the website home screen to fire celebration & confetti.
+        // Paid from the website, or on a desktop where no app exists: straight
+        // back to the support page, which shows the thank-you.
         if (isWeb) {
-            res.redirect(302, `${webUrl}/?${qs}`);
+            res.redirect(302, webSuccessUrl);
             return;
         }
 
         // Mobile app flow: try deep link into the mobile app, falling back to website
-        params.delete('support');
         const appQs = params.toString();
         const deepLink = `${scheme}://support-money/thanks${appQs ? `?${appQs}` : ''}`;
         const enc = (s: string) => JSON.stringify(s).replace(/</g, '\\u003c');
-        const webHomeSuccessUrl = `${webUrl}/?${qs}`;
 
         res.setHeader('Content-Type', 'text/html');
         res.setHeader('Cache-Control', 'no-store');
@@ -100,7 +101,7 @@ export class SupportMoneyReturnController {
       <h1>You're a <span>supporter.</span></h1>
       <p>The board's yours. Tap below to jump back into Stationly.</p>
       <a class="btn" href="${deepLink.replace(/"/g, '&quot;')}">Back to Stationly &#8594;</a>
-      <a class="secondary" href="${webHomeSuccessUrl}">Open stationly.co.uk instead</a>
+      <a class="secondary" href="${webSuccessUrl}">Open stationly.co.uk instead</a>
     </div>
   </div>
 </div>

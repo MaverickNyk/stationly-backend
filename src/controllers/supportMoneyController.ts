@@ -30,6 +30,26 @@ export class SupportMoneyController {
     }
 
     /**
+     * @swagger
+     * /support-money/web:
+     *   get:
+     *     summary: Support config for the stationly.co.uk /support/ page
+     *     description: >
+     *       Public and read-only (no API key): the amounts, copy and this
+     *       environment's Stripe Payment Links for the website. `enabled` is
+     *       false, and every `url` empty, until the web switch is on and all
+     *       four links are configured.
+     *     tags: [SDUI]
+     *     responses:
+     *       200:
+     *         description: JSON web support config
+     */
+    static getWebConfig(_req: Request, res: Response): void {
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        res.json(SupportMoneyConfigService.getWebConfig());
+    }
+
+    /**
      * Verify a StoreKit 2 in-app purchase JWS transaction from iOS.
      */
     static async verifyIAP(req: Request, res: Response): Promise<void> {
