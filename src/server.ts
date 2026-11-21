@@ -16,6 +16,7 @@ import { getWebUrl, getBaseUrl } from './utils/formatters';
 import internalRoutes from './routes/internalRoutes';
 import { StripeWebhookController } from './controllers/stripeWebhookController';
 import { SupportMoneyReturnController } from './controllers/supportMoneyReturnController';
+import { SupportMoneyController } from './controllers/supportMoneyController';
 import { attachStationStream } from './services/stationStreamServer';
 import { StationStreamHub } from './services/stationStreamHub';
 import { LineStatusStreamHub } from './services/lineStatusStreamHub';
@@ -502,6 +503,40 @@ app.get('/openapi.json', (req, res) => {
 });
 
 // Scalar API Reference (ESM Dynamic Import Wrapper)
+const stationlyScalarTheme = `
+    .dark-mode {
+        --scalar-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        --scalar-font-code: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+        /* Canvas & surfaces matching stationly.co.uk & app theme */
+        --scalar-background-1: #080D1A;
+        --scalar-background-2: #0D1422;
+        --scalar-background-3: #141D33;
+        --scalar-background-accent: rgba(221, 44, 51, 0.12);
+
+        /* Text hierarchy */
+        --scalar-color-1: #EFF3FC;
+        --scalar-color-2: #9AA5B8;
+        --scalar-color-3: #7A8499;
+
+        /* Brand palette: Tube Red & TfL Signage Amber */
+        --scalar-color-accent: #DD2C33;
+        --scalar-color-green: #4ADE80;
+        --scalar-color-red: #DD2C33;
+        --scalar-color-yellow: #FFC819;
+        --scalar-color-blue: #4A90D9;
+        --scalar-color-orange: #FF8A3D;
+
+        /* Glass borders */
+        --scalar-border-color: rgba(255, 255, 255, 0.08);
+
+        /* Action buttons */
+        --scalar-button-1: #DD2C33;
+        --scalar-button-1-color: #FFFFFF;
+        --scalar-button-1-hover: #B91C22;
+    }
+`;
+
 app.use('/docs', async (req, res, next) => {
     try {
         const { apiReference } = await (eval('import("@scalar/express-api-reference")') as Promise<any>);
@@ -517,6 +552,7 @@ app.use('/docs', async (req, res, next) => {
             darkMode: true,
             forceDarkModeState: 'dark',
             hideDarkModeToggle: true,
+            customCss: stationlyScalarTheme,
         })(req, res, next);
     } catch (error) {
         next(error);
@@ -536,6 +572,10 @@ app.post('/api/v1/waitlist/join', RateLimitMiddleware.strict, WaitlistController
 // link (falling back to a button + the website). Under `/api/v1/*` for nginx,
 // mounted here so it skips `validateApiKey` — the browser arrives with no key.
 app.get('/api/v1/support-money/return', SupportMoneyReturnController.render);
+// Public — the website's support page config (amounts, copy, this environment's
+// Payment Links). Read-only and cacheable, so it sits outside the API-key gate
+// like the waitlist POST.
+app.get('/api/v1/support-money/web', RateLimitMiddleware.sdui, SupportMoneyController.getWebConfig);
 
 // Admin routes — mounted BEFORE `apiRoutes` so they bypass the
 // client `X-Stationly-Key` middleware that apiRoutes installs at

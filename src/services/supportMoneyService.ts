@@ -1,7 +1,10 @@
 import { LocalDbService } from './localDbService';
-import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { SupportMoneyConfigService, WEB_CLIENT_REFERENCE } from './supportMoneyConfigService';
 import { UserService } from './userService';
+import { EmailService } from './emailService';
 import { isStaging } from '../utils/formatters';
+import { db } from '../config/firebase';
+import * as admin from 'firebase-admin';
 
 /**
  * Contributions — the money half of the "support Stationly" feature.
@@ -69,7 +72,15 @@ export function txnIdFor(session: any, eventId: string): string {
  * be attributed.
  */
 export function isUsableUid(value: unknown): value is string {
-    return typeof value === 'string' && value.length >= 1 && value.length <= 128;
+    return (
+        typeof value === 'string' &&
+        value.length >= 1 &&
+        value.length <= 128 &&
+        // The website's marker (`?client_reference_id=web`): paid on
+        // stationly.co.uk with no account, so it takes the web contribution
+        // path directly rather than costing a lookup of `users/web`.
+        value !== WEB_CLIENT_REFERENCE
+    );
 }
 
 // ─── idempotency ledger (SQLite `stripe_events`) ────────────────────────────
@@ -192,8 +203,32 @@ export class SupportMoneyService {
         const currency = typeof session.currency === 'string' ? session.currency.toUpperCase() : 'GBP';
         const txnId = txnIdFor(session, eventId);
 
+        const payerEmail = (session?.customer_details?.email ?? session?.customer_email ?? '').trim().toLowerCase();
+        const payerName = (session?.customer_details?.name ?? '').trim();
+
         if (!isUsableUid(uid)) {
-            logUnattributed('no usable client_reference_id on the checkout', eventId, amountMinor, currency, session);
+            // Voluntary web contribution without an account.
+            // Capture the contribution in Firestore so email and donation records are preserved.
+            await SupportMoneyService.recordWebDonation({
+                txnId,
+                eventId,
+                email: payerEmail || null,
+                name: payerName || null,
+                amountMinor,
+                currency,
+            });
+
+            if (payerEmail) {
+                EmailService.sendSupportThankYouEmail(
+                    payerEmail,
+                    payerName,
+                    amountMinor,
+                    currency,
+                    txnId,
+                ).catch(err => console.error('SUPPORT_MONEY: ⚠️ sendSupportThankYouEmail threw for web contribution:', err));
+            }
+
+            logUnattributed('no usable client_reference_id on the checkout (web donation recorded)', eventId, amountMinor, currency, session);
             await StripeEventLedger.mark(eventId, type);
             return { status: 'unattributed', eventId, amountMinor };
         }
@@ -213,9 +248,24 @@ export class SupportMoneyService {
             if (!result.recorded) {
                 if (result.reason === 'missing_account') {
                     // Paid, signature-verified, and the uid names no account —
-                    // deleted between checkout and webhook, or a hand-edited
-                    // link. The money is real and nobody holds it, so this is
-                    // reconciliation work, not a benign redelivery.
+                    // deleted between checkout and webhook, or a hand-edited link.
+                    await SupportMoneyService.recordWebDonation({
+                        txnId,
+                        eventId,
+                        email: payerEmail || null,
+                        name: payerName || null,
+                        amountMinor,
+                        currency,
+                    });
+                    if (payerEmail) {
+                        EmailService.sendSupportThankYouEmail(
+                            payerEmail,
+                            payerName,
+                            amountMinor,
+                            currency,
+                            txnId,
+                        ).catch(err => console.error('SUPPORT_MONEY: ⚠️ sendSupportThankYouEmail threw:', err));
+                    }
                     logUnattributed(`uid ${uid} has no account`, eventId, amountMinor, currency, session);
                     return { status: 'unattributed', eventId, amountMinor };
                 }
@@ -223,6 +273,16 @@ export class SupportMoneyService {
                 // SQLite ledger missed, or the second of the two crediting
                 // events one session can emit. Benign either way.
                 return { status: 'duplicate', eventId };
+            }
+
+            if (payerEmail) {
+                EmailService.sendSupportThankYouEmail(
+                    payerEmail,
+                    payerName,
+                    amountMinor,
+                    currency,
+                    txnId,
+                ).catch(err => console.error('SUPPORT_MONEY: ⚠️ sendSupportThankYouEmail threw:', err));
             }
 
             const activeUntil = now + SupportMoneyConfigService.badgeDurationMs();
@@ -239,6 +299,32 @@ export class SupportMoneyService {
             // turns this into a 500 for the same reason.
             console.error(`SUPPORT_MONEY: ❌ recordSupportMoney threw for ${uid} (event ${eventId})`, err);
             throw err;
+        }
+    }
+
+    /**
+     * Persists anonymous/web donations into Firestore so the supporter's email,
+     * amount and transaction reference are safely recorded.
+     */
+    static async recordWebDonation(donation: {
+        txnId: string;
+        eventId: string;
+        email: string | null;
+        name: string | null;
+        amountMinor: number;
+        currency: string;
+    }): Promise<void> {
+        try {
+            await db.collection('web_donations').doc(donation.txnId).set({
+                ...donation,
+                source: 'web',
+                status: 'paid',
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            }, { merge: true });
+            console.log(`SUPPORT_MONEY: 💾 Web donation ${donation.txnId} saved to Firestore (email: ${donation.email || 'none'})`);
+        } catch (err) {
+            // Best effort so database issues never block the webhook response
+            console.warn('SUPPORT_MONEY: ⚠️ Failed to save web donation to Firestore:', err);
         }
     }
 }
