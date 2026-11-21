@@ -213,6 +213,92 @@ function envAppleProduct(tierId: string, defaultId: string): string {
         : defaultId;
 }
 
+/**
+ * The website's slice of the support config, served publicly at
+ * `GET /api/v1/support-money/web`. Deliberately small: only what the
+ * /support/ page renders. No apple product ids, no badge rules, no recurring
+ * branch, no flags the page does not read.
+ */
+export interface SupportMoneyWebTier {
+    /** `t4` | `t8` | `t12` | `custom`. */
+    id: string;
+    /** Pence. 0 on `custom`: the payer picks on Stripe's page. */
+    amount_minor: number;
+    /** What the amount column shows: "£4", or "Your call" on `custom`. */
+    display: string;
+    label: string;
+    hint: string;
+    /** Stripe Payment Link with `client_reference_id=web`, or "" when closed. */
+    url: string;
+}
+
+export interface SupportMoneyWebConfig {
+    /** `false` → the page shows its closed state and links nowhere. */
+    enabled: boolean;
+    currency: string;
+    default_tier_id: string;
+    tiers: SupportMoneyWebTier[];
+    thanks: { title: string; note: string };
+}
+
+/**
+ * The website's own Payment Links. Separate from the app's
+ * `SUPPORT_MONEY_PAYMENT_URL_*` because their success redirect differs: the
+ * app's links bounce through the return page into a deep link, the website's
+ * land the payer back on stationly.co.uk.
+ */
+const WEB_TIERS: ReadonlyArray<{ id: string; amount_minor: number; env: string; label: string; hint: string }> = [
+    {
+        id: 't4',
+        amount_minor: 400,
+        env: 'SUPPORT_MONEY_WEB_PAYMENT_URL_T4',
+        label: 'Fixes a bug',
+        hint: 'Pays for the time it takes to track down and fix something that is not working right.',
+    },
+    {
+        id: 't8',
+        amount_minor: 800,
+        env: 'SUPPORT_MONEY_WEB_PAYMENT_URL_T8',
+        label: 'Funds a feature',
+        hint: 'Goes towards building the next thing in Stationly. Whatever we build ships free, for everyone.',
+    },
+    {
+        id: 't12',
+        amount_minor: 1200,
+        env: 'SUPPORT_MONEY_WEB_PAYMENT_URL_T12',
+        label: 'Keeps the servers running',
+        hint: 'Keeps the servers and the live TfL data behind every board running for everyone.',
+    },
+    {
+        id: 'custom',
+        amount_minor: 0,
+        env: 'SUPPORT_MONEY_WEB_PAYMENT_URL_CUSTOM',
+        label: 'Choose your own amount',
+        hint: 'Pick whatever amount feels right on the next screen.',
+    },
+];
+
+/** Marks a checkout as "paid on the website, no account" (see `isUsableUid`). */
+export const WEB_CLIENT_REFERENCE = 'web';
+
+/**
+ * A website checkout URL from an env value, or "" if it is not a Stripe
+ * Payment Link. Only `https://buy.stripe.com/` is accepted, so a typo or a
+ * hostile value in config can never send payers anywhere else. Any
+ * `client_reference_id` already on the value is replaced, never trusted.
+ */
+function webCheckoutUrl(raw: string): string {
+    let u: URL;
+    try {
+        u = new URL(raw);
+    } catch {
+        return '';
+    }
+    if (u.protocol !== 'https:' || u.hostname !== 'buy.stripe.com') return '';
+    u.searchParams.set(UID_PARAM, WEB_CLIENT_REFERENCE);
+    return u.toString();
+}
+
 export class SupportMoneyConfigService {
     /** iOS switch. Enabled by default (`true`) unless `SUPPORT_MONEY_IOS_ENABLED=false`. */
     static isIosEnabled(): boolean {
@@ -450,6 +536,38 @@ export class SupportMoneyConfigService {
      * "after you add a board" contextual card and match the existing
      * `home.promo.widget.*` / `home.promo.dream.*` shape, `show` switch and all.
      */
+    /**
+     * The public website config. Open only when the web switch is on AND every
+     * link is a valid Stripe Payment Link: a half-configured ladder would show
+     * buttons that go nowhere, so it is all or nothing.
+     */
+    static getWebConfig(): SupportMoneyWebConfig {
+        const urls = WEB_TIERS.map((t) => webCheckoutUrl(envStr(t.env)));
+        const enabled = this.isWebEnabled() && urls.every(Boolean);
+        const card = this.getSupportMoneyConfig('web');
+        const money = new Intl.NumberFormat('en-GB', {
+            style: 'currency',
+            currency: card.currency,
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2,
+        });
+
+        return {
+            enabled,
+            currency: card.currency,
+            default_tier_id: card.default_tier_id,
+            tiers: WEB_TIERS.map((t, i) => ({
+                id: t.id,
+                amount_minor: t.amount_minor,
+                display: t.amount_minor > 0 ? money.format(t.amount_minor / 100) : 'Your call',
+                label: t.label,
+                hint: t.hint,
+                url: enabled ? urls[i] : '',
+            })),
+            thanks: { title: card.thanks.title_lines.join(' '), note: card.thanks.note },
+        };
+    }
+
     static homeConfigKeys(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): Record<string, string> {
         const p = platform ? platform.trim().toLowerCase() : undefined;
         const cfg = this.getSupportMoneyConfig(p);

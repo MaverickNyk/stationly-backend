@@ -5,6 +5,7 @@ import { verifyEmailHtml } from '../templates/verifyEmailTemplate';
 import { waitlistEmailHtml } from '../templates/waitlistEmailTemplate';
 import { androidLaunchNotificationHtml } from '../templates/androidLaunchNotificationTemplate';
 import { iosLaunchNotificationHtml } from '../templates/iosLaunchNotificationTemplate';
+import { supportThankYouEmailHtml } from '../templates/supportThankYouEmailTemplate';
 import { isStaging, getGreetingName } from '../utils/formatters';
 import { db } from '../config/firebase';
 import * as admin from 'firebase-admin';
@@ -159,6 +160,40 @@ export class EmailService {
         } catch (err: any) {
             console.error(`[EmailService] Failed to send iOS launch notification email (exception) to ${email}:`, err);
             this.logEmailToFirestore('ios_launch', email, subject, 'error', err.message || String(err), bcc);
+        }
+    }
+
+    static async sendSupportThankYouEmail(
+        email: string,
+        name?: string | null,
+        amountMinor: number = 0,
+        currency: string = 'GBP',
+        txnId?: string,
+    ): Promise<void> {
+        const greetingName = getGreetingName(name, email);
+        const subject = `${pfx()}Thank you for supporting Stationly ❤️`;
+        try {
+            const { error } = await resend.emails.send({
+                from: FROM,
+                to: email,
+                subject,
+                html: supportThankYouEmailHtml({
+                    name,
+                    email,
+                    amountMinor,
+                    currency,
+                    txnId,
+                }),
+            });
+            if (error) {
+                console.error(`[EmailService] Failed to send support thank you email to ${email}:`, error);
+                this.logEmailToFirestore('support_thank_you', email, subject, 'error', error.message || JSON.stringify(error));
+            } else {
+                this.logEmailToFirestore('support_thank_you', email, subject, 'success');
+            }
+        } catch (err: any) {
+            console.error(`[EmailService] Failed to send support thank you email (exception) to ${email}:`, err);
+            this.logEmailToFirestore('support_thank_you', email, subject, 'error', err.message || String(err));
         }
     }
 }
