@@ -622,6 +622,7 @@ export class SduiService {
      * Update any value here and it takes effect on next app launch — no app update required.
      */
     static getHomeConfig(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): object {
+        const isAndroid = (platform ?? '').trim().toLowerCase() === 'android';
         return {
             id: "home_config",
             strings: {
@@ -961,14 +962,20 @@ export class SduiService {
                 // station's own name takes that slot, because it is what tells the
                 // user which of several widgets needs attention without opening any
                 // of them.
+                //
+                // ANDROID gets its own details. Its widget can act, so every
+                // state is a short tap (≤30 chars, the widget budget) and the
+                // tap lands where the fix is (`WidgetEmptyState.kt`). An iOS
+                // gesture on an Android widget is an instruction nobody can
+                // follow. v1 Android never read these keys, so this is additive.
                 "widget.state.signed_out.title":     "Signed out",
-                "widget.state.signed_out.detail":    "Open Stationly to sign in",
+                "widget.state.signed_out.detail":    isAndroid ? "Tap to sign in" : "Open Stationly to sign in",
                 "widget.state.no_stations.title":    "No stations yet",
-                "widget.state.no_stations.detail":   "Open Stationly to add one",
+                "widget.state.no_stations.detail":   isAndroid ? "Tap to add your first station" : "Open Stationly to add one",
                 "widget.state.needs_station.title":  "Choose a station",
-                "widget.state.needs_station.detail": "Touch and hold, then tap Edit Widget",
+                "widget.state.needs_station.detail": isAndroid ? "Tap to choose one" : "Touch and hold, then tap Edit Widget",
                 "widget.state.removed.title":        "Station removed",
-                "widget.state.removed.detail":       "Not in your stations. Touch and hold, then tap Edit Widget",
+                "widget.state.removed.detail":       isAndroid ? "Tap to choose another" : "Not in your stations. Touch and hold, then tap Edit Widget",
 
                 // ── Force-update gate (LEGACY — Android binary only) ───────────
                 //
