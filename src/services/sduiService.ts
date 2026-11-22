@@ -427,7 +427,7 @@ export class SduiService {
                     type: "card",
                     id: "about_info",
                     title: "Stationly",
-                    body: "Real-time London transport departures at your fingertips. Track buses, tubes, DLR, and Overground — all from one board.",
+                    body: "Real-time London transport departures at your fingertips. Track buses, tubes, DLR and Overground, all from one board.",
                     style: "brand"
                 },
                 {

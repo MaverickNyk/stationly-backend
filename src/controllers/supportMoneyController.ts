@@ -82,4 +82,33 @@ export class SupportMoneyController {
             res.status(500).json({ ok: false, error: 'Internal server error' });
         }
     }
+
+    /**
+     * Verify a Google Play Billing purchase from Android and credit it.
+     * Body: `{ productId, purchaseToken }`. See GooglePlayIAPService.
+     *
+     * 200 with `ok: true` means recorded (or already recorded) and consumed.
+     * A 400 carries a `reason`; `purchase_pending` is not a failure, just not
+     * yet, and the client keeps the purchase to send again when it completes.
+     */
+    static async verifyPlay(req: Request, res: Response): Promise<void> {
+        const uid = (req as any).user?.uid;
+        if (!uid || typeof uid !== 'string') {
+            res.status(401).json({ ok: false, error: 'Unauthorized: missing user uid' });
+            return;
+        }
+        const { productId, purchaseToken } = req.body ?? {};
+        try {
+            const { GooglePlayIAPService } = await import('../services/googlePlayIAPService');
+            const result = await GooglePlayIAPService.verifyAndRecord(uid, productId, purchaseToken);
+            if (!result.ok) {
+                res.status(400).json({ ok: false, reason: result.reason, error: result.reason || 'Verification failed' });
+                return;
+            }
+            res.json(result);
+        } catch (err: any) {
+            console.error('SUPPORT_MONEY: ❌ verifyPlay route threw', err);
+            res.status(500).json({ ok: false, error: 'Internal server error' });
+        }
+    }
 }

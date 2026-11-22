@@ -58,6 +58,9 @@ router.get('/sdui/app/theme-tokens', ThemeController.getAppThemeTokens);
 router.get('/sdui/app/support-money-config', SupportMoneyController.getConfig);
 // Verify StoreKit 2 In-App Purchase transaction from iOS client
 router.post('/support-money/verify-iap', SupportMoneyController.verifyIAP);
+// Verify a Google Play purchase from Android. Needs the user's Firebase bearer:
+// the account credited is the one the token proves, never one named in the body.
+router.post('/support-money/verify-play', AuthMiddleware.validateUserToken, RateLimitMiddleware.strict, SupportMoneyController.verifyPlay);
 // Refresh cadence schedule. Clients cache this and evaluate it locally, so it
 // is read on a cold launch and after a `policy.update` push — not per refresh.
 router.get('/sdui/app/refresh-policy', SduiController.getRefreshPolicy);
