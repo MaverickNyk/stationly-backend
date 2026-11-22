@@ -4238,4 +4238,166 @@ test('getGreetingName falls back to there for invalid, null null, or relay hash 
 });
 
 
+// ── Store purchases: per-platform config, Google Play verification, Apple fixes ──
+
+test('support config: store apps get only their own store product, never a Stripe link', () => {
+    const prev = { ...process.env };
+    process.env.SUPPORT_MONEY_PAYMENT_URL_T4 = 'https://buy.stripe.com/test_A';
+    process.env.SUPPORT_MONEY_PAYMENT_URL_ONEOFF = 'https://buy.stripe.com/test_D';
+    try {
+        for (const platform of ['ios', 'android']) {
+            const cfg = SupportMoneyConfigService.getSupportMoneyConfig(platform);
+            for (const t of cfg.tiers) assert.strictEqual(t.url, '', `${platform} ${t.id} must carry no Stripe link`);
+            assert.strictEqual(cfg.cta.url_oneoff, '', `${platform} one-off link`);
+            assert.strictEqual(cfg.cta.url_monthly, '', `${platform} monthly link`);
+            assert.strictEqual(cfg.custom_amount.enabled, false, `${platform} has no custom amount`);
+        }
+        const android = SupportMoneyConfigService.getSupportMoneyConfig('android');
+        assert.deepStrictEqual(android.tiers.map(t => t.google_product_id),
+            android.tiers.map(t => `uk.co.stationly.support.${t.id}`));
+        for (const t of android.tiers) assert.strictEqual(t.apple_product_id, '', 'android gets no App Store id');
+        for (const t of SupportMoneyConfigService.getSupportMoneyConfig('ios').tiers) {
+            assert.strictEqual(t.google_product_id, '', 'ios gets no Play id');
+            assert.ok(t.apple_product_id);
+        }
+        // A client that names no platform (older builds) keeps the web links.
+        const legacy = SupportMoneyConfigService.getSupportMoneyConfig();
+        assert.ok(legacy.tiers[0].url.startsWith('https://buy.stripe.com/test_A'));
+        assert.strictEqual(legacy.custom_amount.enabled, true);
+    } finally {
+        process.env = prev;
+    }
+});
+
+test('support config: a Play product id can be overridden per tier from the env', () => {
+    const prev = { ...process.env };
+    process.env.SUPPORT_MONEY_GOOGLE_PRODUCT_T8 = 'uk.co.stationly.support.tip_eight';
+    try {
+        const t8 = SupportMoneyConfigService.getSupportMoneyConfig('android').tiers.find(t => t.id === 't8');
+        assert.strictEqual(t8?.google_product_id, 'uk.co.stationly.support.tip_eight');
+    } finally {
+        process.env = prev;
+    }
+});
+
+/** A fake Google: one purchase per token, and a record of consumes. */
+function fakePlay(purchases: Record<string, any>) {
+    const consumed: string[] = [];
+    const api = {
+        getPurchase: async (_productId: string, token: string) => purchases[token] ?? null,
+        consume: async (_productId: string, token: string) => { consumed.push(token); },
+    };
+    return { api, consumed };
+}
+
+async function withPlay(api: any, body: () => Promise<void>): Promise<void> {
+    const { GooglePlayIAPService } = await import('../services/googlePlayIAPService');
+    const saved = GooglePlayIAPService.api;
+    GooglePlayIAPService.api = api;
+    try { await body(); } finally { GooglePlayIAPService.api = saved; }
+}
+
+test('google play: the account binding is sha256(uid) hex, the same vector the Android app pins', async () => {
+    // Android's PlayBillingTest asserts this exact value for the same input. If
+    // either side changes its hashing, every Android purchase is refused as
+    // account_mismatch, so both are pinned to one known answer.
+    const { playAccountId } = await import('../services/googlePlayIAPService');
+    assert.strictEqual(playAccountId('uid_a'), 'fe8436efb888a5f9bda977733b623cb4baaf8723f5e04122d915aadaa988201a');
+});
+
+test('google play: an absurdly long token is refused before Google is asked', async () => {
+    const { GooglePlayIAPService } = await import('../services/googlePlayIAPService');
+    let asked = false;
+    await withPlay({ getPurchase: async () => { asked = true; return null; }, consume: async () => {} }, async () => {
+        const r = await GooglePlayIAPService.verifyAndRecord('uid_a', 'uk.co.stationly.support.t4', 'x'.repeat(5000));
+        assert.strictEqual(r.reason, 'invalid_purchase_token');
+        assert.strictEqual(asked, false);
+    });
+});
+
+test('support config: the store notice copy is served with the rest of the support strings', () => {
+    const keys = SupportMoneyConfigService.homeConfigKeys('android');
+    for (const k of ['unavailable', 'failed', 'pending', 'finishing']) {
+        assert.ok(keys[`support_money.store.${k}`], `support_money.store.${k} must be served`);
+    }
+});
+
+test('google play: a completed purchase for this account is recorded at OUR price and consumed', async () => {
+    const { GooglePlayIAPService, playAccountId } = await import('../services/googlePlayIAPService');
+    const { api, consumed } = fakePlay({
+        tok: { purchaseState: 0, consumptionState: 0, orderId: 'GPA.1', purchaseTimeMillis: '1700000000000',
+               obfuscatedExternalAccountId: playAccountId('uid_a') },
+    });
+    await withPlay(api, () => withRecordSupportMoneySpy(async () => ({ recorded: true, count: 1 }), async (calls) => {
+        const r = await GooglePlayIAPService.verifyAndRecord('uid_a', 'uk.co.stationly.support.t8', 'tok');
+        assert.strictEqual(r.ok, true);
+        assert.strictEqual(r.recorded, true);
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].txnId, 'google_GPA.1');
+        assert.strictEqual(calls[0].amountMinor, 800);
+        assert.strictEqual(calls[0].nowMs, 1700000000000);
+        assert.deepStrictEqual(consumed, ['tok']);
+    }));
+});
+
+test('google play: another account\'s purchase token is refused, and nothing is recorded or consumed', async () => {
+    const { GooglePlayIAPService, playAccountId } = await import('../services/googlePlayIAPService');
+    const { api, consumed } = fakePlay({
+        tok: { purchaseState: 0, orderId: 'GPA.2', obfuscatedExternalAccountId: playAccountId('uid_owner') },
+        bare: { purchaseState: 0, orderId: 'GPA.3' },
+    });
+    await withPlay(api, () => withRecordSupportMoneySpy(async () => ({ recorded: true, count: 1 }), async (calls) => {
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_thief', 'uk.co.stationly.support.t4', 'tok')).reason, 'account_mismatch');
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_thief', 'uk.co.stationly.support.t4', 'bare')).reason, 'account_mismatch');
+        assert.strictEqual(calls.length, 0);
+        assert.deepStrictEqual(consumed, []);
+    }));
+});
+
+test('google play: pending, cancelled, unknown tokens and unknown products are not credited', async () => {
+    const { GooglePlayIAPService, playAccountId } = await import('../services/googlePlayIAPService');
+    const acct = playAccountId('uid_a');
+    const { api, consumed } = fakePlay({
+        pending: { purchaseState: 2, orderId: 'GPA.4', obfuscatedExternalAccountId: acct },
+        cancelled: { purchaseState: 1, orderId: 'GPA.5', obfuscatedExternalAccountId: acct },
+    });
+    await withPlay(api, () => withRecordSupportMoneySpy(async () => ({ recorded: true, count: 1 }), async (calls) => {
+        const p = 'uk.co.stationly.support.t4';
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_a', p, 'pending')).reason, 'purchase_pending');
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_a', p, 'cancelled')).reason, 'purchase_not_completed');
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_a', p, 'nope')).reason, 'purchase_not_found');
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_a', 'uk.co.stationly.support.t999', 'pending')).reason, 'unknown_product_id');
+        assert.strictEqual((await GooglePlayIAPService.verifyAndRecord('uid_a', 'com.other.thing', 'pending')).reason, 'unknown_product_id');
+        assert.strictEqual(calls.length, 0);
+        assert.deepStrictEqual(consumed, []);
+    }));
+});
+
+test('google play: a retry of an already-recorded purchase is ok, not re-credited, and consumes it', async () => {
+    const { GooglePlayIAPService, playAccountId } = await import('../services/googlePlayIAPService');
+    const { api, consumed } = fakePlay({
+        tok: { purchaseState: 0, consumptionState: 0, orderId: 'GPA.6', obfuscatedExternalAccountId: playAccountId('uid_a') },
+    });
+    await withPlay(api, () => withRecordSupportMoneySpy(async () => ({ recorded: false, reason: 'duplicate_txn', count: 3 }), async () => {
+        const r = await GooglePlayIAPService.verifyAndRecord('uid_a', 'uk.co.stationly.support.t12', 'tok');
+        assert.strictEqual(r.ok, true);
+        assert.strictEqual(r.recorded, false, 'the client must not celebrate a retry');
+        assert.deepStrictEqual(consumed, ['tok']);
+    }));
+});
+
+test('google play: a purchase for a deleted account is left unconsumed so Google refunds it', async () => {
+    const { GooglePlayIAPService, playAccountId } = await import('../services/googlePlayIAPService');
+    const { api, consumed } = fakePlay({
+        tok: { purchaseState: 0, orderId: 'GPA.7', obfuscatedExternalAccountId: playAccountId('uid_gone') },
+    });
+    await withPlay(api, () => withRecordSupportMoneySpy(async () => ({ recorded: false, reason: 'missing_account', count: 0 }), async () => {
+        const r = await GooglePlayIAPService.verifyAndRecord('uid_gone', 'uk.co.stationly.support.t4', 'tok');
+        assert.strictEqual(r.ok, false);
+        assert.deepStrictEqual(consumed, []);
+    }));
+});
+
+
+
 main();
