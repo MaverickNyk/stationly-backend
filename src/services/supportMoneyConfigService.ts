@@ -72,6 +72,8 @@ export interface SupportMoneyTier {
     url: string;
     /** Apple In-App Purchase Consumable Product ID for native StoreKit 2 flow */
     apple_product_id?: string;
+    /** Google Play one-time (consumable) product id for the native Play Billing flow */
+    google_product_id?: string;
 }
 
 export interface SupportMoneyBoardLine {
@@ -211,6 +213,18 @@ function envAppleProduct(tierId: string, defaultId: string): string {
     return process.env.APP_ENV === 'staging'
         ? `uk.co.stationly.support.staging.${tierId}`
         : defaultId;
+}
+
+/**
+ * The Play product id for a tier.
+ *
+ * No staging variant, unlike Apple's: the staging and production Android builds
+ * share one application id (`com.stationly.mobile`), so they share one Play
+ * listing and one product catalogue. Staging is kept apart from real money by
+ * Play's license testers, not by a different product.
+ */
+function envGoogleProduct(tierId: string): string {
+    return envStr(`SUPPORT_MONEY_GOOGLE_PRODUCT_${tierId.toUpperCase()}`) || `uk.co.stationly.support.${tierId}`;
 }
 
 /**
@@ -359,6 +373,23 @@ export class SupportMoneyConfigService {
     static getSupportMoneyConfig(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): SupportMoneyCardConfig {
         const p = platform ? platform.trim().toLowerCase() : undefined;
         const isIos = p === 'ios';
+        const isAndroid = p === 'android';
+        // ## Store apps never receive a Stripe link
+        //
+        // Apple (3.1.1) and Google Play (Payments policy) both require a tip to
+        // the developer inside the app to go through their own billing. So the
+        // two store apps get ONLY their store's product ids, and every Stripe
+        // field is blank for them. That is the guarantee, rather than each
+        // client remembering not to fall back to a web checkout: a client that
+        // tried would find nothing to open. The Stripe links are for the
+        // website, and for any older client that names no platform.
+        const isStoreApp = isIos || isAndroid;
+        const stripeUrl = (name: string): string => isStoreApp ? '' : envCheckoutUrl(name);
+        // And each store app gets only ITS store's product. Android reading an
+        // App Store id as "payable" is how a config can look live on a device
+        // that has nothing to sell.
+        const appleProduct = (t: string): string => isAndroid ? '' : envAppleProduct(t, `uk.co.stationly.support.${t}`);
+        const googleProduct = (t: string): string => isIos ? '' : envGoogleProduct(t);
         const isEnabled = this.enabled(p || 'ios');
 
         return {
@@ -413,8 +444,9 @@ export class SupportMoneyConfigService {
                     label: '1 day live',
                     hint: 'A full day of live data. Every Victoria line departure, for everyone watching one.',
                     thanks: '{amount} keeps the live data running for a full day, for everyone watching a board.',
-                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T4'),
-                    apple_product_id: envAppleProduct('t4', 'uk.co.stationly.support.t4'),
+                    url: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_T4'),
+                    apple_product_id: appleProduct('t4'),
+                    google_product_id: googleProduct('t4'),
                 },
                 {
                     id: 't8',
@@ -422,8 +454,9 @@ export class SupportMoneyConfigService {
                     label: '3 days live',
                     hint: 'Three days running. Enough for stops like Manor House, where the street has no board at all.',
                     thanks: '{amount} helps people waiting at stops like Manor House, where the street has no departure board at all.',
-                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T8'),
-                    apple_product_id: envAppleProduct('t8', 'uk.co.stationly.support.t8'),
+                    url: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_T8'),
+                    apple_product_id: appleProduct('t8'),
+                    google_product_id: googleProduct('t8'),
                 },
                 {
                     id: 't12',
@@ -431,8 +464,9 @@ export class SupportMoneyConfigService {
                     label: '1 week live',
                     hint: 'A full week of the servers and live data behind every board in the app.',
                     thanks: '{amount} covers a full week of the servers and live data behind every board in the app.',
-                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T12'),
-                    apple_product_id: envAppleProduct('t12', 'uk.co.stationly.support.t12'),
+                    url: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_T12'),
+                    apple_product_id: appleProduct('t12'),
+                    google_product_id: googleProduct('t12'),
                 },
                 {
                     id: 't25',
@@ -440,8 +474,9 @@ export class SupportMoneyConfigService {
                     label: 'Generous',
                     hint: 'A full month of running costs for data pipelines and background sync.',
                     thanks: '{amount} generously covers a month of running costs for data pipelines and server sync.',
-                    url: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_T25'),
-                    apple_product_id: envAppleProduct('t25', 'uk.co.stationly.support.t25'),
+                    url: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_T25'),
+                    apple_product_id: appleProduct('t25'),
+                    google_product_id: googleProduct('t25'),
                 },
             ],
             currency: 'GBP',
@@ -450,7 +485,9 @@ export class SupportMoneyConfigService {
             // worst-yielding one — £4 keeps ~93%, £8 keeps ~96%.
             default_tier_id: 't8',
             custom_amount: {
-                enabled: !isIos,
+                // Store products are fixed prices; a custom figure only exists
+                // on Stripe's own page, which the store apps never open.
+                enabled: !isStoreApp,
                 min_minor: 100,
                 max_minor: 50_000,
                 // Rendered by the client from `support_money.sheet.custom_hint`
@@ -479,8 +516,8 @@ export class SupportMoneyConfigService {
                 // when a checkout cannot be opened, which is what that slot is
                 // actually worth keeping for.
                 note: '',
-                url_oneoff: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_ONEOFF'),
-                url_monthly: isIos ? '' : envCheckoutUrl('SUPPORT_MONEY_PAYMENT_URL_MONTHLY'),
+                url_oneoff: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_ONEOFF'),
+                url_monthly: stripeUrl('SUPPORT_MONEY_PAYMENT_URL_MONTHLY'),
             },
             social_proof: {
                 enabled: false,
@@ -634,6 +671,13 @@ export class SupportMoneyConfigService {
             'support_money.sheet.repeat': "You've supported us {n} times already. Genuinely, thank you.",
             'support_money.sheet.error':
                 "Couldn't open checkout. Make sure you're signed in and try again.",
+            // What a platform store said about a payment started from the sheet,
+            // shown in the same line as the error above (client: StoreNotice).
+            // Android's Play Billing raises them today; iOS keeps StoreKit's own.
+            'support_money.store.unavailable': "We couldn't open the payment right now. Please try again in a moment.",
+            'support_money.store.failed': "That payment didn't go through. Please try again.",
+            'support_money.store.pending': "Your payment is pending. We'll add it as soon as it's confirmed.",
+            'support_money.store.finishing': 'Finishing your last payment first. Give it a moment, then try again.',
             // No `thanks.supporter` key any more. The reward screen used to
             // carry a SUPPORTER pill and a status line, which is a label where a
             // thank-you belongs: someone who has just given money does not need
