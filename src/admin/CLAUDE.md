@@ -233,10 +233,3 @@ content can flow into logs/dashboards; tokens should not.
 - **`silent`** — `data`-only push with no rendering, used to trigger
   a client-side action (e.g. invalidate a cache). Already possible
   via the existing `data` channel; just hasn't been formalised.
-
-## When you change something here
-
-After modifying any file in this folder, run `graphify update .` from
-the repo root to keep the project's knowledge graph in sync. The
-graph at `graphify-out/` is what future agents read for architecture
-context.
