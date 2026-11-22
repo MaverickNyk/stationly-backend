@@ -3846,6 +3846,22 @@ test('LEGACY CONFIG: the two keys the shipped Android binary reads are still ser
     assert.ok(String(strings['app.ios.storeUrl']).startsWith('itms-apps://'));
 });
 
+test('widget.state: Android gets short taps, iOS keeps its gesture copy, same keys', () => {
+    const android = (SduiService.getHomeConfig('android') as any).strings;
+    const ios = (SduiService.getHomeConfig('ios') as any).strings;
+    const keys = Object.keys(ios).filter((k) => k.startsWith('widget.state.'));
+    assert.strictEqual(keys.length, 8);
+    assert.deepStrictEqual(Object.keys(android).filter((k) => k.startsWith('widget.state.')).sort(), keys.sort());
+    for (const k of keys.filter((k) => k.endsWith('.detail'))) {
+        assert.ok(android[k].length <= 30, `${k} over the widget budget: ${android[k]}`);
+        assert.ok(!/touch and hold/i.test(android[k]), `${k} is an iOS gesture on Android`);
+        assert.ok(!/[\u2013\u2014]/.test(android[k]), `${k} has a dash`);
+    }
+    // iOS is untouched by this change.
+    assert.strictEqual(ios['widget.state.needs_station.detail'], 'Touch and hold, then tap Edit Widget');
+    assert.strictEqual(ios['widget.state.removed.detail'], 'Not in your stations. Touch and hold, then tap Edit Widget');
+});
+
 test('LIMITS CONFIG: all limits.* keys are served in getHomeConfig() with valid values', () => {
     const strings = (SduiService.getHomeConfig() as any).strings;
     assert.strictEqual(strings['limits.boards.max'], '4');
