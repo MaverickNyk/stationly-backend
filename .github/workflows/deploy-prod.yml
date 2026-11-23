@@ -72,6 +72,10 @@ jobs:
           SUPPORT_MONEY_WEB_PAYMENT_URL_CUSTOM: ${{ secrets.SUPPORT_MONEY_WEB_PAYMENT_URL_CUSTOM }}
           SUPPORT_MONEY_MIN_BOARDS: ${{ secrets.SUPPORT_MONEY_MIN_BOARDS }}
           SUPPORT_MONEY_MIN_DAYS: ${{ secrets.SUPPORT_MONEY_MIN_DAYS }}
+          # Android Play Billing support (verify-play + per-store config). Unset
+          # keeps .env.defaults' false; set the repository secret to `true` to
+          # offer support in Android 2.0+. Older clients never read it.
+          SUPPORT_MONEY_ANDROID_ENABLED: ${{ secrets.SUPPORT_MONEY_ANDROID_ENABLED }}
         run: |
           cp .env.defaults .env.prod
           while IFS='=' read -r key value || [[ -n "$key" ]]; do
