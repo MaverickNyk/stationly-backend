@@ -147,6 +147,9 @@ all or nothing, with a reason and history, no deploy or restart. `push: true`
 `StationlyUI/docs/LINE_ALERTS.md`. A default changed here must change in the
 app's `NotificationPolicy.DEFAULT` too (a core test pins them together).
 
+Line alerts are decided in `services/lineAlertService.ts` (wait, confirm, push;
+state in Firestore `line_alert_state`).
+
 All of this reaches ANDROID only (FCM). iOS uses APNs direct, and its alerts must be
 decided here: design in `StationlyUI/docs/IOS_NOTIFICATIONS.md`.
 

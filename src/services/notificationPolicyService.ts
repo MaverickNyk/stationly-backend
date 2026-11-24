@@ -70,6 +70,7 @@ const int = (min: number, max: number): Spec => ({ kind: 'int', min, max });
 export const NOTIFICATION_POLICY_KEYS: PolicyKey[] = [
     // ── Line alerts: on or off, and for whom ─────────────────────────────────
     k('notify.line.enabled', 'true', { kind: 'bool' }, 'Kill switch for every line alert'),
+    k('notify.line.decider', 'server', { kind: 'enum', values: ['server', 'device'] }, 'Who waits and re-checks: the backend, or the phone (unreliable on a sleeping phone)'),
     k('notify.line.rolloutPercent', '100', int(0, 100), 'Share of devices that alert at all; a device keeps its place'),
     k('notify.line.defaultLevel', 'severe', { kind: 'enum', values: ['severe', 'all', 'off'] }, 'Level of a user who never chose one'),
 
@@ -80,7 +81,7 @@ export const NOTIFICATION_POLICY_KEYS: PolicyKey[] = [
 
     // ── How often ────────────────────────────────────────────────────────────
     k('notify.line.confirmAfterMs', String(10 * MIN), int(0, 2 * HOUR), 'A disruption must still be there this long after it appeared'),
-    k('notify.line.confirmRetries', '5', int(1, 10), 'Tries to learn the status at the re-check before giving up'),
+    k('notify.line.confirmRetries', '5', int(1, 10), 'Tries to send (or, on the phone, to learn the status) before giving up'),
     k('notify.line.cooldownMs', String(2 * HOUR), int(0, 24 * HOUR), 'At most one alert per line in this window'),
     k('notify.line.maxPerDay', '3', int(0, 50), 'Line alerts per device per day, all lines'),
 
@@ -166,7 +167,11 @@ export class NotificationPolicyService {
         DOC().onSnapshot(
             doc => this.adoptLive(doc.data()?.values),
             // Keep serving what we have: losing the listener must not change the policy.
-            err => console.error('NOTIFY_POLICY: live overrides unavailable, keeping the last known', err?.message),
+            // An errored listener is dead, so follow again or live edits stop arriving.
+            err => {
+                console.error('NOTIFY_POLICY: live overrides unavailable, keeping the last known', err?.message);
+                setTimeout(() => this.start(), 30_000).unref();
+            },
         );
     }
 

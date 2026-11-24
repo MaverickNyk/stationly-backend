@@ -10,6 +10,8 @@ import apiRoutes from './routes/apiRoutes';
 import adminRoutes from './admin/adminRoutes';
 import { AuthMiddleware } from './middleware/authMiddleware';
 import { NotificationPolicyService } from './services/notificationPolicyService';
+import { LineController } from './controllers/lineController';
+import { LineAlertService } from './services/lineAlertService';
 import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
@@ -636,6 +638,10 @@ server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
     NotificationPolicyService.start();
+    // Every line by name: the Syncer pushes only CHANGED lines, so a mode can
+    // look fresh while most of it has never been heard of.
+    LineAlertService.start(mode =>
+        LineController.ensureLineStatuses(mode, DataCacheService.getLinesByMode(mode).map(l => l.id)));
 
     // Disruption → immediate widget refresh. Registered as an OBSERVER rather
     // than imported by the hub, which is constrained to import only `ws` to
@@ -643,6 +649,7 @@ server.listen(port, () => {
     // here inverts the dependency and keeps that invariant intact.
     LineStatusStreamHub.observe((lineId, payload) => {
         DisruptionTriggerService.observe(lineId, payload.statusSeverityDescription, payload.mode);
+        LineAlertService.observe(lineId, payload);
     });
     console.log(`Port: ${port}`);
     console.log(`Endpoint: http://localhost:${port}/api/v1`);
