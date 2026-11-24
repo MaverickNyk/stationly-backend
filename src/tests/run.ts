@@ -4400,4 +4400,108 @@ test('google play: a purchase for a deleted account is left unconsumed so Google
 
 
 
+
+// ── Notification policy (notify.*) ──────────────────────────────────────────
+
+const policyModule = () => import('../services/notificationPolicyService');
+
+test('notify policy: every default is valid, unique and namespaced', async () => {
+    const { NotificationPolicyService, NOTIFICATION_POLICY_KEYS, policyValueError } = await policyModule();
+    NotificationPolicyService.adoptLive({});
+    for (const p of NOTIFICATION_POLICY_KEYS) {
+        assert.strictEqual(policyValueError(p.key, p.value), null, p.key);
+        assert.ok(p.key.startsWith('notify.') && p.env.startsWith('NOTIFY_') && p.about);
+    }
+    assert.strictEqual(new Set(NOTIFICATION_POLICY_KEYS.map(p => p.key)).size, NOTIFICATION_POLICY_KEYS.length);
+    assert.strictEqual(new Set(NOTIFICATION_POLICY_KEYS.map(p => p.env)).size, NOTIFICATION_POLICY_KEYS.length);
+    assert.strictEqual(Object.keys(NotificationPolicyService.homeConfigKeys({})).length, NOTIFICATION_POLICY_KEYS.length);
+});
+
+test('notify policy: the nightly and planned statuses are never alert-worthy by default', async () => {
+    const { NotificationPolicyService } = await policyModule();
+    NotificationPolicyService.adoptLive({});
+    const keys = NotificationPolicyService.homeConfigKeys({});
+    for (const list of [keys['notify.line.alertSeverities'], keys['notify.line.allSeverities']]) {
+        for (const quiet of ['Service Closed', 'Planned Closure', 'Special Service', 'Good Service']) {
+            assert.ok(!list.split(',').includes(quiet), `${quiet} must not alert`);
+        }
+    }
+    assert.ok(!keys['notify.line.modes'].split(',').includes('bus'), 'buses are off by default');
+});
+
+test('notify policy: live beats environment beats default, and says which', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    const env = { NOTIFY_LINE_MAX_PER_DAY: '5', NOTIFY_LINE_COOLDOWN_MS: '60000' };
+    S.adoptLive({ 'notify.line.maxPerDay': '2' });
+    const e = S.effective(env);
+    assert.deepStrictEqual(e['notify.line.maxPerDay'], { value: '2', source: 'live' });
+    assert.deepStrictEqual(e['notify.line.cooldownMs'], { value: '60000', source: 'env' });
+    assert.strictEqual(e['notify.line.enabled'].source, 'default');
+    S.adoptLive({});
+    assert.strictEqual(S.homeConfigKeys(env)['notify.line.maxPerDay'], '5');
+});
+
+test('notify policy: a bad environment or stored value is ignored, never served', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    S.adoptLive({ 'notify.line.maxPerDay': '9999', 'notify.nonsense': 'x', 'notify.line.enabled': 'false' });
+    const keys = S.homeConfigKeys({ NOTIFY_QUIET_START: '25:00', NOTIFY_LINE_COOLDOWN_MS: '  ' });
+    assert.strictEqual(keys['notify.line.maxPerDay'], '3');
+    assert.strictEqual(keys['notify.quiet.start'], '22:30');
+    assert.strictEqual(keys['notify.line.enabled'], 'false');
+    assert.ok(!('notify.nonsense' in keys));
+    S.adoptLive({});
+});
+
+test('notify policy: an edit is refused whole, naming every problem', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    const errs = S.editErrors({ by: 't', reason: '', set: {
+        'notify.line.maxPerDay': '51', 'notify.quiet.mode': 'loud', 'notify.quiet.zone': 'Mars/One',
+        'notify.line.modes': 'tube,,bus', 'notify.typo': '1', 'notify.gone': null, 'notify.line.enabled': null,
+        'notify.copy.alertTitle': 'x'.repeat(121),
+    } });
+    for (const part of ['maxPerDay', 'quiet.mode', 'quiet.zone', 'line.modes', 'notify.typo', 'notify.gone', 'alertTitle', 'reason']) {
+        assert.ok(errs.some(e => e.includes(part)), part);
+    }
+    assert.ok(!errs.some(e => e.includes('line.enabled')), 'removing an override is fine');
+    assert.deepStrictEqual(S.editErrors({ by: 't', reason: 'ok', set: {
+        'notify.line.alertSeverities.bus': 'Suspended', 'notify.remote.disabledTypes': '-', 'notify.quiet.zone': 'Europe/London',
+    } }), []);
+    assert.ok(S.editErrors({ by: 't', reason: 'ok', set: {} }).length);
+});
+
+test('notify send: a line goes to the topic the app subscribes to', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const real = DataCacheService.getLineById;
+    (DataCacheService as any).getLineById = (id: string) => (({ mildmay: { id: 'mildmay', modeName: 'overground' }, '21': { id: '21', modeName: 'bus' } }) as any)[id];
+    try {
+        assert.strictEqual(N.lineTopic('Mildmay'), 'LineStatus_overground_mildmay');
+        assert.strictEqual(N.lineTopic('21'), 'LineStatus_bus_21');
+        assert.throws(() => N.lineTopic('nope'), /Unknown line/);
+    } finally { (DataCacheService as any).getLineById = real; }
+});
+
+test('notify send: what is sent expires with its TTL', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const real = (N as any).sendToTopic; let got: any[] = [];
+    (N as any).sendToTopic = async (...a: any[]) => { got = a; return { successCount: 1, failureCount: 0 }; };
+    try {
+        await N.send({ type: 'all' }, { type: 'announcement', title: 't', body: 'b', ttlSeconds: 60 });
+        const p = JSON.parse(got[1].notification_payload);
+        assert.strictEqual(got[0], 'stationly_all');
+        assert.strictEqual(got[2], 60_000);
+        assert.ok(Math.abs(p.expiresAtMs - Date.now() - 60_000) < 5_000);
+        await N.send({ type: 'all' }, { type: 'announcement', title: 't', body: 'b' });
+        assert.strictEqual(got[2], 24 * 3600 * 1000);
+    } finally { (N as any).sendToTopic = real; }
+});
+
+test('notify send: refuses what a phone could not show', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const base = { type: 'announcement', title: 't', body: 'b' };
+    for (const bad of [{ channel: 'made_up' }, { title: 'x'.repeat(121) }, { body: 'x'.repeat(1001) }, { ttlSeconds: -1 },
+        { ttlSeconds: 1.5 }, { largeIconUrl: 'http://x' }, { timeoutAfterMs: -5 }, { minVersionCode: 1.2 }]) {
+        await assert.rejects(N.send({ type: 'all' }, { ...base, ...bad } as any), JSON.stringify(bad));
+    }
+});
+
 main();

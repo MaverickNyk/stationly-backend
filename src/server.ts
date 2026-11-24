@@ -9,6 +9,7 @@ import { buildSpecs } from './config/openapi';
 import apiRoutes from './routes/apiRoutes';
 import adminRoutes from './admin/adminRoutes';
 import { AuthMiddleware } from './middleware/authMiddleware';
+import { NotificationPolicyService } from './services/notificationPolicyService';
 import { DataCacheService } from './services/dataCacheService';
 import { WaitlistController } from './controllers/waitlistController';
 import { RateLimitMiddleware } from './middleware/rateLimitMiddleware';
@@ -634,6 +635,7 @@ PredictionCache.startSweeper();
 server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
+    NotificationPolicyService.start();
 
     // Disruption → immediate widget refresh. Registered as an OBSERVER rather
     // than imported by the hub, which is constrained to import only `ws` to

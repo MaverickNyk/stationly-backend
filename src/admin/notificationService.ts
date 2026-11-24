@@ -1,6 +1,10 @@
 import { messaging } from '../config/firebase';
 import { LineIconService } from '../services/lineIconService';
 import { UserFcmTokenService } from '../services/userFcmTokenService';
+import { DataCacheService } from '../services/dataCacheService';
+
+/** The channels the app creates (`NotificationChannelIds` in core). */
+const CHANNELS = ['stationly_line_status', 'stationly_announcement', 'stationly_system', 'stationly_promo'];
 
 /**
  * Server-side fan-out for Stationly user notifications.
@@ -94,6 +98,17 @@ export interface NotificationPayload {
     lineName?: string;
     previousStatus?: string;
     newStatus?: string;
+    /** Into the shade only: no sound, no pop-up. */
+    silent?: boolean;
+    /** Epoch ms after which the app must not show it. Filled from [ttlSeconds]. */
+    expiresAtMs?: number;
+    /** The notification removes itself this long after it is shown. */
+    timeoutAfterMs?: number;
+    /** Only app builds in this range show it. */
+    minVersionCode?: number;
+    maxVersionCode?: number;
+    /** How long FCM keeps trying a phone that is off. Default 24 h; not sent on. */
+    ttlSeconds?: number;
 }
 
 export type Audience =
@@ -119,7 +134,7 @@ export type Audience =
     | { type: 'all' }
     /**
      * Everyone subscribed to a specific TfL line. Delivered via the
-     * existing `LineStatus_<lineId>` FCM topic that the app already
+     * existing `LineStatus_<mode>_<lineId>` FCM topic that the app already
      * subscribes to for the Syncer's status pushes. Zero Firestore
      * reads — admin shares the same topic, only the payload differs
      * (notification_payload only; no `payload` field so the client's
@@ -153,20 +168,21 @@ export class NotificationService {
         this.validatePayload(payload);
         const enriched = this.enrichPayload(payload);
         const data = this.encodeData(enriched);
+        const ttlMs = this.ttlSecondsOf(enriched) * 1000;
 
         switch (audience.type) {
             case 'token':
-                return this.sendToToken(audience.value, data);
+                return this.sendToToken(audience.value, data, ttlMs);
             case 'tokens':
-                return this.sendToTokens(audience.value, data);
+                return this.sendToTokens(audience.value, data, ttlMs);
             case 'topic':
-                return this.sendToTopic(audience.value, data);
+                return this.sendToTopic(audience.value, data, ttlMs);
             case 'uid': {
                 const tokens = await UserFcmTokenService.listForUid(audience.value);
                 if (tokens.length === 0) {
                     return { successCount: 0, failureCount: 0, failures: [{ message: 'No registered tokens for uid' }] };
                 }
-                return this.sendToTokens(tokens, data);
+                return this.sendToTokens(tokens, data, ttlMs);
             }
             case 'uids': {
                 const tokens = await UserFcmTokenService.listForUids(audience.value);
@@ -175,18 +191,14 @@ export class NotificationService {
                 }
                 // sendToTokens already chunks at 500 — for now we expect
                 // admin segments to be well below that; if not, chunk here.
-                return this.sendToTokens(tokens, data);
+                return this.sendToTokens(tokens, data, ttlMs);
             }
             case 'all':
                 // Broadcast via the universal app topic. FCM handles the
                 // fan-out internally — no Firestore reads, single API call.
-                return this.sendToTopic('stationly_all', data);
-            case 'line': {
-                // Lowercase line id matches the topic naming the Syncer +
-                // app use everywhere (LineStatus_piccadilly, not _Piccadilly).
-                const topic = `LineStatus_${audience.value.toLowerCase()}`;
-                return this.sendToTopic(topic, data);
-            }
+                return this.sendToTopic('stationly_all', data, ttlMs);
+            case 'line':
+                return this.sendToTopic(this.lineTopic(audience.value), data, ttlMs);
             default:
                 throw new Error(`Unsupported audience type: ${(audience as any).type}`);
         }
@@ -205,6 +217,10 @@ export class NotificationService {
      */
     private static enrichPayload(p: NotificationPayload): NotificationPayload {
         const out: NotificationPayload = { ...p };
+
+        // What FCM stops delivering after the TTL, a phone that was already
+        // sent it must not show either.
+        if (out.expiresAtMs === undefined) out.expiresAtMs = Date.now() + this.ttlSecondsOf(p) * 1000;
 
         // Auto-derive severity from newStatus when admin didn't pick
         // one. This means the same /admin/notify call that backend
@@ -245,6 +261,22 @@ export class NotificationService {
         if (p.imageUrl && !p.imageUrl.startsWith('https://')) {
             throw new Error('payload.imageUrl must be HTTPS');
         }
+        if (p.title.length > 120) throw new Error('payload.title is capped at 120 characters');
+        if (p.body.length > 1000) throw new Error('payload.body is capped at 1000 characters');
+        if (p.largeIconUrl && !p.largeIconUrl.startsWith('https://')) {
+            throw new Error('payload.largeIconUrl must be HTTPS');
+        }
+        if (p.channel && !CHANNELS.includes(p.channel)) {
+            // A channel the app does not have means Android shows nothing.
+            throw new Error(`payload.channel must be one of ${CHANNELS.join(', ')}`);
+        }
+        if (p.ttlSeconds !== undefined && !(Number.isInteger(p.ttlSeconds) && p.ttlSeconds >= 0 && p.ttlSeconds <= this.MAX_TTL_SECONDS)) {
+            throw new Error(`payload.ttlSeconds must be 0 to ${this.MAX_TTL_SECONDS}`);
+        }
+        for (const f of ['expiresAtMs', 'timeoutAfterMs', 'minVersionCode', 'maxVersionCode'] as const) {
+            const v = p[f];
+            if (v !== undefined && !(Number.isInteger(v) && v >= 0)) throw new Error(`payload.${f} must be a whole number`);
+        }
         if (p.actions && p.actions.length > 3) {
             throw new Error('payload.actions is capped at 3 by Android');
         }
@@ -256,27 +288,46 @@ export class NotificationService {
      * Android dispatcher pulls it back out and deserialises. Single
      * field == single source of truth, no field-spreading mismatches.
      */
+    private static readonly DEFAULT_TTL_SECONDS = 24 * 60 * 60;
+    private static readonly MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+    private static ttlSecondsOf(p: NotificationPayload): number {
+        return p.ttlSeconds ?? this.DEFAULT_TTL_SECONDS;
+    }
+
+    /**
+     * The topic a board of [lineId] subscribes to. The MODE is part of it
+     * (`StationLifecycleUseCase.lineStatusTopic` in the app, `LineService` in
+     * the Syncer). This used to leave it out, so every "everyone on this line"
+     * send went to a topic nobody was subscribed to, and reported success.
+     */
+    static lineTopic(lineId: string): string {
+        const line = DataCacheService.getLineById((lineId ?? '').trim().toLowerCase());
+        if (!line?.modeName) throw new Error(`Unknown line '${lineId}'`);
+        return `LineStatus_${line.modeName}_${line.id}`;
+    }
+
     private static encodeData(payload: NotificationPayload): Record<string, string> {
         return { notification_payload: JSON.stringify(payload) };
     }
 
-    private static async sendToToken(token: string, data: Record<string, string>): Promise<SendResult> {
+    private static async sendToToken(token: string, data: Record<string, string>, ttlMs: number): Promise<SendResult> {
         if (!token || token.length < 20) throw new Error('Invalid FCM token');
         const messageId = await messaging.send({
             token,
             data,
-            android: { priority: 'high' },
+            android: { priority: 'high', ttl: ttlMs },
         });
         return { successCount: 1, failureCount: 0, messageId };
     }
 
-    private static async sendToTokens(tokens: string[], data: Record<string, string>): Promise<SendResult> {
+    private static async sendToTokens(tokens: string[], data: Record<string, string>, ttlMs: number): Promise<SendResult> {
         if (!Array.isArray(tokens) || tokens.length === 0) throw new Error('tokens list is empty');
         if (tokens.length > 500) throw new Error('FCM caps multicast at 500 tokens per call');
         const response = await messaging.sendEachForMulticast({
             tokens,
             data,
-            android: { priority: 'high' },
+            android: { priority: 'high', ttl: ttlMs },
         });
         return {
             successCount: response.successCount,
@@ -287,14 +338,14 @@ export class NotificationService {
         };
     }
 
-    private static async sendToTopic(topic: string, data: Record<string, string>): Promise<SendResult> {
+    private static async sendToTopic(topic: string, data: Record<string, string>, ttlMs: number): Promise<SendResult> {
         if (!topic || !/^[a-zA-Z0-9_\-.~%]+$/.test(topic)) {
             throw new Error('Invalid topic name (FCM allows [a-zA-Z0-9-_.~%])');
         }
         const messageId = await messaging.send({
             topic,
             data,
-            android: { priority: 'high' },
+            android: { priority: 'high', ttl: ttlMs },
         });
         return { successCount: 1, failureCount: 0, messageId };
     }
