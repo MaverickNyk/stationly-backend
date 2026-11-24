@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AdminAuthMiddleware } from './adminAuthMiddleware';
 import { NotificationController } from './notificationController';
+import { NOTIFICATION_POLICY_KEYS, NotificationPolicyService } from '../services/notificationPolicyService';
 import { AdminUserController } from './adminUserController';
 import { AdminDataController } from './adminDataController';
 import { AdminEmailController } from './adminEmailController';
@@ -43,6 +44,64 @@ adminRouter.use(AdminAuthMiddleware.validate);
 //   See NotificationController + NotificationService for the request
 //   shape and response semantics.
 adminRouter.post('/notifications/send', NotificationController.send);
+
+// GET /admin/notifications/policy
+//   Every notification rule: its value, where that came from (live, env or
+//   default), what it does and what it accepts.
+adminRouter.get('/notifications/policy', (_req, res) => {
+    const effective = NotificationPolicyService.effective();
+    const known = NOTIFICATION_POLICY_KEYS.map(p => ({
+        key: p.key, ...effective[p.key], default: p.value, env: p.env, spec: p.spec, about: p.about,
+    }));
+    const extra = Object.keys(effective).filter(key => !NOTIFICATION_POLICY_KEYS.some(p => p.key === key))
+        .map(key => ({ key, ...effective[key] }));
+    res.json({ keys: [...known, ...extra] });
+});
+
+// PUT /admin/notifications/policy
+//   { set: { "notify.line.maxPerDay": "2", "notify.quiet.start": null }, reason, by?, push? }
+//   Live, no deploy or restart. null removes an override. All or nothing: one
+//   bad value refuses the whole edit. `push: true` also tells phones to refetch.
+adminRouter.put('/notifications/policy', async (req, res) => {
+    const edit = {
+        set: (req.body?.set ?? {}) as Record<string, string | null>,
+        reason: String(req.body?.reason ?? ''),
+        by: String(req.body?.by ?? 'admin').slice(0, 80),
+    };
+    const errors = NotificationPolicyService.editErrors(edit);
+    if (errors.length) return res.status(400).json({ ok: false, errors });
+    try {
+        await NotificationPolicyService.applyEdit(edit);
+        console.log(`NOTIFY_POLICY: ${Object.keys(edit.set).join(', ')} changed by ${edit.by}`);
+    } catch (e: any) {
+        return res.status(500).json({ ok: false, errors: [e?.message ?? 'save failed'] });
+    }
+    // Saved is saved, even if the push is not: the two are reported separately.
+    let pushed: string | null = null;
+    if (req.body?.push === true) {
+        try { pushed = await NotificationPolicyService.pushConfigRefresh(edit.reason); }
+        catch (e: any) { console.warn('NOTIFY_POLICY: refresh push failed', e?.message); }
+    }
+    return res.json({ ok: true, pushed });
+});
+
+// POST /admin/config/refresh-push   body: { reason?: string }
+//   Silent `config_refresh` push to every install (topic `stationly_all`):
+//   phones refetch home-config within ~2 minutes (each waits a random 0-120 s
+//   so the fetches are spread). Send it after changing a NOTIFY_* value so a
+//   quieter alert policy (or the kill switch) lands in minutes, not on each
+//   user's next app open. Shows nothing on the phone.
+adminRouter.post('/config/refresh-push', async (req, res) => {
+    try {
+        const reason = String(req.body?.reason ?? 'admin').slice(0, 80);
+        const messageId = await NotificationPolicyService.pushConfigRefresh(reason);
+        console.log(`ADMIN_CONFIG: 📤 config_refresh pushed (${reason}) id=${messageId}`);
+        res.json({ ok: true, messageId });
+    } catch (e: any) {
+        console.warn('ADMIN_CONFIG: config_refresh push failed', e?.message);
+        res.status(500).json({ ok: false, error: e?.message ?? 'send failed' });
+    }
+});
 
 // POST /admin/widget-push/send
 //   Trigger an immediate iOS widget update over APNs. Four kinds:
