@@ -1,6 +1,7 @@
 import { getBaseUrl, getWebUrl, isStaging } from '../utils/formatters';
 import { assetUrl } from './assetVersionService';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { NotificationPolicyService } from './notificationPolicyService';
 import { LineSeverityService } from './lineSeverityService';
 import { LinePaletteService } from './linePaletteService';
 
@@ -831,6 +832,13 @@ export class SduiService {
                 // enumerations of one vocabulary, in two languages, that TfL could
                 // desynchronise at any time.
                 ...LineSeverityService.homeConfigKeys(),
+
+                // ── Line-status alerts: every rule served, none compiled ─────
+                //
+                // v1 decided on the device whether a status change became a
+                // notification, with the rules compiled in, and could not be
+                // quietened without a release. See notificationPolicyService.ts.
+                ...NotificationPolicyService.homeConfigKeys(),
 
                 // ── TfL colour palette ────────────────────────────────────────
                 //

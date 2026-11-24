@@ -4400,4 +4400,226 @@ test('google play: a purchase for a deleted account is left unconsumed so Google
 
 
 
+
+// ── Notification policy (notify.*) ──────────────────────────────────────────
+
+const policyModule = () => import('../services/notificationPolicyService');
+
+test('notify policy: every default is valid, unique and namespaced', async () => {
+    const { NotificationPolicyService, NOTIFICATION_POLICY_KEYS, policyValueError } = await policyModule();
+    NotificationPolicyService.adoptLive({});
+    for (const p of NOTIFICATION_POLICY_KEYS) {
+        assert.strictEqual(policyValueError(p.key, p.value), null, p.key);
+        assert.ok(p.key.startsWith('notify.') && p.env.startsWith('NOTIFY_') && p.about);
+    }
+    assert.strictEqual(new Set(NOTIFICATION_POLICY_KEYS.map(p => p.key)).size, NOTIFICATION_POLICY_KEYS.length);
+    assert.strictEqual(new Set(NOTIFICATION_POLICY_KEYS.map(p => p.env)).size, NOTIFICATION_POLICY_KEYS.length);
+    assert.strictEqual(Object.keys(NotificationPolicyService.homeConfigKeys({})).length, NOTIFICATION_POLICY_KEYS.length);
+});
+
+test('notify policy: the nightly and planned statuses are never alert-worthy by default', async () => {
+    const { NotificationPolicyService } = await policyModule();
+    NotificationPolicyService.adoptLive({});
+    const keys = NotificationPolicyService.homeConfigKeys({});
+    for (const list of [keys['notify.line.alertSeverities'], keys['notify.line.allSeverities']]) {
+        for (const quiet of ['Service Closed', 'Planned Closure', 'Special Service', 'Good Service']) {
+            assert.ok(!list.split(',').includes(quiet), `${quiet} must not alert`);
+        }
+    }
+    assert.ok(!keys['notify.line.modes'].split(',').includes('bus'), 'buses are off by default');
+});
+
+test('notify policy: live beats environment beats default, and says which', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    const env = { NOTIFY_LINE_MAX_PER_DAY: '5', NOTIFY_LINE_COOLDOWN_MS: '60000' };
+    S.adoptLive({ 'notify.line.maxPerDay': '2' });
+    const e = S.effective(env);
+    assert.deepStrictEqual(e['notify.line.maxPerDay'], { value: '2', source: 'live' });
+    assert.deepStrictEqual(e['notify.line.cooldownMs'], { value: '60000', source: 'env' });
+    assert.strictEqual(e['notify.line.enabled'].source, 'default');
+    S.adoptLive({});
+    assert.strictEqual(S.homeConfigKeys(env)['notify.line.maxPerDay'], '5');
+});
+
+test('notify policy: a bad environment or stored value is ignored, never served', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    S.adoptLive({ 'notify.line.maxPerDay': '9999', 'notify.nonsense': 'x', 'notify.line.enabled': 'false' });
+    const keys = S.homeConfigKeys({ NOTIFY_QUIET_START: '25:00', NOTIFY_LINE_COOLDOWN_MS: '  ' });
+    assert.strictEqual(keys['notify.line.maxPerDay'], '3');
+    assert.strictEqual(keys['notify.quiet.start'], '22:30');
+    assert.strictEqual(keys['notify.line.enabled'], 'false');
+    assert.ok(!('notify.nonsense' in keys));
+    S.adoptLive({});
+});
+
+test('notify policy: an edit is refused whole, naming every problem', async () => {
+    const { NotificationPolicyService: S } = await policyModule();
+    const errs = S.editErrors({ by: 't', reason: '', set: {
+        'notify.line.maxPerDay': '51', 'notify.quiet.mode': 'loud', 'notify.quiet.zone': 'Mars/One',
+        'notify.line.modes': 'tube,,bus', 'notify.typo': '1', 'notify.gone': null, 'notify.line.enabled': null,
+        'notify.copy.alertTitle': 'x'.repeat(121),
+    } });
+    for (const part of ['maxPerDay', 'quiet.mode', 'quiet.zone', 'line.modes', 'notify.typo', 'notify.gone', 'alertTitle', 'reason']) {
+        assert.ok(errs.some(e => e.includes(part)), part);
+    }
+    assert.ok(!errs.some(e => e.includes('line.enabled')), 'removing an override is fine');
+    assert.deepStrictEqual(S.editErrors({ by: 't', reason: 'ok', set: {
+        'notify.line.alertSeverities.bus': 'Suspended', 'notify.remote.disabledTypes': '-', 'notify.quiet.zone': 'Europe/London',
+    } }), []);
+    assert.ok(S.editErrors({ by: 't', reason: 'ok', set: {} }).length);
+});
+
+test('notify send: a line goes to the topic the app subscribes to', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const real = DataCacheService.getLineById;
+    (DataCacheService as any).getLineById = (id: string) => (({ mildmay: { id: 'mildmay', modeName: 'overground' }, '21': { id: '21', modeName: 'bus' } }) as any)[id];
+    try {
+        assert.strictEqual(N.lineTopic('Mildmay'), 'LineStatus_overground_mildmay');
+        assert.strictEqual(N.lineTopic('21'), 'LineStatus_bus_21');
+        assert.throws(() => N.lineTopic('nope'), /Unknown line/);
+    } finally { (DataCacheService as any).getLineById = real; }
+});
+
+test('notify send: what is sent expires with its TTL', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const real = (N as any).sendToTopic; let got: any[] = [];
+    (N as any).sendToTopic = async (...a: any[]) => { got = a; return { successCount: 1, failureCount: 0 }; };
+    try {
+        await N.send({ type: 'all' }, { type: 'announcement', title: 't', body: 'b', ttlSeconds: 60 });
+        const p = JSON.parse(got[1].notification_payload);
+        assert.strictEqual(got[0], 'stationly_all');
+        assert.strictEqual(got[2], 60_000);
+        assert.ok(Math.abs(p.expiresAtMs - Date.now() - 60_000) < 5_000);
+        await N.send({ type: 'all' }, { type: 'announcement', title: 't', body: 'b' });
+        assert.strictEqual(got[2], 24 * 3600 * 1000);
+    } finally { (N as any).sendToTopic = real; }
+});
+
+test('notify send: refuses what a phone could not show', async () => {
+    const { NotificationService: N } = await import('../admin/notificationService');
+    const base = { type: 'announcement', title: 't', body: 'b' };
+    for (const bad of [{ channel: 'made_up' }, { title: 'x'.repeat(121) }, { body: 'x'.repeat(1001) }, { ttlSeconds: -1 },
+        { ttlSeconds: 1.5 }, { largeIconUrl: 'http://x' }, { timeoutAfterMs: -5 }, { minVersionCode: 1.2 }]) {
+        await assert.rejects(N.send({ type: 'all' }, { ...base, ...bad } as any), JSON.stringify(bad));
+    }
+});
+
+// ── Line alerts decided by the backend ──────────────────────────────────────
+
+const alertRules = async (over: Record<string, string> = {}) => {
+    const { NotificationPolicyService: S } = await policyModule(); S.adoptLive({});
+    return { ...S.homeConfigKeys({}), ...over };
+};
+const st = (sev: string, mode = 'tube') => ({ id: 'victoria', name: 'Victoria', mode, statusSeverityDescription: sev, reason: null, lastUpdatedTime: '' });
+/** Plays statuses at given minutes, claiming deadlines as they pass. */
+const playLine = async (steps: [number, string][], until: number, over = {}, mode = 'tube') => {
+    const { advance, claimDue } = await import('../services/lineAlertService');
+    const rules = await alertRules(over); const out: string[] = []; let state: any;
+    for (let m = 0; m <= until; m++) {
+        for (const [at, sev] of steps) if (at === m) {
+            const r = advance(state, st(sev, mode), m * 60_000, rules, m * 60_000);
+            if (r) { state = r.state; r.send.forEach(s => out.push(`${m} ${s.kind} ${s.tier} ${s.status.statusSeverityDescription}`)); }
+        }
+        const c = state && claimDue(state, rules, m * 60_000);
+        if (c) { state = c.state; c.send.forEach((s: any) => out.push(`${m} ${s.kind} ${s.tier} ${s.status.statusSeverityDescription}`)); }
+    }
+    return out;
+};
+
+test('line alerts: a disruption that holds is announced once, then cleared', async () => {
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [5, 'Severe Delays'], [60, 'Good Service']], 90), [
+        '15 alert severe Severe Delays', '15 alert all Severe Delays', '60 clear severe Good Service', '60 clear all Good Service']);
+});
+
+test('line alerts: nightly closure, planned works, first sighting, short blip and buses say nothing', async () => {
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [5, 'Service Closed'], [300, 'Good Service']], 400), []);
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [5, 'Planned Closure'], [30, 'Special Service']], 90), []);
+    assert.deepStrictEqual(await playLine([[0, 'Suspended']], 60), []);
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [5, 'Suspended'], [14, 'Good Service']], 60), []);
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [5, 'Suspended']], 60, {}, 'bus'), []);
+});
+
+test('line alerts: each tier gets its own full wait, and swapping cannot postpone for ever', async () => {
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [1, 'Minor Delays'], [6, 'Severe Delays']], 30), [
+        '11 alert all Severe Delays', '16 alert severe Severe Delays']);
+    const swap: [number, string][] = [[0, 'Good Service']];
+    for (let m = 1; m < 30; m += 2) swap.push([m, m % 4 === 1 ? 'Suspended' : 'Severe Delays']);
+    assert.ok((await playLine(swap, 30)).some(x => x.startsWith('11 alert severe')));
+});
+
+test('line alerts: the rules at the deadline decide, and per-mode severities apply', async () => {
+    const { advance, claimDue } = await import('../services/lineAlertService');
+    const rules = await alertRules();
+    const a = advance(undefined, st('Good Service'), 0, rules, 0)!;
+    const b = advance(a.state, st('Suspended'), 1, rules, 1)!;
+    const killed = claimDue(b.state, { ...rules, 'notify.line.enabled': 'false' }, 1e9)!;
+    assert.deepStrictEqual(killed.send, []);
+    assert.strictEqual(killed.state.tiers.severe.dueAt, null);
+    const over = { 'notify.line.alertSeverities.tube': 'Special Service' };
+    assert.deepStrictEqual(await playLine([[0, 'Good Service'], [1, 'Special Service']], 20, over), ['11 alert severe Special Service']);
+});
+
+test('line alerts: an escalation is announced, a late or repeated status changes nothing', async () => {
+    assert.deepStrictEqual((await playLine([[0, 'Good Service'], [1, 'Severe Delays'], [30, 'Suspended']], 60)).filter(x => x.includes(' severe ')), [
+        '11 alert severe Severe Delays', '40 alert severe Suspended']);
+    const { advance } = await import('../services/lineAlertService');
+    const rules = await alertRules();
+    const a = advance(undefined, st('Good Service'), 100, rules, 100)!;
+    assert.strictEqual(advance(a.state, st('Suspended'), 50, rules, 200), null);
+    assert.strictEqual(advance(a.state, st(' good service '), 200, rules, 200), null);
+});
+
+test('line alerts: stored, confirmed against a fresh status, sent once, and retried when a send fails', async () => {
+    const fb = await import('../config/firebase') as any;
+    const { LineAlertService: L } = await import('../services/lineAlertService') as any;
+    const { NotificationPolicyService: S } = await policyModule();
+    const real = { collection: fb.db.collection, tx: fb.db.runTransaction, send: fb.messaging.send };
+    const docs = new Map<string, any>(); const sent: any[] = []; let failNext = false;
+    fb.db.collection = () => ({ doc: (id: string) => ({ id }) });
+    fb.db.runTransaction = async (fn: any) => fn({ get: async (r: any) => ({ data: () => docs.get(r.id) }), set: (r: any, v: any) => { docs.set(r.id, v); } });
+    fb.messaging.send = async (m: any) => { if (failNext) { failNext = false; throw new Error('fcm down'); } sent.push(m); return 'id'; };
+    const say = async (sev: string, mode = 'tube') => {
+        L.observe('victoria', { name: 'Victoria', mode, statusSeverityDescription: sev, lastUpdatedTime: Date.now() }); await L.queue.get('victoria');
+    };
+    const due = () => { const d = docs.get('victoria'); for (const t of ['severe', 'all']) if (d.tiers[t].dueAt) d.tiers[t].dueAt = 1; L.states.set('victoria', d); };
+    const kinds = () => sent.map(m => `${m.data.kind} ${m.data.tier}`);
+    L.states.clear(); L.queue.clear(); L.refreshMode = async () => undefined;
+    try {
+        S.adoptLive({});
+        await say('Good Service'); await say('Suspended'); await L.tick();
+        assert.deepStrictEqual(kinds(), [], 'nothing before the deadline');
+        due(); await L.tick(); await L.tick();
+        assert.deepStrictEqual(kinds(), ['alert severe', 'alert all'], 'once, however often it looks');
+        assert.strictEqual(sent[0].topic, 'LineStatus_tube_victoria');
+        assert.ok(!('payload' in sent[0].data), 'older apps read `payload`, so they ignore this');
+        assert.strictEqual(sent[0].android.priority, 'high');
+        await say('Good Service');
+        assert.deepStrictEqual(kinds().slice(2), ['clear severe', 'clear all']);
+
+        // The Syncer stalled: the refresh at the deadline finds it already over.
+        sent.length = 0; await say('Suspended'); due();
+        L.refreshMode = async () => { L.observe('victoria', { name: 'Victoria', mode: 'tube', statusSeverityDescription: 'Good Service', lastUpdatedTime: Date.now() }); };
+        await L.tick();
+        assert.deepStrictEqual(kinds(), []);
+        L.refreshMode = async () => undefined;
+
+        // A failed send is tried again.
+        await say('Suspended'); due(); failNext = true; await L.tick();
+        assert.deepStrictEqual(kinds(), ['alert all']);
+        due(); await L.tick();
+        assert.deepStrictEqual(kinds(), ['alert all', 'alert severe']);
+
+        // Told to leave it to the phone, or a mode that does not alert: silent.
+        sent.length = 0; await say('Good Service'); sent.length = 0;
+        S.adoptLive({ 'notify.line.decider': 'device' }); await say('Suspended'); due(); await L.tick();
+        assert.deepStrictEqual(kinds(), []);
+        S.adoptLive({}); const before = docs.size;
+        L.observe('21', { mode: 'bus', statusSeverityDescription: 'Suspended' });
+        assert.strictEqual(docs.size, before);
+    } finally {
+        fb.db.collection = real.collection; fb.db.runTransaction = real.tx; fb.messaging.send = real.send;
+        L.states.clear(); L.queue.clear(); S.adoptLive({});
+    }
+});
+
 main();

@@ -136,6 +136,26 @@ from `lineId` anymore — the line-coloured roundel competed with the
 Stationly small icon visually; the line is conveyed in the title
 text + severity glyph.
 
+## The notification policy
+
+Every rule about what phones show is a `notify.*` key in
+`services/notificationPolicyService.ts`, served in home-config.
+`GET` / `PUT /admin/notifications/policy` reads and changes them LIVE: validated,
+all or nothing, with a reason and history, no deploy or restart. `push: true`
+(or `POST /admin/config/refresh-push`) tells phones to refetch. Emergency stop:
+`notify.line.enabled` or `notify.remote.enabled` = "false" with push. Full guide:
+`StationlyUI/docs/LINE_ALERTS.md`. A default changed here must change in the
+app's `NotificationPolicy.DEFAULT` too (a core test pins them together).
+
+Line alerts are decided in `services/lineAlertService.ts` (wait, confirm, push;
+state in Firestore `line_alert_state`).
+
+All of this reaches ANDROID only (FCM). iOS uses APNs direct, and its alerts must be
+decided here: design in `StationlyUI/docs/IOS_NOTIFICATIONS.md`.
+
+`audience: line` resolves to `LineStatus_<mode>_<line>`; without the mode it
+reaches nobody. `ttlSeconds` bounds delivery and display.
+
 ## Auth model
 
 `AdminAuthMiddleware.validate` checks the standard `Authorization: Bearer <token>` header against `STATIONLY_ADMIN_KEY` env. Three responses:
