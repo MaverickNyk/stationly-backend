@@ -159,6 +159,8 @@ Statuses now reach the backend by **push**: the syncer POSTs changed statuses to
 |---|---|---|---|
 | `modes`,`lines`,`routes`,`stations` | ✅ SQLite + memory | generic replicator | integer watermark, delta + listener |
 | `lineStatuses` | ❌ memory only | syncer push → `/internal/line-status-updates` | never persisted; TfL fallback at 60s |
+| station closures | SQLite `station_status_state` (shared by workers) + memory | syncer push → `/internal/station-statuses`, everything every poll | see STATION_STATUS.md |
+| feature flags | memory, following Firestore `app_config/feature_flags` | `PUT /admin/flags` | see FEATURE_FLAGS.md |
 | `api_keys` | ✅ SQLite | `authMiddleware` own listener | tiny (≈2 docs); full listen is fine |
 | `metadata/subscribed_stations` | ✅ (counts) | `subscriptionService` + (syncer) | single doc |
 | `stationPredictions` | local-only | TfL + `station_preds` | **not in Firestore**, 60 s TTL |

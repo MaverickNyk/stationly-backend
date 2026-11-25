@@ -4,6 +4,7 @@ import { StationStreamHub } from '../services/stationStreamHub';
 import { StreamPrefetch } from '../services/streamPrefetch';
 import { LineStatusStreamHub } from '../services/lineStatusStreamHub';
 import { DataCacheService } from '../services/dataCacheService';
+import { StationStatusService } from '../services/stationStatusService';
 import { SessionMaintenanceService } from '../services/sessionMaintenanceService';
 
 /**
@@ -143,6 +144,20 @@ router.post('/line-status-updates', guard, (req: Request, res: Response) => {
     }
 
     return res.json({ lines, delivered, skipped });
+});
+
+/**
+ * POST /internal/station-statuses
+ *
+ * Station closures, as the Syncer has decided them: everything, every poll. It has
+ * told phones already; we keep it to serve. See stationStatusService.ts.
+ */
+router.post('/station-statuses', guard, async (req: Request, res: Response) => {
+    try {
+        return res.json({ taken: await StationStatusService.ingest(req.body) });
+    } catch (e: any) {
+        return res.status(400).json({ error: e?.message ?? 'not taken' });
+    }
 });
 
 /**

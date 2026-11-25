@@ -4622,4 +4622,286 @@ test('line alerts: stored, confirmed against a fresh status, sent once, and retr
     }
 });
 
+// ── Feature flags ───────────────────────────────────────────────────────────
+
+const flagModule = () => import('../services/featureFlagService');
+/** Runs with one more flag in the registry. */
+const withFlags = async (extra: any[], fn: (F: any) => void | Promise<void>) => {
+    const { FEATURE_FLAGS, FeatureFlagService: F } = await flagModule();
+    FEATURE_FLAGS.push(...extra);
+    try { F.adoptLive({}); await fn(F); } finally { FEATURE_FLAGS.splice(-extra.length, extra.length); F.adoptLive({}); }
+};
+
+test('flags: every flag is documented, unique and off by default', async () => {
+    const { FEATURE_FLAGS, FeatureFlagService: F, flagEnv } = await flagModule();
+    F.adoptLive({});
+    for (const f of FEATURE_FLAGS) {
+        assert.ok(f.about && f.targets.length, f.key);
+        for (const t of f.targets) if (!f.defaultOn?.includes(t)) assert.strictEqual(F.isOn(f.key, t, {}), false, f.key);
+    }
+    assert.strictEqual(new Set(FEATURE_FLAGS.map(f => f.key)).size, FEATURE_FLAGS.length);
+    assert.strictEqual(new Set(FEATURE_FLAGS.map(f => flagEnv(f.key))).size, FEATURE_FLAGS.length);
+    assert.strictEqual(flagEnv('stationStatus.sampleBus'), 'FLAG_STATION_STATUS_SAMPLE_BUS');
+});
+
+test('flags: live beats environment beats default, and off is off', () => withFlags([{ key: 'x.srv', about: 'a', targets: ['server'] }], F => {
+    const env = { FLAG_X_SRV: 'true' };
+    F.adoptLive({});
+    assert.strictEqual(F.isOn('x.srv', 'server', {}), false);
+    assert.strictEqual(F.isOn('x.srv', 'server', env), true);
+    F.adoptLive({ 'x.srv': { server: false } });
+    assert.strictEqual(F.isOn('x.srv', 'server', env), false, 'the live kill switch wins');
+    F.adoptLive({});
+}));
+
+test('flags: anything that is not exactly true is off', () => withFlags([{ key: 'x.srv', about: 'a', targets: ['server'] }], F => {
+    for (const bad of [null, 'x', [], { 'x.srv': true }, { 'x.srv': { server: 'true' } },
+        { 'x.srv': { server: 1 } }, { 'x.srv': { ios: true } }, { nope: { server: true } }]) {
+        F.adoptLive(bad);
+        assert.strictEqual(F.isOn('x.srv', 'server', {}), false, JSON.stringify(bad));
+    }
+    for (const v of ['1', 'yes', 'on', '']) assert.strictEqual(F.isOn('x.srv', 'server', { FLAG_X_SRV: v }), false);
+    assert.strictEqual(F.isOn('nope', 'server', { FLAG_NOPE: 'true' }), false);
+    F.adoptLive({});
+}));
+
+test('flags: closures can be turned on for Android and nowhere else', async () => {
+    const { FeatureFlagService: F } = await flagModule();
+    F.adoptLive({ 'stationStatus.show': { android: true, ios: true } });
+    assert.deepStrictEqual(['android', 'ios', 'server'].map(t => F.isOn('stationStatus.show', t as any, {})), [true, false, false]);
+    assert.ok(F.editErrors({ set: { 'stationStatus.show': { ios: true } }, by: 't', reason: 'r' }).length);
+    F.adoptLive({});
+});
+
+test('flags: an app sees only its own targets, as strings, and never a server flag', async () => {
+    await withFlags([{ key: 'x.a', about: 'a', targets: ['android', 'ios'] }], F => {
+        F.adoptLive({ 'x.a': { android: true } });
+        assert.strictEqual(F.homeConfigKeys('Android', {})['flag.x.a'], 'true');
+        for (const other of ['ios', 'web', 'unknown', 'server', '', undefined]) {
+            assert.strictEqual(F.homeConfigKeys(other, {})['flag.x.a'], 'false', String(other));
+        }
+        assert.ok(!('flag.x.srv' in F.homeConfigKeys('android', {})));
+        const strings = (SduiService.getHomeConfig('android') as any).strings;
+        assert.strictEqual(strings['flag.x.a'], 'true');
+        assert.strictEqual(strings['flag.stationStatus.show'], 'false');
+    });
+});
+
+test('flags: an edit is refused whole, naming every problem', () => withFlags([{ key: 'x.srv', about: 'a', targets: ['server'] }], F => {
+    const errs = F.editErrors({ by: 't', reason: ' ', set: {
+        nope: true, 'x.srv': { ios: true }, 'x.nope': 'true', 'stationStatus.show': { android: 'x' },
+    } as any });
+    for (const part of ['nope', 'no target ios', 'x.nope', 'show.android', 'reason']) assert.ok(errs.some((e: string) => e.includes(part)), part);
+    for (const set of [undefined, null, {}, [], 'x']) assert.ok(F.editErrors({ set, by: 't', reason: 'r' } as any).length);
+    for (const reason of [undefined, 5, '']) assert.ok(F.editErrors({ set: { 'x.srv': true }, by: 't', reason } as any).length);
+}));
+
+test('flags: an edit changes only the targets it names, and null removes', async () => {
+    await withFlags([{ key: 'x.a', about: 'a', targets: ['android', 'ios'] }], F => {
+        assert.deepStrictEqual(F.merged({}, { 'x.a': true }), { 'x.a': { android: true, ios: true } });
+        assert.deepStrictEqual(F.merged({ 'x.a': { android: true, ios: true } }, { 'x.a': { ios: false } }), { 'x.a': { android: true, ios: false } });
+        assert.deepStrictEqual(F.merged({ 'x.a': { android: true } }, { 'x.a': { android: null } }), {});
+        assert.deepStrictEqual(F.merged({ 'x.a': { android: true }, y: { server: true } }, { 'x.a': null }), { y: { server: true } });
+    });
+});
+
+// ── Station status ──────────────────────────────────────────────────────────
+
+/** A real, empty database and a fresh service for [fn]. */
+const withStatus = async (fn: (S: any, x: any) => Promise<void>) => {
+    const { StationStatusService: S } = await import('../services/stationStatusService');
+    const sqlite3 = (await import('sqlite3')).default;
+    const real = (LocalDbService as any).db;
+    (LocalDbService as any).db = new sqlite3.Database(':memory:');
+    await (LocalDbService as any).createTables();
+    S.resetForTest();
+    const x: any = { now: Date.parse('2026-11-25T12:00:00Z') };
+    x.said = (kind: string, id = '940GZZLUASL', mode = 'tube') => ({ id, name: id, mode, kind, text: 'TfL said so' });
+    x.notice = (kind: string, id = '940GZZLUASL', over: any = {}) => ({ id, kind, title: 'Station closed', from: x.now - 1000, to: x.now + 9e6, expiresAt: x.now + 8e6, at: x.now, ...over });
+    x.post = (over: any = {}) => ({ group: 'rail', at: x.now, known: true, notices: [x.notice('closed')], statuses: [x.said('closed')], ...over });
+    x.log = async () => (await LocalDbService.all<any>('SELECT event, kind FROM station_status_log ORDER BY id')).map(r => `${r.event} ${r.kind}`);
+    x.kinds = async (ids: string[], now = x.now) => { const r = await S.notices(ids, now); return `${Object.keys(r.known).join()} ${r.notices.map((n: any) => n.kind).join()}`; };
+    try { await fn(S, x); } finally { (LocalDbService as any).db = real; S.resetForTest(); }
+};
+
+test('station status: serves what the Syncer said, as it came, and only for what it is asked', () => withStatus(async (S, x) => {
+    await S.ingest(x.post(), x.now);
+    const r = await S.notices(['940GZZLUASL', '940GZZLUOXC', '490000091F'], x.now);
+    assert.deepStrictEqual(r.notices, [x.notice('closed')]);
+    assert.deepStrictEqual(r.known, { '940GZZLUASL': x.now, '940GZZLUOXC': x.now }, 'nothing heard of buses');
+    assert.deepStrictEqual((await S.notices(['940GZZLUOXC'], x.now)).notices, []);
+    assert.deepStrictEqual(await S.notices([], x.now), { known: {}, notices: [] });
+}));
+
+test('station status: not known is not open', () => withStatus(async (S, x) => {
+    assert.strictEqual(await x.kinds(['940GZZLUASL']), ' ', 'nothing heard yet');
+    await S.ingest(x.post({ known: false, notices: [], statuses: [] }), x.now);
+    assert.strictEqual(await x.kinds(['940GZZLUASL']), ' ', 'the Syncer is not sure yet');
+    await S.ingest(x.post({ at: x.now + 1 }), x.now + 1);
+    assert.strictEqual(await x.kinds(['940GZZLUASL']), '940GZZLUASL closed');
+    assert.strictEqual(await x.kinds(['940GZZLUASL'], x.now + 11 * 60_000), ' ', 'the Syncer has gone quiet');
+}));
+
+test('station status: answers, and takes a post, before the database is open', () => withStatus(async (S, x) => {
+    const db = (LocalDbService as any).db; (LocalDbService as any).db = null;
+    try {
+        assert.strictEqual(await x.kinds(['940GZZLUASL']), ' ');
+        assert.strictEqual(await S.ingest(x.post(), x.now), true);
+        assert.strictEqual(await x.kinds(['940GZZLUASL']), '940GZZLUASL closed');
+        await S.describe(x.now); await assert.rejects(S.report(7, x.now), /starting/);
+    } finally { (LocalDbService as any).db = db; }
+}));
+
+test('station status: each stop is as old as what is known of it, so neither a late push nor quiet buses matter', () => withStatus(async (S, x) => {
+    await S.ingest(x.post(), x.now);
+    await S.ingest(x.post({ group: 'bus', at: x.now - 240_000, notices: [], statuses: [] }), x.now);
+    assert.deepStrictEqual((await S.notices(['940GZZLUASL', '490000091F'], x.now + 30_000)).known, { '940GZZLUASL': x.now, '490000091F': x.now - 240_000 });
+    await S.ingest(x.post({ at: x.now + 23 * 60_000 }), x.now + 23 * 60_000);
+    assert.deepStrictEqual((await S.notices(['940GZZLUASL', '490000091F'], x.now + 23 * 60_000)).known, { '940GZZLUASL': x.now + 23 * 60_000 }, 'buses have gone quiet');
+}));
+
+test('station status: a bus stop outside London is a bus stop', () => withStatus(async (S, x) => {
+    await S.ingest(x.post({ group: 'bus', notices: [x.notice('closed', '210021000010')], statuses: [] }), x.now);
+    assert.strictEqual(await x.kinds(['210021000010', '910GCAMHTH', '940GZZCRADD']), '210021000010 closed');
+}));
+
+test('station status: an old or repeated post changes nothing, nonsense is refused', () => withStatus(async (S, x) => {
+    assert.strictEqual(await S.ingest(x.post(), x.now), true);
+    for (const at of [x.now, x.now - 1]) assert.strictEqual(await S.ingest(x.post({ at, notices: [], statuses: [] }), x.now), false);
+    assert.strictEqual(await S.ingest(x.post({ at: x.now + 1e9, notices: [] }), x.now), false, 'from the future is from now');
+    for (const bad of [null, 'x', [], {}, x.post({ group: 'constructor' }), x.post({ at: 'x' }), x.post({ at: NaN }), x.post({ known: 'yes' }), x.post({ notices: {} }), x.post({ statuses: null })]) {
+        await assert.rejects(S.ingest(bad, x.now + 5), /not a station status post/, JSON.stringify(bad));
+    }
+    assert.strictEqual(await x.kinds(['940GZZLUASL']), '940GZZLUASL closed');
+    assert.strictEqual(await S.ingest(x.post({ at: x.now + 5, notices: [null, 5, {}, { id: 'a' }, x.notice('closed')] }), x.now + 5), true, 'junk among good ones is skipped');
+    assert.strictEqual(await x.kinds(['940GZZLUASL'], x.now + 5), '940GZZLUASL closed');
+}));
+
+test('station status: what has ended or expired is not served', () => withStatus(async (S, x) => {
+    await S.ingest(x.post({ notices: [x.notice('closed', '940Ga', { to: x.now + 1000 }), x.notice('closed', '940Gb', { expiresAt: x.now + 1000 }), x.notice('closed', '940Gc')] }), x.now);
+    assert.strictEqual(await x.kinds(['940Ga', '940Gb', '940Gc'], x.now + 2000), '940Ga,940Gb,940Gc closed');
+}));
+
+test('station status: workers share one answer, and a restart keeps it', () => withStatus(async (S, x) => {
+    await S.ingest(x.post(), x.now);
+    S.resetForTest(); // another worker, or this one again
+    assert.strictEqual(await x.kinds(['940GZZLUASL'], x.now + 1000), '940GZZLUASL closed');
+    assert.strictEqual(await S.ingest(x.post({ notices: [] }), x.now), false, 'the same post to another worker');
+    await LocalDbService.run(`UPDATE station_status_state SET data = '{', at = at + 1`, []);
+    S.resetForTest();
+    assert.strictEqual(await x.kinds(['940GZZLUASL']), ' ', 'an unreadable one is none');
+}));
+
+test('station status: the closed now, and no others', () => withStatus(async (S, x) => {
+    await S.ingest(x.post({ group: 'bus', notices: [x.notice('closed', '490A'), x.notice('exit_only', '490B'), x.notice('closing', '490C', { from: x.now + 60_000 }), x.notice('part_closed', '490D')], statuses: [] }), x.now);
+    assert.deepStrictEqual([...await S.closedIds(x.now)], ['490A']);
+    assert.deepStrictEqual([...await S.closedIds(x.now + 61_000)], ['490A', '490C']);
+    assert.deepStrictEqual([...await S.closedIds(x.now + 26 * 60_000)], [], 'stale');
+}));
+
+test('station status: "Closed now" in a search, for Android with the flag, when every stop of it is', () => withStatus(async (S, x) => {
+    const { FeatureFlagService: F } = await flagModule();
+    const real = { q: DataCacheService.searchStationsByQuery, by: DataCacheService.getStationById, group: DataCacheService.stationsInGroup, now: Date.now };
+    const stop = (id: string) => ({ naptanId: id, commonName: 'High Road', stationNaptan: 'HUB', modes: { bus: {} } }) as any;
+    let passes = 0;
+    (DataCacheService as any).searchStationsByQuery = () => [stop('490A')];
+    (DataCacheService as any).getStationById = (id: string) => stop(id);
+    (DataCacheService as any).stationsInGroup = () => { passes++; return [stop('490A'), stop('490B')]; };
+    (Date as any).now = () => x.now;
+    const label = async (client?: string) => {
+        let body: any;
+        await StationController.searchStations({ query: { searchKey: 'high', mode: 'bus' }, headers: { 'x-stationly-client': client } } as any, { json: (b: any) => { body = b; }, status: () => ({ json: (b: any) => { body = b; } }) } as any);
+        return body[0].secondaryLabel;
+    };
+    const post = (...ids: string[]) => S.ingest(x.post({ group: 'bus', at: ++x.now, notices: ids.map(id => x.notice('closed', id)), statuses: [] }), x.now);
+    try {
+        F.adoptLive({});
+        await post('490A', '490B');
+        assert.strictEqual(await label('android;2.0;8'), undefined, 'flag off'); assert.strictEqual(passes, 0, 'and it costs nothing');
+        F.adoptLive({ 'stationStatus.show': { android: true } });
+        assert.strictEqual(await label('android;2.0;8'), 'Closed now');
+        passes = 0;
+        for (const c of ['ios;1.1;1', undefined]) assert.strictEqual(await label(c), undefined, String(c));
+        assert.strictEqual(passes, 0, 'nor for others');
+        await post('490A'); assert.strictEqual(await label('android;2.0;8'), undefined, 'the other pole is open');
+        passes = 0; await post(); assert.strictEqual(await label('android;2.0;8'), undefined); assert.strictEqual(passes, 0);
+    } finally {
+        F.adoptLive({}); (Date as any).now = real.now;
+        Object.assign(DataCacheService, { searchStationsByQuery: real.q, getStationById: real.by, stationsInGroup: real.group });
+    }
+}));
+
+test('station status: what TfL is held to have said is logged once', () => withStatus(async (S, x) => {
+    await S.ingest(x.post(), x.now);
+    await S.ingest(x.post({ at: x.now + 1 }), x.now + 1);
+    await S.ingest(x.post({ at: x.now + 2, notices: [], statuses: [x.said('unclear')] }), x.now + 2);
+    await S.ingest(x.post({ at: x.now + 3, notices: [], statuses: [] }), x.now + 3);
+    assert.deepStrictEqual(await x.log(), ['started closed', 'changed unclear', 'cleared unclear']);
+    const r: any = await S.report(7, x.now + 4);
+    assert.deepStrictEqual(r.states.map((q: any) => `${q.kind} ${q.stations}`), ['closed 1', 'unclear 1']);
+}));
+
+test('station status: the ingest endpoint is guarded and refuses nonsense', () => withStatus(async (S, x) => {
+    const express = (await import('express')).default;
+    const internal = (await import('../routes/internalRoutes')).default;
+    const before = process.env.LIVESTREAM_INGEST_SECRET; process.env.LIVESTREAM_INGEST_SECRET = 's3cret';
+    const app = express(); app.use(express.json({ limit: '5mb' })); app.use(internal);
+    const server = app.listen(0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
+    const call = async (body: any, secret = 's3cret') => {
+        const r = await fetch(`http://127.0.0.1:${(server.address() as any).port}/station-statuses`, { method: 'POST', headers: { 'content-type': 'application/json', 'X-Internal-Secret': secret }, body: JSON.stringify(body) });
+        return [r.status, await r.json()] as [number, any];
+    };
+    try {
+        x.now = Date.now();
+        assert.strictEqual((await call(x.post(), 'wrong'))[0], 403);
+        for (const bad of [{}, [], x.post({ group: 'trams' })]) assert.strictEqual((await call(bad))[0], 400);
+        assert.deepStrictEqual((await call(x.post()))[1], { taken: true });
+        assert.deepStrictEqual((await call(x.post()))[1], { taken: false });
+        assert.strictEqual(await x.kinds(['940GZZLUASL']), '940GZZLUASL closed');
+    } finally { server.close(); if (before === undefined) delete process.env.LIVESTREAM_INGEST_SECRET; else process.env.LIVESTREAM_INGEST_SECRET = before; }
+}));
+
+test('flags: the admin API needs the key, refuses bad edits, stores good ones with their history', async () => {
+    const { FEATURE_FLAGS } = await flagModule(); FEATURE_FLAGS.push({ key: 'x.srv', about: 'a', targets: ['server'] });
+    const express = (await import('express')).default;
+    const adminRouter = (await import('../admin/adminRoutes')).default;
+    const fb: any = await import('../config/firebase');
+    const real = { collection: fb.db.collection, tx: fb.db.runTransaction, send: fb.messaging.send, key: process.env.STATIONLY_ADMIN_KEY };
+    const stored: any = {}; const history: any[] = []; let pushes = 0;
+    const doc = { collection: () => ({ doc: () => 'history' }) };
+    fb.db.collection = () => ({ doc: () => doc });
+    fb.db.runTransaction = async (fn: any) => fn({
+        get: async () => ({ data: () => stored.doc }),
+        set: (ref: any, v: any) => { if (ref === 'history') history.push(v); else stored.doc = v; },
+    });
+    fb.messaging.send = async () => { pushes++; return 'id'; };
+    process.env.STATIONLY_ADMIN_KEY = 'k'.repeat(40);
+    const app = express(); app.use(express.json()); app.use(adminRouter);
+    const server = app.listen(0); const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    const call = async (method: string, path: string, body?: any, key = 'k'.repeat(40)) => {
+        const r = await fetch(base + path, { method, headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+        return { status: r.status, body: await r.json().catch(() => null) as any };
+    };
+    try {
+        for (const [m, p] of [['GET', '/flags'], ['PUT', '/flags'], ['GET', '/station-status'], ['GET', '/station-status/report']]) {
+            assert.ok([401, 403].includes((await call(m, p, m === 'PUT' ? {} : undefined, 'wrong')).status), `${m} ${p}`);
+        }
+        const bad = await call('PUT', '/flags', { set: { nope: true }, reason: 'r' });
+        assert.strictEqual(bad.status, 400); assert.strictEqual(stored.doc, undefined);
+        assert.strictEqual((await call('PUT', '/flags', {})).status, 400);
+        const ok = await call('PUT', '/flags', { set: { 'x.srv': true }, reason: 'shadow', by: 'me' });
+        assert.strictEqual(ok.status, 200); assert.strictEqual(pushes, 0);
+        assert.deepStrictEqual(stored.doc.values, { 'x.srv': { server: true } });
+        assert.deepStrictEqual([history[0].by, history[0].reason], ['me', 'shadow']);
+        await call('PUT', '/flags', { set: { 'x.srv': null }, reason: 'stop', push: true });
+        assert.deepStrictEqual(stored.doc.values, {}); assert.strictEqual(pushes, 1);
+        const list = await call('GET', '/flags');
+        assert.strictEqual(list.body.flags.find((f: any) => f.key === 'x.srv').targets.server.on, false);
+        assert.strictEqual((await call('GET', '/station-status')).status, 200);
+    } finally {
+        FEATURE_FLAGS.pop(); server.close(); fb.db.collection = real.collection; fb.db.runTransaction = real.tx; fb.messaging.send = real.send;
+        if (real.key === undefined) delete process.env.STATIONLY_ADMIN_KEY; else process.env.STATIONLY_ADMIN_KEY = real.key;
+    }
+});
+
 main();

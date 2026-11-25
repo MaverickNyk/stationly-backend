@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { AdminAuthMiddleware } from './adminAuthMiddleware';
 import { NotificationController } from './notificationController';
 import { NOTIFICATION_POLICY_KEYS, NotificationPolicyService } from '../services/notificationPolicyService';
+import { FeatureFlagService } from '../services/featureFlagService';
+import { StationStatusService } from '../services/stationStatusService';
 import { AdminUserController } from './adminUserController';
 import { AdminDataController } from './adminDataController';
 import { AdminEmailController } from './adminEmailController';
@@ -83,6 +85,41 @@ adminRouter.put('/notifications/policy', async (req, res) => {
         catch (e: any) { console.warn('NOTIFY_POLICY: refresh push failed', e?.message); }
     }
     return res.json({ ok: true, pushed });
+});
+
+// GET /admin/flags
+//   Every feature flag: what it does, where it is on, and what says so.
+adminRouter.get('/flags', (_req, res) => res.json({ flags: FeatureFlagService.describe() }));
+
+// PUT /admin/flags
+//   { set: { "stationStatus.show": true, "x.show": { "android": false }, "y": null }, reason, by?, push? }
+//   Live in seconds, no deploy. null removes the override. All or nothing.
+//   `push: true` also tells phones to refetch; app flags only.
+adminRouter.put('/flags', async (req, res) => {
+    const edit = { set: req.body?.set, reason: req.body?.reason, by: String(req.body?.by ?? 'admin').slice(0, 80) };
+    const errors = FeatureFlagService.editErrors(edit);
+    if (errors.length) return res.status(400).json({ ok: false, errors });
+    try {
+        await FeatureFlagService.applyEdit(edit);
+        console.log(`FLAGS: ${JSON.stringify(edit.set).slice(0, 300)} by ${edit.by}`);
+    } catch (e: any) {
+        return res.status(500).json({ ok: false, errors: [e?.message ?? 'save failed'] });
+    }
+    let pushed: string | null = null;
+    if (req.body?.push === true) {
+        try { pushed = await NotificationPolicyService.pushConfigRefresh(`flags: ${edit.reason}`); }
+        catch (e: any) { console.warn('FLAGS: refresh push failed', e?.message); }
+    }
+    return res.json({ ok: true, pushed });
+});
+
+// GET /admin/station-status           what the Syncer last said
+// GET /admin/station-status/report    what its log has learned, ?days=7 (1 to 30)
+adminRouter.get('/station-status', async (_req, res) => res.json(await StationStatusService.describe()));
+adminRouter.get('/station-status/report', async (req, res) => {
+    const days = Math.min(30, Math.max(1, Math.floor(Number(req.query.days)) || 7));
+    try { res.json(await StationStatusService.report(days)); }
+    catch (e: any) { res.status(500).json({ error: e?.message ?? 'report failed' }); }
 });
 
 // POST /admin/config/refresh-push   body: { reason?: string }

@@ -78,6 +78,9 @@ router.get('/stations/line/:lineId', StationController.getStationsByLine);
 router.get('/stations/search', StationController.searchStations);
 router.get('/stations/nearby', StationController.searchStations);
 router.get('/stations/resolve', StationController.resolveStation);
+// ?ids=a,b  notices for those stops.
+// What the Syncer last told us, from memory, as /lines/status is.
+router.get('/stations/status', StationController.getStationStatus);
 router.get('/stations/predictions/:naptanId', StationController.getStationPredictions);
 
 // --- DEVELOPER/INTERNAL ROUTES ---
