@@ -10,7 +10,26 @@ import { nowMs } from '../utils/timestamps';
 import { PredictionSourceFactory } from '../services/predictionSources/PredictionSourceFactory';
 import { PredictionCache } from '../services/predictionCache';
 import { StationStreamHub } from '../services/stationStreamHub';
+import { FeatureFlagService } from '../services/featureFlagService';
+import { StationStatusService } from '../services/stationStatusService';
+import { parseClientIdentity } from '../services/appReleaseService';
 import { readNaptan, aliasDisplayName } from '../services/predictionSources/predictionUtils';
+
+/** Which rows to mark "Closed now". Costs nothing unless the caller has the feature and something is closed. */
+async function closedLabeller(req: Request, mode: string | undefined): Promise<(s: any, distance: string | undefined) => string | undefined> {
+    const platform = parseClientIdentity(req.headers['x-stationly-client'] as string).platform;
+    const closed = FeatureFlagService.isOn('stationStatus.show', platform as any) ? await StationStatusService.closedIds() : new Set<string>();
+    if (closed.size === 0) return (_s, distance) => distance;
+    const hubs = new Set([...closed].map(id => DataCacheService.getStationById(id)).filter(Boolean).map(s => DataCacheService.getHubId(s!)));
+    return (s, distance) => {
+        const hub = DataCacheService.getHubId(s);
+        if (!hubs.has(hub)) return distance;
+        // Only if every stop here of this mode is: a bus stop's other pole may be open.
+        const here = DataCacheService.stationsInGroup(hub).filter(m => !mode || DataCacheService.stationServesMode(m, mode));
+        const all = here.length > 0 && here.every(m => closed.has(m.naptanId || (m as any).id));
+        return all ? ['Closed now', distance].filter(Boolean).join(' · ') : distance;
+    };
+}
 
 function formatDistance(meters: number): string {
     const miles = meters / 1609.34;
@@ -107,6 +126,12 @@ export class StationController {
         }
         const ids = SubscriptionService.getSubscribedStationIds();
         return res.json(ids);
+    }
+
+    /** Station closures, for our apps. Not @swagger: that would publish it. */
+    static async getStationStatus(req: Request, res: Response) {
+        const ids = String(req.query.ids ?? '').split(',').map(x => x.trim()).filter(x => /^[A-Za-z0-9]{5,20}$/.test(x)).slice(0, 50);
+        return res.json(await StationStatusService.notices([...new Set(ids)]));
     }
 
     /**
@@ -382,6 +407,7 @@ export class StationController {
     static async searchStations(req: Request, res: Response) {
         const { searchKey, lat, lon, mode } = req.query;
         const modeFilter = mode ? String(mode) : undefined;
+        const label = await closedLabeller(req, modeFilter);
 
         try {
             // ── Text search ────────────────────────────────────────────────────────
@@ -432,7 +458,7 @@ export class StationController {
                     id: DataCacheService.getHubId(s),
                     label: s.commonName || s.label || s.id,
                     iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
-                    secondaryLabel: s.distance !== undefined ? formatDistance(s.distance) : undefined,
+                    secondaryLabel: label(s, s.distance !== undefined ? formatDistance(s.distance) : undefined),
                     tags: lineTags(s, modeFilter),
                 })));
             }
@@ -476,7 +502,7 @@ export class StationController {
                 return res.json(grouped.slice(0, 25).map(s => ({
                     id: DataCacheService.getHubId(s),
                     label: s.label || s.commonName || s.id,
-                    secondaryLabel: formatDistance(s.distance || 0),
+                    secondaryLabel: label(s, formatDistance(s.distance || 0)),
                     iconUrl: isBusStation(s) ? getIconUrl('bus') : null,
                     tags: lineTags(s, modeFilter),
                 })));

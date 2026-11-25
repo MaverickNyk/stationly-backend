@@ -42,13 +42,16 @@ its own repo and drives these endpoints purely over HTTP (no code coupling).
 ### Endpoints (all off the OpenAPI docs)
 `POST /notifications/send` · `GET /notifications/history` ·
 `GET /users` · `GET /users/:uid` · `GET /users/:uid/tokens` ·
-`GET /waitlist` · `GET /subscribed-stations` · `GET /stats`.
+`GET /waitlist` · `GET /subscribed-stations` · `GET /stats` ·
+`GET|PUT /flags` (docs/FEATURE_FLAGS.md) ·
+`GET /station-status` · `GET /station-status/report` (docs/STATION_STATUS.md).
 
 ### Firestore read/write budget (keep it minimal)
 Everything here serves from the in-memory cache + SQLite slave. The ONLY
 Firestore reads are: `/users` & `/waitlist` with `?refresh=1` (one collection
 read, then re-cached), a one-time first load, and a rare single-doc fallback in
-`/users/:uid`. There are **no Firestore writes** — the send-history audit log
+`/users/:uid`. The only Firestore writes are
+live settings (`PUT /flags`, `PUT /notifications/policy`) — the send-history audit log
 and the users/waitlist slaves are written to SQLite (`LocalDbService`).
 
 External integration points:

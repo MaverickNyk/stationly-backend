@@ -1,6 +1,7 @@
 import { getBaseUrl, getWebUrl, isStaging } from '../utils/formatters';
 import { assetUrl } from './assetVersionService';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
+import { FeatureFlagService } from './featureFlagService';
 import { NotificationPolicyService } from './notificationPolicyService';
 import { LineSeverityService } from './lineSeverityService';
 import { LinePaletteService } from './linePaletteService';
@@ -839,6 +840,9 @@ export class SduiService {
                 // notification, with the rules compiled in, and could not be
                 // quietened without a release. See notificationPolicyService.ts.
                 ...NotificationPolicyService.homeConfigKeys(),
+
+                // ── Feature flags for this platform: flag.* = "true"/"false" ──
+                ...FeatureFlagService.homeConfigKeys(platform),
 
                 // ── TfL colour palette ────────────────────────────────────────
                 //
