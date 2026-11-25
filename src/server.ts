@@ -9,6 +9,7 @@ import { buildSpecs } from './config/openapi';
 import apiRoutes from './routes/apiRoutes';
 import adminRoutes from './admin/adminRoutes';
 import { AuthMiddleware } from './middleware/authMiddleware';
+import { FeatureFlagService } from './services/featureFlagService';
 import { NotificationPolicyService } from './services/notificationPolicyService';
 import { LineController } from './controllers/lineController';
 import { LineAlertService } from './services/lineAlertService';
@@ -638,6 +639,7 @@ server.listen(port, () => {
     console.log(`\n--- [STATIONLY UNIFIED BACKEND LIVE] ---`);
     DataCacheService.initialize();
     NotificationPolicyService.start();
+    FeatureFlagService.start();
     // Every line by name: the Syncer pushes only CHANGED lines, so a mode can
     // look fresh while most of it has never been heard of.
     LineAlertService.start(mode =>

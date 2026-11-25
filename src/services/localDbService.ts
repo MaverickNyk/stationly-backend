@@ -156,6 +156,21 @@ export class LocalDbService {
                 type TEXT,
                 processed_at INTEGER
             )`,
+            // What TfL's station notices were held to say: for judging it, kept 30 days. See stationStatusService.ts.
+            `CREATE TABLE IF NOT EXISTS station_status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at INTEGER,
+                station TEXT,
+                name TEXT,
+                mode TEXT,
+                event TEXT,
+                kind TEXT,
+                why TEXT,
+                text TEXT
+            )`,
+            // The Syncer's latest answer, shared by all workers.
+            `CREATE TABLE IF NOT EXISTS station_status_state (grp TEXT PRIMARY KEY, at INTEGER, data TEXT)`,
+            `CREATE INDEX IF NOT EXISTS idx_station_status_log_at ON station_status_log(at)`,
             // Indexes for speed
             `CREATE INDEX IF NOT EXISTS idx_stations_naptan ON stations(naptanId)`,
             `CREATE INDEX IF NOT EXISTS idx_stations_name ON stations(commonName)`,
@@ -190,6 +205,9 @@ export class LocalDbService {
             try { await this.run(a); } catch { /* column already exists */ }
         }
     }
+
+    /** Whether a query can be answered. Before initialize() one never is. */
+    static isOpen(): boolean { return this.db !== null; }
 
     static run(query: string, params: any[] = []): Promise<void> {
         return new Promise((resolve, reject) => {
