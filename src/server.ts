@@ -32,6 +32,7 @@ import { PredictionCache } from './services/predictionCache';
 // trial. This import and the mountTemporaryWebApp() call below are the ENTIRE
 // coupling; see web-temp/CAFE_KIOSK_DISPLAY.md.
 import { mountTemporaryWebApp, attachTemporaryKioskStream } from './tempWebHost';
+import { AdminDataService } from './admin/adminDataService';
 // ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 dotenv.config();
@@ -640,6 +641,7 @@ server.listen(port, () => {
     DataCacheService.initialize();
     NotificationPolicyService.start();
     FeatureFlagService.start();
+    AdminDataService.startHourlySync();
     // Every line by name: the Syncer pushes only CHANGED lines, so a mode can
     // look fresh while most of it has never been heard of.
     LineAlertService.start(mode =>

@@ -112,7 +112,9 @@ export class LocalDbService {
                 emailVerified INTEGER,
                 stationCount INTEGER,
                 sessions TEXT,
-                stations TEXT
+                stations TEXT,
+                support TEXT,
+                legacyStations TEXT
             )`,
             // The `stateRev` watermark, one row per account. Firestore is the
             // master; this is the slave that lets `GET /user/state/rev` answer
@@ -200,6 +202,8 @@ export class LocalDbService {
             'ALTER TABLE users ADD COLUMN updatedAt INTEGER',
             'ALTER TABLE users ADD COLUMN sessions TEXT',
             'ALTER TABLE users ADD COLUMN stations TEXT',
+            'ALTER TABLE users ADD COLUMN support TEXT',
+            'ALTER TABLE users ADD COLUMN legacyStations TEXT',
         ];
         for (const a of adds) {
             try { await this.run(a); } catch { /* column already exists */ }
@@ -411,7 +415,7 @@ export class LocalDbService {
         photoURL: string; signInProvider: string;
         createdAt: number; updatedAt: number; lastLoggedInTime: number;
         loggedIn: boolean; emailVerified: boolean; stationCount: number;
-        sessions: string; stations: string;
+        sessions: string; stations: string; support?: string; legacyStations?: string;
     }>): Promise<void> {
         await this.inTransaction(async () => {
             await this.run('DELETE FROM users');
@@ -419,20 +423,37 @@ export class LocalDbService {
                 await this.run(
                     `INSERT OR REPLACE INTO users
                      (uid, email, displayName, photoURL, signInProvider, createdAt, updatedAt,
-                      lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                      lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations, support, legacyStations)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [r.uid, r.email, r.displayName, r.photoURL, r.signInProvider, r.createdAt, r.updatedAt,
                      r.lastLoggedInTime, r.loggedIn ? 1 : 0, r.emailVerified ? 1 : 0, r.stationCount,
-                     r.sessions, r.stations]
+                     r.sessions, r.stations, r.support ?? null, r.legacyStations ?? null]
                 );
             }
         });
     }
 
+    /** One account into the `users` slave (the admin's changed-accounts sync). */
+    static async upsertUser(r: {
+        uid: string; email: string; displayName: string; photoURL: string; signInProvider: string;
+        createdAt: number; updatedAt: number; lastLoggedInTime: number; loggedIn: boolean; emailVerified: boolean;
+        stationCount: number; sessions: string; stations: string; support?: string; legacyStations?: string;
+    }): Promise<void> {
+        await this.run(
+            `INSERT OR REPLACE INTO users
+             (uid, email, displayName, photoURL, signInProvider, createdAt, updatedAt,
+              lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations, support, legacyStations)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [r.uid, r.email, r.displayName, r.photoURL, r.signInProvider, r.createdAt, r.updatedAt,
+             r.lastLoggedInTime, r.loggedIn ? 1 : 0, r.emailVerified ? 1 : 0, r.stationCount,
+             r.sessions, r.stations, r.support ?? null, r.legacyStations ?? null]
+        );
+    }
+
     static async allUsers(): Promise<any[]> {
         return this.all(
             `SELECT uid, email, displayName, photoURL, signInProvider, createdAt, updatedAt,
-                    lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations
+                    lastLoggedInTime, loggedIn, emailVerified, stationCount, sessions, stations, support, legacyStations
              FROM users ORDER BY createdAt DESC`
         );
     }
