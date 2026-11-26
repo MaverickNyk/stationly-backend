@@ -1,3 +1,4 @@
+import { SupportMoneyStatsService } from './supportMoneyStatsService';
 import admin from 'firebase-admin';
 import { db, auth } from '../config/firebase';
 import { SubscriptionService } from './subscriptionService';
@@ -1669,6 +1670,12 @@ export class UserService {
         amountMinor?: number;
         currency?: string;
         nowMs?: number;
+        /**
+         * Does this payment go into the public monthly total? False for store
+         * test purchases (license testers, sandbox) and unverified receipts.
+         * The ledger row is written either way.
+         */
+        countInTotal?: boolean;
     }): Promise<RecordSupportMoneyResult> {
         const { uid, txnId, amountMinor, currency } = input;
         const now = Number.isFinite(input.nowMs) ? (input.nowMs as number) : Date.now();
@@ -1712,6 +1719,19 @@ export class UserService {
             return { recorded: true as const, reason: undefined, count: next.length };
         });
 
+        if (outcome.recorded && input.countInTotal !== false) {
+            // The month's running total for the "running costs" line. After the
+            // ledger write, never instead of it, and never awaited: see
+            // SupportMoneyStatsService for why a failure there is only logged.
+            // The catch is belt and braces: an unhandled rejection here would
+            // take the worker down.
+            SupportMoneyStatsService.recordTxn({
+                txnId,
+                amountMinor: Number(amountMinor) || 0,
+                currency: currency || 'GBP',
+                atMs: now,
+            }).catch(err => console.warn('SUPPORT_MONEY: ⚠️ monthly total not updated:', err?.message ?? err));
+        }
         if (outcome.recorded) {
             // Reuse the `profile` reason: the client already responds to it with
             // a full `/user/sync/profile` fetch, which now carries `supportMoney`.

@@ -38,6 +38,8 @@ import { UserFcmTokenService } from '../services/userFcmTokenService';
 import { UserService, PROTECTED_PROFILE_FIELDS, projectSupportMoneyForClient, readSupportMoneyEntries } from '../services/userService';
 import { verifyStripeSignature, signPayloadForTest } from '../utils/stripeSignature';
 import { SupportMoneyConfigService, SupportMoneyCardConfig } from '../services/supportMoneyConfigService';
+import { SupportMoneyStatsService, londonMonth, txnSource } from '../services/supportMoneyStatsService';
+import { WhatsNewService } from '../services/whatsNewService';
 import {
     SupportMoneyService, StripeEventLedger, txnIdFor, isUsableUid,
 } from '../services/supportMoneyService';
@@ -58,7 +60,7 @@ import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
 import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
-import { sanitizeDisplayName, getGreetingName } from '../utils/formatters';
+import { sanitizeDisplayName, getGreetingName, formatModeLabel } from '../utils/formatters';
 import { buildSpecs, buildPublicSpec } from '../config/openapi';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -68,6 +70,21 @@ const tests: Array<{ name: string; fn: TestFn }> = [];
 const test = (name: string, fn: TestFn) => tests.push({ name, fn });
 
 async function main(): Promise<void> {
+    // No test may reach the real monthly-total collection. The webhook tests
+    // run the web-donation path end to end, and with credentials on the
+    // machine that wrote a fake payment into staging's support_money_txns
+    // (2026-11-26). Tests that need a reader or writer install their own and
+    // restore these.
+    SupportMoneyStatsService.writer = async () => {};
+    SupportMoneyStatsService.reader = async () => [];
+    // The same for the website's donation record: the webhook tests drive the
+    // web path end to end and used to write fake `web_donations` rows into
+    // whatever project the local key points at. The anonymous-donation test
+    // installs its own recorder and restores this one.
+    SupportMoneyService.recordWebDonation = async () => {};
+    // And no test sends a real thank-you email through Resend.
+    EmailService.sendSupportThankYouEmail = async () => true as any;
+
     let passed = 0;
     const failures: Array<{ name: string; err: unknown }> = [];
 
@@ -123,6 +140,11 @@ function fakeSocket(): WebSocket & { sent: string[]; closed: boolean } {
 }
 
 // ─── PredictionCache ─────────────────────────────────────────────────────────
+
+test('a mode label: DLR is initials, the rest are words', () => {
+    assert.deepStrictEqual(['dlr', 'tube', 'overground', 'elizabeth-line', 'bus', ''].map(formatModeLabel),
+        ['DLR', 'Tube', 'Overground', 'Elizabeth Line', 'Bus', '']);
+});
 
 test('getFresh misses on an empty cache and counts a restMiss', () => {
     assert.strictEqual(PredictionCache.getFresh('940GZZDLTWG'), undefined);
@@ -1249,6 +1271,223 @@ test('support config: the voice rules hold across every user-visible string', ()
     }
 });
 
+/** Run [body] with some env vars set (undefined = unset), restoring them after. */
+async function withEnvVars(vars: Record<string, string | undefined>, body: () => void | Promise<void>): Promise<void> {
+    const saved: Record<string, string | undefined> = {};
+    for (const k of Object.keys(vars)) {
+        saved[k] = process.env[k];
+        if (vars[k] === undefined) delete process.env[k]; else process.env[k] = vars[k];
+    }
+    try { await body(); } finally {
+        for (const k of Object.keys(saved)) {
+            if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+        }
+    }
+}
+
+test('support reach: the on-open ask is served to Android only by default, never to iOS', async () => {
+    // iOS 1.1 in the App Store has no code that reads these keys, and a future
+    // iOS build must not start asking on open just because it learned to read
+    // them. Only the platforms the operator names get `true`.
+    await withEnvVars({
+        SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS: undefined,
+        SUPPORT_MONEY_ASK_MIN_DAYS: undefined,
+        SUPPORT_MONEY_ASK_EVERY_DAYS: undefined,
+    }, () => {
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('android')['home.promo.support_money.ask_on_open'], 'true');
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('ios')['home.promo.support_money.ask_on_open'], 'false');
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('unknown')['home.promo.support_money.ask_on_open'], 'false');
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys(undefined)['home.promo.support_money.ask_on_open'], 'false');
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('android')['home.promo.support_money.ask_min_days'], '7');
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('android')['home.promo.support_money.ask_every_days'], '14');
+    });
+    await withEnvVars({ SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS: 'none' }, () => {
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('android')['home.promo.support_money.ask_on_open'], 'false');
+    });
+    await withEnvVars({ SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS: 'android, ios' }, () => {
+        assert.strictEqual(SupportMoneyConfigService.homeConfigKeys('ios')['home.promo.support_money.ask_on_open'], 'true');
+    });
+});
+
+test('support reach: the running costs line is off until a monthly cost is set', async () => {
+    await withEnvVars({ SUPPORT_MONEY_MONTHLY_COST_MINOR: undefined }, () => {
+        const keys = SupportMoneyConfigService.homeConfigKeys('android');
+        assert.strictEqual(keys['support_money.progress.show'], 'false');
+        assert.strictEqual(keys['support_money.progress.cost_minor'], undefined, 'no figures served with it off');
+    });
+});
+
+test('support reach: the running costs line serves this month from the cached total', async () => {
+    const now = Date.parse('2026-12-10T12:00:00Z');
+    const savedReader = SupportMoneyStatsService.reader;
+    SupportMoneyStatsService.resetForTest();
+    SupportMoneyStatsService.reader = async (month) => {
+        assert.strictEqual(month, '2026-12');
+        return [
+            { amountMinor: 800, currency: 'GBP' },
+            { amountMinor: 400, currency: 'gbp' },
+            { amountMinor: 999, currency: 'USD' },   // not summed into a £ figure
+            { amountMinor: 'x', currency: 'GBP' },   // malformed row ignored
+        ];
+    };
+    try {
+        await SupportMoneyStatsService.refresh(now);
+        await withEnvVars({ SUPPORT_MONEY_MONTHLY_COST_MINOR: '60000', SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR: undefined }, () => {
+            const keys = SupportMoneyConfigService.progressKeys(now);
+            assert.strictEqual(keys['support_money.progress.show'], 'true');
+            assert.strictEqual(keys['support_money.progress.cost_minor'], '60000');
+            assert.strictEqual(keys['support_money.progress.raised_minor'], '1200');
+            assert.strictEqual(keys['support_money.progress.count'], '2');
+            assert.strictEqual(keys['support_money.progress.month'], 'December');
+            assert.strictEqual(keys['support_money.progress.show_raised_from_minor'], '10000', 'figure hidden below £100 by default');
+            assert.ok(!/nobody/i.test(keys['support_money.progress.empty']), 'the low-total line never says nobody has given');
+            for (const k of ['text', 'empty', 'met']) {
+                const v = keys[`support_money.progress.${k}`];
+                assert.ok(v && !/[–—]/.test(v) && !/donat|coffee/i.test(v), `${k} follows the voice rules`);
+            }
+            assert.ok(!/covered/i.test(keys['support_money.progress.text']), 'gross figure: says "given", never "covered"');
+        });
+    } finally {
+        SupportMoneyStatsService.reader = savedReader;
+        SupportMoneyStatsService.resetForTest();
+    }
+});
+
+test('support reach: a payment marks the month stale, keyed by its transaction id', async () => {
+    const now = Date.parse('2026-12-10T12:00:00Z');
+    const savedReader = SupportMoneyStatsService.reader;
+    const savedWriter = SupportMoneyStatsService.writer;
+    const rows: any[] = [];
+    SupportMoneyStatsService.resetForTest();
+    SupportMoneyStatsService.reader = async () => [];
+    SupportMoneyStatsService.writer = async (row) => { rows.push(row); };
+    try {
+        await SupportMoneyStatsService.refresh(now);
+        await SupportMoneyStatsService.recordTxn({ txnId: 'google_GPA.1', amountMinor: 800, currency: 'gbp', atMs: now });
+        await SupportMoneyStatsService.recordTxn({ txnId: 'cs_live_x', amountMinor: 1200, currency: 'GBP', atMs: now, web: true });
+        assert.deepStrictEqual(rows.map(r => [r.txnId, r.month, r.source, r.currency]), [
+            ['google_GPA.1', '2026-12', 'google', 'GBP'],
+            ['cs_live_x', '2026-12', 'web', 'GBP'],
+        ]);
+        // Marked stale, not bumped: the next read re-sums from the rows.
+        assert.strictEqual(SupportMoneyStatsService.current(now)?.raisedMinor, 0, 'stale figure until re-summed');
+        await SupportMoneyStatsService.refresh(now); // the one that stale read started
+        SupportMoneyStatsService.reader = async () => rows;
+        await SupportMoneyStatsService.refresh(now);
+        assert.strictEqual(SupportMoneyStatsService.current(now)?.raisedMinor, 2000);
+    } finally {
+        SupportMoneyStatsService.reader = savedReader;
+        SupportMoneyStatsService.writer = savedWriter;
+        SupportMoneyStatsService.resetForTest();
+    }
+});
+
+test('support reach: a failed monthly row never fails the payment path', async () => {
+    const savedWriter = SupportMoneyStatsService.writer;
+    const savedWarn = console.warn;
+    SupportMoneyStatsService.writer = async () => { throw new Error('firestore down'); };
+    console.warn = () => {};
+    try {
+        await SupportMoneyStatsService.recordTxn({ txnId: 'apple_1', amountMinor: 400, currency: 'GBP', atMs: Date.now() });
+    } finally {
+        SupportMoneyStatsService.writer = savedWriter;
+        console.warn = savedWarn;
+    }
+});
+
+test('support reach: a forged purchase date cannot crash the worker', async () => {
+    const savedWriter = SupportMoneyStatsService.writer;
+    const rows: any[] = [];
+    SupportMoneyStatsService.writer = async (row) => { rows.push(row); };
+    try {
+        // 1e16 is past what Date can hold; londonMonth would throw on it.
+        await SupportMoneyStatsService.recordTxn({ txnId: 'apple_x', amountMinor: 400, currency: 'GBP', atMs: 1e16 });
+        await SupportMoneyStatsService.recordTxn({ txnId: 'apple_y', amountMinor: 400, currency: 'GBP', atMs: NaN });
+        assert.strictEqual(rows.length, 2, 'filed under now instead');
+    } finally {
+        SupportMoneyStatsService.writer = savedWriter;
+    }
+});
+
+test('support reach: the line is hidden until the month has been summed, and the threshold never exceeds the cost', async () => {
+    const now = Date.parse('2026-12-10T12:00:00Z');
+    const savedReader = SupportMoneyStatsService.reader;
+    SupportMoneyStatsService.resetForTest();
+    let resolveRead: (v: any[]) => void = () => {};
+    SupportMoneyStatsService.reader = () => new Promise(r => { resolveRead = r; });
+    try {
+        await withEnvVars({ SUPPORT_MONEY_MONTHLY_COST_MINOR: '6000', SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR: undefined }, async () => {
+            assert.strictEqual(SupportMoneyConfigService.progressKeys(now)['support_money.progress.show'], 'false',
+                'just restarted: not a zero the app would cache');
+            resolveRead([{ amountMinor: 5900, currency: 'GBP' }]);
+            await SupportMoneyStatsService.refresh(now);
+            const keys = SupportMoneyConfigService.progressKeys(now);
+            assert.strictEqual(keys['support_money.progress.show'], 'true');
+            assert.strictEqual(keys['support_money.progress.show_raised_from_minor'], '6000', 'clamped to the cost');
+        });
+        await withEnvVars({ SUPPORT_MONEY_MONTHLY_COST_MINOR: '60000', SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR: '0' }, () => {
+            assert.strictEqual(SupportMoneyConfigService.progressKeys(now)['support_money.progress.show_raised_from_minor'], '0',
+                '0 means always show the figure');
+        });
+    } finally {
+        SupportMoneyStatsService.reader = savedReader;
+        SupportMoneyStatsService.resetForTest();
+    }
+});
+
+test('support reach: test purchases are recorded on the account but kept out of the monthly total', async () => {
+    const now = 3_000_000_000_000;
+    const savedWriter = SupportMoneyStatsService.writer;
+    const rows: any[] = [];
+    await withSupportMoneyUserDoc({ stateRev: 1 }, async () => {
+        SupportMoneyStatsService.writer = async (row) => { rows.push(row); };
+        try {
+            const r = await UserService.recordSupportMoney({ uid: 'u', txnId: 'google_GPA.T', amountMinor: 800, nowMs: now, countInTotal: false });
+            assert.strictEqual(r.recorded, true, 'the ledger row is still written');
+            await UserService.recordSupportMoney({ uid: 'u', txnId: 'google_GPA.R', amountMinor: 800, nowMs: now });
+            await new Promise(r => setImmediate(r));
+            assert.deepStrictEqual(rows.map(x => x.txnId), ['google_GPA.R']);
+        } finally {
+            SupportMoneyStatsService.writer = savedWriter;
+        }
+    });
+});
+
+test('support reach: months are London months, and sources come from the ledger id', () => {
+    // 00:30 on 1 July in London is still 30 June in UTC.
+    assert.strictEqual(londonMonth(Date.parse('2026-06-30T23:30:00Z')), '2026-07');
+    // 00:30 on 1 December in London is 1 December in UTC too (GMT).
+    assert.strictEqual(londonMonth(Date.parse('2026-11-30T23:30:00Z')), '2026-11');
+    assert.strictEqual(txnSource('apple_200001'), 'apple');
+    assert.strictEqual(txnSource('google_GPA.3301'), 'google');
+    assert.strictEqual(txnSource('cs_live_abc'), 'stripe');
+    assert.strictEqual(txnSource('cs_live_abc', true), 'web');
+});
+
+test('google play: a refused call is logged without the purchase token', async () => {
+    const { describePlayError } = await import('../services/googlePlayIAPService');
+    const err: any = new Error('Request failed with status code 401');
+    err.config = { url: 'https://androidpublisher.googleapis.com/x/purchases/products/p/tokens/SECRET_TOKEN_123' };
+    err.response = { status: 401, data: { error: { message: 'insufficient permissions', errors: [{ reason: 'permissionDenied' }] } } };
+    const line = describePlayError(err);
+    assert.strictEqual(line, 'HTTP 401 permissionDenied insufficient permissions');
+    assert.ok(!line.includes('SECRET_TOKEN_123'));
+    assert.ok(!describePlayError(new Error('GET .../tokens/SECRET_TOKEN_123 failed')).includes('SECRET_TOKEN_123'));
+});
+
+test("support reach: What's new follows the voice rules and parses", () => {
+    const keys = WhatsNewService.homeConfigKeys({});
+    assert.strictEqual(keys['whats_new.v2.show'], 'true');
+    assert.strictEqual(WhatsNewService.homeConfigKeys({ WHATS_NEW_V2_ENABLED: 'false' })['whats_new.v2.show'], 'false');
+    const items = JSON.parse(keys['whats_new.v2.items.json']);
+    assert.ok(Array.isArray(items) && items.length >= 3);
+    for (const it of items) assert.ok(it.icon && it.title && it.body, 'every row has icon, title, body');
+    for (const v of Object.values(keys)) {
+        assert.ok(!/[–—]/.test(v), `no en/em dash: ${v.slice(0, 80)}`);
+        assert.ok(!/donat|coffee/i.test(v), `no donate/coffee: ${v.slice(0, 80)}`);
+    }
+});
+
 test('support config: every tier says what that amount does, and thanks you for it', () => {
     // The ladder is £4 / £8 / £12 and the numbers alone say nothing. Each rung
     // names something REAL the money does, because "why is this one more than
@@ -1871,6 +2110,8 @@ async function withSupportMoneyUserDoc(
 
     anyUS.collection = { doc: () => ({}) };
     anyUS.afterContentWrite = () => { afterCalls++; };
+    const savedStatsWriter = SupportMoneyStatsService.writer;
+    SupportMoneyStatsService.writer = async () => {};
     anyDb.runTransaction = async (fn: (tx: unknown) => Promise<unknown>) => {
         return fn({
             get: async () => ({ exists: stored !== null, data: () => stored ?? undefined }),
@@ -1884,6 +2125,7 @@ async function withSupportMoneyUserDoc(
         anyDb.runTransaction = savedTx;
         anyUS.collection = savedCollection;
         anyUS.afterContentWrite = savedAfter;
+        SupportMoneyStatsService.writer = savedStatsWriter;
     }
 }
 

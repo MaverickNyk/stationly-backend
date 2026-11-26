@@ -27,6 +27,7 @@ export function getIconPath(modeName?: string): string | null {
  */
 export function formatModeLabel(modeName?: string): string {
     if (!modeName) return "";
+    if (modeName.toLowerCase() === 'dlr') return 'DLR'; // Initials, not a word.
     return modeName
         .split('-')
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))

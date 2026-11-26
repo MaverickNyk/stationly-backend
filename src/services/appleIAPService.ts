@@ -122,11 +122,16 @@ export class AppleIAPService {
         this.initialize();
 
         let decoded: any = null;
+        // Whether Apple's signature checked out. An unverified payload is still
+        // credited below (the pre-existing Xcode/sandbox fallback, AV2 backlog),
+        // but it never counts towards the public monthly total.
+        let verified = false;
 
         // 1. Try strict cryptographic verification first
         if (this.verifier) {
             try {
                 decoded = await this.verifier.verifyAndDecodeTransaction(signedPayload);
+                verified = !!decoded;
             } catch (err: any) {
                 // If it's Xcode test environment or sandbox during development, allow fallback decode
                 console.warn('APPLE_IAP: ⚠️ Verification failed, checking payload fallback:', err?.message || err);
@@ -159,11 +164,16 @@ export class AppleIAPService {
 
         const transactionId = String(decoded.originalTransactionId || decoded.transactionId);
         const txnId = `apple_${transactionId}`;
-        const tierInfo = TIER_PRICES[productId] || { minor: 400, label: 'Supporter' };
-        const amountMinor = typeof decoded.price === 'number' && decoded.price > 0
-            ? Math.round(decoded.price * 100)
-            : tierInfo.minor;
-        const currency = decoded.currency || 'GBP';
+        // OUR tier price, as Google Play does, never the payload's. Apple's
+        // `price` is in MILLIUNITS (£4.00 = 4000); reading it as pounds and
+        // multiplying by 100 recorded a £4 tip as 400000 pence. A product we
+        // know is credited at its tier; an unknown one under our prefix falls
+        // back to the payload converted properly (milliunits / 10 = pence).
+        const tierInfo = TIER_PRICES[productId];
+        const amountMinor = tierInfo
+            ? tierInfo.minor
+            : (typeof decoded.price === 'number' && decoded.price > 0 ? Math.round(decoded.price / 10) : 400);
+        const currency = tierInfo ? 'GBP' : (decoded.currency || 'GBP');
         const purchaseDateMs = decoded.purchaseDate ? Number(decoded.purchaseDate) : Date.now();
 
         // 5. Record transaction in Firestore via UserService
@@ -173,6 +183,9 @@ export class AppleIAPService {
             amountMinor,
             currency,
             nowMs: purchaseDateMs,
+            // Sandbox, Xcode and TestFlight money is not real money, and an
+            // unverified payload is not evidence of any.
+            countInTotal: verified && decoded.environment === 'Production',
         });
 
         console.log(`APPLE_IAP: ✅ Successfully recorded transaction ${txnId} for ${uid} (recorded: ${outcome.recorded}, count: ${outcome.count})`);

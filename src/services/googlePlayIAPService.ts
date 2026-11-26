@@ -176,6 +176,9 @@ export class GooglePlayIAPService {
             amountMinor,
             currency: 'GBP',
             nowMs: Number.isFinite(atMs) && atMs > 0 ? atMs : Date.now(),
+            // purchaseType 0 = license tester: never charged, so never in the
+            // public "supporters have given" figure.
+            countInTotal: purchase.purchaseType !== 0,
         });
         if (!outcome.recorded && outcome.reason !== 'duplicate_txn') {
             // No account to credit (deleted mid-purchase). Left unconsumed:
@@ -193,7 +196,7 @@ export class GooglePlayIAPService {
                 // Recorded already, so the user is credited. The app finds the
                 // purchase still unconsumed on its next launch and sends it
                 // again, which lands in the duplicate branch and consumes then.
-                console.warn(`GOOGLE_PLAY: ⚠️ Consume failed for ${orderId}; will retry from the client`, err);
+                console.warn(`GOOGLE_PLAY: ⚠️ Consume failed for ${orderId}; will retry from the client: ${describePlayError(err)}`);
             }
         }
 
@@ -211,4 +214,18 @@ export class GooglePlayIAPService {
             count: outcome.count,
         };
     }
+}
+
+/**
+ * A Google API failure as one log line: HTTP status, Google's reason and
+ * message. Never the error object itself: an axios error carries the request
+ * URL, and Play's URLs end in the purchase token, which is a credential for
+ * that purchase and must not sit in server logs.
+ */
+export function describePlayError(err: any): string {
+    const status = err?.response?.status;
+    const g = err?.response?.data?.error;
+    const reason = g?.errors?.[0]?.reason ?? g?.status;
+    const message = g?.message ?? err?.message ?? String(err);
+    return [status ? `HTTP ${status}` : null, reason, message].filter(Boolean).join(' ').replace(/tokens\/[^\s/?]+/g, 'tokens/***');
 }
