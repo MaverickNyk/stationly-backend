@@ -1,5 +1,6 @@
 import { LocalDbService } from './localDbService';
 import { SupportMoneyConfigService, WEB_CLIENT_REFERENCE } from './supportMoneyConfigService';
+import { SupportMoneyStatsService } from './supportMoneyStatsService';
 import { UserService } from './userService';
 import { EmailService } from './emailService';
 import { isStaging } from '../utils/formatters';
@@ -322,6 +323,13 @@ export class SupportMoneyService {
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
             }, { merge: true });
             console.log(`SUPPORT_MONEY: 💾 Web donation ${donation.txnId} saved to Firestore (email: ${donation.email || 'none'})`);
+            await SupportMoneyStatsService.recordTxn({
+                txnId: donation.txnId,
+                amountMinor: donation.amountMinor,
+                currency: donation.currency,
+                atMs: Date.now(),
+                web: true,
+            });
         } catch (err) {
             // Best effort so database issues never block the webhook response
             console.warn('SUPPORT_MONEY: ⚠️ Failed to save web donation to Firestore:', err);
