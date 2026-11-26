@@ -58,7 +58,7 @@ import { SduiService } from '../services/sduiService';
 import { LineIconService } from '../services/lineIconService';
 import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
-import { sanitizeDisplayName, getGreetingName } from '../utils/formatters';
+import { sanitizeDisplayName, getGreetingName, formatModeLabel } from '../utils/formatters';
 import { buildSpecs, buildPublicSpec } from '../config/openapi';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
@@ -123,6 +123,11 @@ function fakeSocket(): WebSocket & { sent: string[]; closed: boolean } {
 }
 
 // ─── PredictionCache ─────────────────────────────────────────────────────────
+
+test('a mode label: DLR is initials, the rest are words', () => {
+    assert.deepStrictEqual(['dlr', 'tube', 'overground', 'elizabeth-line', 'bus', ''].map(formatModeLabel),
+        ['DLR', 'Tube', 'Overground', 'Elizabeth Line', 'Bus', '']);
+});
 
 test('getFresh misses on an empty cache and counts a restMiss', () => {
     assert.strictEqual(PredictionCache.getFresh('940GZZDLTWG'), undefined);
