@@ -3,6 +3,7 @@ import { UserService } from './userService';
 import { UserDeviceService } from './userDeviceService';
 import { UserWatchIndex } from './userWatchIndex';
 import { SubscriptionService } from './subscriptionService';
+import { AdminMirror } from '../admin/adminMirror';
 
 /**
  * The two nightly maintenance jobs the session design has been asking for
@@ -414,6 +415,7 @@ export class SessionMaintenanceService {
                         // this account's contribution once the tally below
                         // counts it — so a bare flag write is the whole fix.
                         await this.collection.doc(doc.id).update({ loggedIn: true });
+                        AdminMirror.markDirty(doc.id);
                     } else if (!HEAL_TRUE_TO_FALSE) {
                         // Kept as a switch rather than deleted: this is the one
                         // branch that RELEASES an account, so a future migration

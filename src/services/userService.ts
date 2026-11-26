@@ -10,6 +10,7 @@ import { UserDeviceService } from './userDeviceService';
 import { UserWatchIndex } from './userWatchIndex';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
 import { sanitizeDisplayName } from '../utils/formatters';
+import { AdminMirror } from '../admin/adminMirror';
 
 const FieldValue = admin.firestore.FieldValue;
 
@@ -789,6 +790,8 @@ export class UserService {
         let stationIds: string[] = [];
         /** Accounts this login signed OUT of this device, and their held stations. */
         let deactivated: Array<{ uid: string; stationIds: string[] }> = [];
+        /** Whether this login changed anything the admin console shows. */
+        let wroteSession = false;
 
         await db.runTransaction(async (tx) => {
             // ── Reset on every attempt ──
@@ -809,6 +812,7 @@ export class UserService {
             didActivate = false;
             stationIds = [];
             deactivated = [];
+            wroteSession = false;
 
             // ══ ALL READS FIRST ══
             // Firestore forbids a read after a write inside a transaction, and
@@ -874,6 +878,7 @@ export class UserService {
 
             // ══ WRITES ══
             const needUserWrite = !prevLoggedIn || !existing || staleMine.length > 0 || rowStale;
+            wroteSession = needUserWrite || rowStale;
             if (needUserWrite) {
                 tx.update(ref, { loggedIn: true, lastLoggedInTime: ts, updatedAt: ts });
             }
@@ -922,6 +927,7 @@ export class UserService {
         });
 
         // ══ POST-TRANSACTION — best-effort, cron-healed ══
+        if (wroteSession || deactivated.length) AdminMirror.markDirty(uid, ...deactivated.map(v => v.uid));
         // Both board lists, deduplicated: an iOS board and an Android board are
         // equally real subscriptions. See [effectiveStationIds].
         if (didActivate) this.applySubscriptionDelta([], stationIds);
@@ -974,6 +980,7 @@ export class UserService {
      * is both stronger and cheaper to review.
      */
     static async endSession(uid: string, deviceId?: string): Promise<void> {
+        AdminMirror.markDirty(uid);
         const ref = this.collection.doc(uid);
         let didDeactivate = false;
         let stationIds: string[] = [];
@@ -1127,6 +1134,8 @@ export class UserService {
                     // means a new one is swept by a rule that already exists.
                     await this.purgeUserSubtree(doc.ref, doc.id);
                     await doc.ref.delete();
+                    AdminMirror.markDirty(doc.id);
+                    AdminMirror.forgetUser(doc.id);
                 }
             }
         } catch (err) {
@@ -1230,6 +1239,7 @@ export class UserService {
                 boardsUpdatedAt: 0,
             };
             await userRef.set(newUser);
+            AdminMirror.markDirty(uid);
 
             // ── The signup path needs its device row too, and used to go without ──
             //
@@ -1323,6 +1333,7 @@ export class UserService {
                 updateData.updatedAt = timestamp;
                 updateData.stateRev = FieldValue.increment(1);
                 await userRef.update(updateData);
+                AdminMirror.markDirty(uid);
             }
 
             // Ordered after the write so the ledger refresh reads a document
@@ -1520,6 +1531,7 @@ export class UserService {
             // touches iOS still sheds the dead field. Free — same write.
             ...DROP_LEGACY_PREFERENCES,
         });
+        AdminMirror.markDirty(uid);
 
         // Diffed against the UNION, so replacing Android's list never releases
         // a station an iOS board still holds.
@@ -1620,6 +1632,7 @@ export class UserService {
             stateRev: FieldValue.increment(1),
             ...DROP_LEGACY_PREFERENCES,
         });
+        AdminMirror.markDirty(uid);
 
         this.applySubscriptionDelta(before, this.effectiveStationIds({ ...data, boards: clean }));
         // The device that made the edit already has this state — see
@@ -1677,6 +1690,7 @@ export class UserService {
          */
         countInTotal?: boolean;
     }): Promise<RecordSupportMoneyResult> {
+        AdminMirror.markDirty(input.uid);
         const { uid, txnId, amountMinor, currency } = input;
         const now = Number.isFinite(input.nowMs) ? (input.nowMs as number) : Date.now();
         const userRef = this.collection.doc(uid);
@@ -1822,6 +1836,7 @@ export class UserService {
             updatedAt: new Date().toISOString(),
             stateRev: FieldValue.increment(1),
         });
+        AdminMirror.markDirty(uid);
 
         // Diffed against the union so collapsing the LEGACY list to one board
         // cannot release a station an iOS v2 board still holds.
@@ -1848,6 +1863,7 @@ export class UserService {
             updatedAt: new Date().toISOString(),
             stateRev: FieldValue.increment(1),
         });
+        AdminMirror.markDirty(uid);
 
         // Was an unconditional decrement, which was wrong the moment a station
         // could appear twice: removing ONE line at an interchange released the
@@ -1864,6 +1880,8 @@ export class UserService {
     }
 
     static async deleteAccount(uid: string) {
+        AdminMirror.markDirty(uid);
+        AdminMirror.forgetUser(uid);
         const userRef = this.collection.doc(uid);
 
         // Drop the rev watermark. Deliberately NOT a content bump — the document

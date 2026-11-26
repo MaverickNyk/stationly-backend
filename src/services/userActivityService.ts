@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import { db } from '../config/firebase';
+import { AdminMirror } from '../admin/adminMirror';
 
 const FieldValue = admin.firestore.FieldValue;
 
@@ -154,6 +155,10 @@ export class UserActivityService {
                     events: FieldValue.arrayUnion(...events),
                 }, { merge: true })
         ));
+
+        // The admin console's local copy, so its analytics cost no reads.
+        // Not awaited: the upload's response never waits on it, and it never throws.
+        void AdminMirror.recordActivity({ uid, deviceId, platform: input.platform, appVersion: input.appVersion, events: valid });
 
         return { accepted: valid.length, rejected };
     }
