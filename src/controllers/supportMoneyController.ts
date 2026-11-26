@@ -107,7 +107,13 @@ export class SupportMoneyController {
             }
             res.json(result);
         } catch (err: any) {
-            console.error('SUPPORT_MONEY: ❌ verifyPlay route threw', err);
+            // A summary, never the error object: see describePlayError.
+            const { describePlayError } = await import('../services/googlePlayIAPService');
+            // A Google HTTP failure gets the one-line summary; anything else (a
+            // bug, a Firestore failure) keeps its stack, with tokens masked.
+            console.error(err?.response
+                ? `SUPPORT_MONEY: ❌ verifyPlay route threw: ${describePlayError(err)}`
+                : `SUPPORT_MONEY: ❌ verifyPlay route threw: ${String(err?.stack ?? err).replace(/tokens\/[^\s/?]+/g, 'tokens/***')}`);
             res.status(500).json({ ok: false, error: 'Internal server error' });
         }
     }

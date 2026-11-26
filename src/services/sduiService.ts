@@ -1,5 +1,6 @@
 import { getBaseUrl, getWebUrl, isStaging } from '../utils/formatters';
 import { assetUrl } from './assetVersionService';
+import { WhatsNewService } from './whatsNewService';
 import { SupportMoneyConfigService } from './supportMoneyConfigService';
 import { FeatureFlagService } from './featureFlagService';
 import { NotificationPolicyService } from './notificationPolicyService';
@@ -1108,6 +1109,8 @@ export class SduiService {
                 // shape and `show` switch as the widget/dream promos above.
                 // All owned by SupportMoneyConfigService; `SUPPORT_MONEY_*_ENABLED` gates it per platform.
                 ...SupportMoneyConfigService.homeConfigKeys(platform),
+                // The one-time "What's new" screen after the Android v1 update.
+                ...WhatsNewService.homeConfigKeys(),
             }
         };
     }

@@ -76,6 +76,15 @@ jobs:
           # keeps .env.defaults' false; set the repository secret to `true` to
           # offer support in Android 2.0+. Older clients never read it.
           SUPPORT_MONEY_ANDROID_ENABLED: ${{ secrets.SUPPORT_MONEY_ANDROID_ENABLED }}
+          # The running-costs line (pence a month; unset hides it), the ask on
+          # opening the app, and the one-time What's new screen. Unset keeps the
+          # defaults in .env.defaults / the code.
+          SUPPORT_MONEY_MONTHLY_COST_MINOR: ${{ secrets.SUPPORT_MONEY_MONTHLY_COST_MINOR }}
+          SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR: ${{ secrets.SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR }}
+          SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS: ${{ secrets.SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS }}
+          SUPPORT_MONEY_ASK_MIN_DAYS: ${{ secrets.SUPPORT_MONEY_ASK_MIN_DAYS }}
+          SUPPORT_MONEY_ASK_EVERY_DAYS: ${{ secrets.SUPPORT_MONEY_ASK_EVERY_DAYS }}
+          WHATS_NEW_V2_ENABLED: ${{ secrets.WHATS_NEW_V2_ENABLED }}
         run: |
           cp .env.defaults .env.prod
           while IFS='=' read -r key value || [[ -n "$key" ]]; do
