@@ -179,7 +179,13 @@ adminRouter.get('/users/:uid/tokens', AdminUserController.getTokenStats);
 
 // GET /admin/users/:uid — full user detail (profile, sessions/devices,
 // subscribed stations). Cache-first (0 reads); see AdminDataController.
+adminRouter.get('/users/:uid/activity', AdminDataController.userActivity);
 adminRouter.get('/users/:uid', AdminDataController.userDetail);
+adminRouter.get('/analytics/overview', AdminDataController.platformOverview);
+adminRouter.get('/analytics/usage', AdminDataController.usage);
+adminRouter.post('/analytics/import-activity', AdminDataController.importActivity);
+adminRouter.get('/sync-status', AdminDataController.syncStatus);
+adminRouter.get('/support/summary', AdminDataController.supportSummary);
 
 // --- Read-only data views (dashboard, users, waitlist, subscribed) -------
 // All serve from in-memory caches + SQLite. The only ones that can touch
