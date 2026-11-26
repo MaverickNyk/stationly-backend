@@ -1,3 +1,4 @@
+import { SupportMoneyStatsService } from './supportMoneyStatsService';
 import { getBaseUrl } from '../utils/formatters';
 
 /**
@@ -177,6 +178,16 @@ function envInt(name: string, fallback: number): number {
 function envStr(name: string, fallback = ''): string {
     const raw = process.env[name];
     return raw === undefined || raw.trim() === '' ? fallback : raw.trim();
+}
+
+/**
+ * Is the on-open ask switched on for this client? A comma list of platforms in
+ * SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS, `android` when unset, `none` for nobody.
+ */
+function askOnOpen(platform?: string): boolean {
+    const list = envStr('SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS', 'android')
+        .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+    return !!platform && list.includes(platform);
 }
 
 /** The query parameter Stripe echoes back on the webhook as the payer's account. */
@@ -605,6 +616,56 @@ export class SupportMoneyConfigService {
         };
     }
 
+    /**
+     * The "running costs" line: what Stationly costs a month, and what
+     * supporters have given towards it this month.
+     *
+     * Off until the operator sets SUPPORT_MONEY_MONTHLY_COST_MINOR (pence),
+     * because the line is only worth showing with a true figure in it. The
+     * raised figure is gross, before any store's cut, which is why every line,
+     * including the month-met one, says "have given" and never "covered".
+     */
+    static progressKeys(nowMs = Date.now()): Record<string, string> {
+        const cost = envInt('SUPPORT_MONEY_MONTHLY_COST_MINOR', 0);
+        if (cost <= 0) return { 'support_money.progress.show': 'false' };
+        const month = SupportMoneyStatsService.current(nowMs);
+        // Not known yet in this process (just restarted): hide the line rather
+        // than serve a zero the app would cache as the truth.
+        if (!month) return { 'support_money.progress.show': 'false' };
+        // 0 is a valid choice here ("always show the figure"), and the
+        // threshold can never sit above the cost, or the figure could never
+        // show before the month is met.
+        const rawShowFrom = Number(process.env.SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR);
+        const showFrom = Math.min(
+            Number.isFinite(rawShowFrom) && rawShowFrom >= 0 && (process.env.SUPPORT_MONEY_SHOW_RAISED_FROM_MINOR ?? '').trim() !== ''
+                ? Math.floor(rawShowFrom) : 10000,
+            cost,
+        );
+        const monthName = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', month: 'long' })
+            .format(new Date(nowMs));
+        return {
+            'support_money.progress.show': 'true',
+            'support_money.progress.cost_minor': String(cost),
+            'support_money.progress.raised_minor': String(month.raisedMinor),
+            'support_money.progress.count': String(month.count),
+            'support_money.progress.month': monthName,
+            // {cost}, {raised} and {month} are filled in by the client, which
+            // formats the money in the card's currency.
+            'support_money.progress.text':
+                'Stationly costs about {cost} a month to run. Supporters have given {raised} so far in {month}.',
+            // Until this month's real total reaches `show_raised_from_minor`,
+            // the client shows only this sentence: no figure, no bar. A small
+            // or zero total read as "nobody cares" (owner, 2026-11-26), and
+            // the honest fix is to leave the figure out, never to invent one.
+            'support_money.progress.show_raised_from_minor': String(showFrom),
+            'support_money.progress.empty':
+                'Stationly costs about {cost} a month to run. Every bit of support goes straight into that.',
+            // Gross money, so never "covered": store fees come out of it.
+            'support_money.progress.met':
+                'Supporters have given more than {cost} in {month}. Thank you. Anything more goes into building new things.',
+        };
+    }
+
     static homeConfigKeys(platform?: 'ios' | 'android' | 'web' | 'unknown' | string): Record<string, string> {
         const p = platform ? platform.trim().toLowerCase() : undefined;
         const cfg = this.getSupportMoneyConfig(p);
@@ -633,6 +694,21 @@ export class SupportMoneyConfigService {
             // 1/1 to reach the banner at all.
             'home.promo.support_money.min_boards': String(envInt('SUPPORT_MONEY_MIN_BOARDS', 2)),
             'home.promo.support_money.min_days': String(envInt('SUPPORT_MONEY_MIN_DAYS', 3)),
+            // ── The ask on opening the app ─────────────────────────────────
+            // The ask above waits for a NEW board, and a commuter sets up their
+            // one or two stations on day one and never adds another, so for
+            // most people it fires once at most. This one is raised on reaching
+            // the home screen, once someone has used the app on `ask_min_days`
+            // separate days, and at most once every `ask_every_days` days
+            // whatever they answered. Same banner, same "Maybe later".
+            //
+            // Per platform, because the clients that read it are new: Android
+            // 2.0 first. A future iOS build gets it only when its platform is
+            // added to SUPPORT_MONEY_ASK_ON_OPEN_PLATFORMS.
+            'home.promo.support_money.ask_on_open': String(askOnOpen(p)),
+            'home.promo.support_money.ask_min_days': String(envInt('SUPPORT_MONEY_ASK_MIN_DAYS', 7)),
+            'home.promo.support_money.ask_every_days': String(envInt('SUPPORT_MONEY_ASK_EVERY_DAYS', 14)),
+            ...this.progressKeys(),
             'home.promo.support_money.title': 'Keep Stationly free',
             'home.promo.support_money.text':
                 'We work hard to keep it fast, free and completely ad free. ' +
