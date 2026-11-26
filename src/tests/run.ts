@@ -62,6 +62,7 @@ import { RELEASE_FLAGS } from '../services/sessionMaintenanceService';
 import { db, auth } from '../config/firebase';
 import { sanitizeDisplayName, getGreetingName, formatModeLabel } from '../utils/formatters';
 import { buildSpecs, buildPublicSpec } from '../config/openapi';
+import { buildPlatformOverview, aggregateUsage, summariseSupportTxns, paymentPlatform, AdminInsightsService } from '../admin/adminInsightsService';
 
 // ─── tiny runner ─────────────────────────────────────────────────────────────
 
@@ -5144,6 +5145,147 @@ test('flags: the admin API needs the key, refuses bad edits, stores good ones wi
         FEATURE_FLAGS.pop(); server.close(); fb.db.collection = real.collection; fb.db.runTransaction = real.tx; fb.messaging.send = real.send;
         if (real.key === undefined) delete process.env.STATIONLY_ADMIN_KEY; else process.env.STATIONLY_ADMIN_KEY = real.key;
     }
+});
+
+// ─── admin insights ──────────────────────────────────────────────────────────
+
+const insightUser = (uid: string, sessions: any[], extra: any = {}): any => ({
+    uid, email: '', displayName: '', photoURL: '', signInProvider: '', createdAt: Date.UTC(2026, 10, 2),
+    updatedAt: 0, lastLoggedInTime: 0, loggedIn: true, emailVerified: true, stationCount: 0,
+    sessions, stations: [], support: { count: 0, totalMinor: 0, lastAtMs: 0 }, ...extra,
+});
+
+test('platform overview: accounts on Android and iOS count as both, and windows use lastSeen', () => {
+    const now = Date.UTC(2026, 10, 26, 12);
+    const H = 3600_000;
+    const users = [
+        insightUser('a', [{ deviceId: '1', platform: 'android', appVersion: '2.0.0', lastSeen: now - 2 * H }]),
+        insightUser('i', [{ deviceId: '2', platform: 'ios', appVersion: '1.1', lastSeen: new Date(now - 3 * 24 * H).toISOString() }]),
+        insightUser('b', [
+            { deviceId: '3', platform: 'android', appVersion: '1.9', lastSeen: now - 40 * 24 * H },
+            { deviceId: '4', platform: 'ios', appVersion: '1.1', lastSeen: now - H },
+        ], { support: { count: 2, totalMinor: 500, lastAtMs: now - 24 * H } }),
+        insightUser('n', []),
+    ];
+    const o = buildPlatformOverview(users, now);
+    assert.deepStrictEqual(o.segments, { androidOnly: 1, iosOnly: 1, both: 1, webOnly: 0, noDevice: 1 });
+    assert.deepStrictEqual(o.active.d1, { any: 2, android: 1, ios: 1, web: 0, both: 0 });
+    assert.deepStrictEqual(o.active.d7, { any: 3, android: 1, ios: 2, web: 0, both: 0 });
+    assert.strictEqual(o.versions.ios[0].version, '1.1');
+    assert.strictEqual(o.versions.ios[0].active30, 2);
+    assert.deepStrictEqual(o.versions.android.find(v => v.version === '1.9'), { version: '1.9', active30: 0, all: 1 });
+    assert.deepStrictEqual(o.supporters, { ever: 1, active: 1 });
+});
+
+test('usage: both-platform accounts, daily actives, funnels and breakdowns from activity docs', () => {
+    const t = Date.UTC(2026, 10, 25, 9);
+    const docs: any[] = [
+        { uid: 'u1', date: '2026-11-25', platform: 'android', appVersion: '2.0', events: [
+            { name: 'app.opened', t }, { name: 'support.asked', t, props: { trigger: 'on_open' } },
+            { name: 'support.sheet_opened', t, props: { from: 'banner' } },
+            { name: 'support.purchase', t, props: { result: 'cancelled' } },
+        ] },
+        { uid: 'u1', date: '2026-11-26', platform: 'ios', appVersion: '1.1', events: [{ name: 'app.opened', t }] },
+        { uid: 'u2', date: '2026-11-26', platform: 'android', appVersion: '2.0', events: [
+            { name: 'support.asked', t, props: { trigger: 'board_added' } },
+            { name: 'support.purchase', t, props: { result: 'purchased' } },
+        ] },
+        { uid: 'u3', date: '2026-11-10', platform: 'android', events: [{ name: 'app.opened', t }] }, // out of range
+    ];
+    const r = aggregateUsage(docs, 2, '2026-11-25', '2026-11-26', t);
+    assert.deepStrictEqual(r.activeUsers, { any: 2, android: 2, ios: 1, web: 0, both: 1 });
+    assert.deepStrictEqual(r.daily.map(d => [d.date, d.android, d.ios, d.opens]), [['2026-11-25', 1, 0, 1], ['2026-11-26', 1, 1, 1]]);
+    const support = r.funnels.find(f => f.key === 'support')!;
+    assert.deepStrictEqual(support.steps.map(s => s.users.all), [2, 1, 0, 1, 0]);
+    assert.deepStrictEqual(r.events.find(e => e.name === 'support.asked')!.breakdown, { on_open: 1, board_added: 1 });
+    assert.strictEqual(r.versions.android[0].users, 2);
+});
+
+test('support months: GBP only, split by route, empty months kept', () => {
+    const rows = [
+        { month: '2026-11', amountMinor: 300, currency: 'GBP', source: 'google' },
+        { month: '2026-11', amountMinor: 500, currency: 'gbp', source: 'stripe' },
+        { month: '2026-11', amountMinor: 999, currency: 'USD', source: 'apple' },
+        { month: '2026-09', amountMinor: 100, currency: 'GBP', source: 'google' },
+    ];
+    const m = summariseSupportTxns(rows, ['2026-10', '2026-11']);
+    assert.deepStrictEqual(m[0], { month: '2026-10', raisedMinor: 0, count: 0, bySource: {}, byPlatform: {} });
+    assert.deepStrictEqual(m[1].byPlatform.android, { minor: 300, count: 1 });
+    assert.deepStrictEqual(m[1].byPlatform.app, { minor: 500, count: 1 });
+    assert.strictEqual(m[1].raisedMinor, 800);
+    assert.deepStrictEqual(m[1].bySource.google, { minor: 300, count: 1 });
+});
+
+test('admin: old Apple amounts stored 1000x too big are shown corrected, nothing else changes', async () => {
+    const { correctedAmount } = await import('../admin/adminDataService');
+    assert.strictEqual(correctedAmount('apple_1', 1_200_000), 1200);
+    assert.strictEqual(correctedAmount('apple_1', 2_499_000), 2499);
+    assert.strictEqual(correctedAmount('apple_1', 1200), 1200);
+    assert.strictEqual(correctedAmount('google_1', 1_200_000), 1_200_000);
+});
+
+test('support platform: stores say it, website says it, an app Stripe payment is read off the account', () => {
+    assert.strictEqual(paymentPlatform('google'), 'android');
+    assert.strictEqual(paymentPlatform('apple', ['android']), 'ios');
+    assert.strictEqual(paymentPlatform('web'), 'web');
+    assert.strictEqual(paymentPlatform('stripe', ['android']), 'android');
+    assert.strictEqual(paymentPlatform('stripe', ['ios']), 'ios');
+    assert.strictEqual(paymentPlatform('stripe', ['android', 'ios']), 'app');
+    assert.strictEqual(paymentPlatform('stripe', undefined), 'app');
+    const m = summariseSupportTxns([{ month: '2026-11', amountMinor: 400, currency: 'GBP', source: 'stripe', txnId: 'cs_1' }], ['2026-11'],
+        (t) => (t === 'cs_1' ? ['ios'] : undefined));
+    assert.deepStrictEqual(m[0].byPlatform, { ios: { minor: 400, count: 1 } });
+});
+
+test('user activity: from the local copy, newest first, platform from the row', async () => {
+    const real = AdminInsightsService.mirrorReader;
+    let asked: any[] = [];
+    AdminInsightsService.mirrorReader = async (from, to, uid) => {
+        asked = [from, to, uid];
+        return [
+            { uid: 'x', date: '2026-11-26', deviceId: 'd', platform: 'ios', appVersion: '1.1', name: 'a', t: 1, props: '{}' },
+            { uid: 'x', date: '2026-11-26', deviceId: 'd', platform: 'ios', appVersion: '1.1', name: 'b', t: 3, props: '{"k":"v"}' },
+            { uid: 'x', date: '2026-11-26', deviceId: 'd', platform: 'ios', appVersion: '1.1', name: 'c', t: 2, props: 'not json' },
+        ];
+    };
+    try {
+        const r = await AdminInsightsService.userActivity('x', 7, Date.UTC(2026, 10, 26, 12));
+        assert.deepStrictEqual(asked, ['2026-11-20', '2026-11-27', 'x']);
+        assert.deepStrictEqual(r.events.map(e => e.name), ['b', 'c', 'a']);
+        assert.deepStrictEqual(r.events[0].props, { k: 'v' });
+        assert.strictEqual(r.events[0].platform, 'ios');
+    } finally { AdminInsightsService.mirrorReader = real; }
+});
+
+test('admin mirror: change marks survive a sync that started before them, and activity is copied once', async () => {
+    if (!LocalDbService.isOpen()) await LocalDbService.initialize();
+    const { AdminMirror } = await import('../admin/adminMirror');
+    const { MARK_GRACE_MS } = await import('../admin/adminMirror');
+    AdminMirror.markDirty('mirror-test-a', 'mirror-test-b', '', null);
+    await new Promise(r => setTimeout(r, 50));
+    // Not due yet: a write that marked them may still be in flight.
+    assert.deepStrictEqual((await AdminMirror.dirtyUids(Date.now())).filter(u => u.startsWith('mirror-test-')), []);
+    const upTo = Date.now() + MARK_GRACE_MS;
+    const uids = (await AdminMirror.dirtyUids(upTo)).filter(u => u.startsWith('mirror-test-'));
+    assert.deepStrictEqual(uids.sort(), ['mirror-test-a', 'mirror-test-b']);
+    await new Promise(r => setTimeout(r, 5));
+    AdminMirror.markDirty('mirror-test-a'); // changed again during the sync
+    await new Promise(r => setTimeout(r, 50));
+    await AdminMirror.clearDirty(uids, upTo);
+    const later = Date.now() + 2 * MARK_GRACE_MS;
+    const left = (await AdminMirror.dirtyUids(later)).filter(u => u.startsWith('mirror-test-'));
+    assert.deepStrictEqual(left, ['mirror-test-a']);
+    await AdminMirror.clearDirty(left, later);
+
+    const ev = { id: 'e1', name: 'app.opened', t: Date.UTC(2026, 10, 26, 9), props: { cold: 'true' } };
+    await AdminMirror.recordActivity({ uid: 'mirror-test-a', deviceId: 'd1', platform: 'android', appVersion: '2.0', events: [ev] });
+    await AdminMirror.recordActivity({ uid: 'mirror-test-a', deviceId: 'd1', platform: 'android', appVersion: '2.0', events: [ev] });
+    const rows = await AdminMirror.activityRows('2026-11-26', '2026-11-26', 'mirror-test-a');
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].platform, 'android');
+    AdminMirror.forgetUser('mirror-test-a');
+    await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual((await AdminMirror.activityRows('2026-11-26', '2026-11-26', 'mirror-test-a')).length, 0);
 });
 
 main();

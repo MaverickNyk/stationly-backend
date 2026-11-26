@@ -44,12 +44,32 @@ its own repo and drives these endpoints purely over HTTP (no code coupling).
 `GET /users` · `GET /users/:uid` · `GET /users/:uid/tokens` ·
 `GET /waitlist` · `GET /subscribed-stations` · `GET /stats` ·
 `GET|PUT /flags` (docs/FEATURE_FLAGS.md) ·
-`GET /station-status` · `GET /station-status/report` (docs/STATION_STATUS.md).
+`GET /station-status` · `GET /station-status/report` (docs/STATION_STATUS.md) ·
+`GET /analytics/overview` · `GET /analytics/usage` · `POST /analytics/import-activity` ·
+`GET /users/:uid/activity` · `GET /support/summary` · `GET /sync-status`
+(adminInsightsService.ts, adminMirror.ts).
+
+### Keeping the admin copies fresh without re-reading (adminMirror.ts)
+- Every write to an account marks the uid in SQLite `admin_dirty_users`, next to
+  the write itself in userService (create/update, boards, stations, sessions
+  only when they wrote, support, delete, orphan purge), UserDeviceService
+  upsert/clearTokens, and the session heal. Marks are due 60s later
+  (`MARK_GRACE_MS`) so a sync never reads an account mid-write. A deleted
+  account's local activity is dropped (`AdminMirror.forgetUser`).
+  A NEW write path to `users/*` must call `AdminMirror.markDirty(uid)` too, or
+  the console shows that account stale until the next full resync.
+- Hourly on the leader worker (and on the console's "Sync changes"): read only
+  the marked accounts (1 doc + devices each). `/users?full=1` is the full read.
+- Every stored activity upload is copied into SQLite `activity_mirror` (120
+  days). Analytics and the user timeline read only that: 0 Firestore reads.
+  `POST /analytics/import-activity` fills history once (one collection-group read).
 
 ### Firestore read/write budget (keep it minimal)
 Everything here serves from the in-memory cache + SQLite slave. The ONLY
-Firestore reads are: `/users` & `/waitlist` with `?refresh=1` (one collection
-read, then re-cached), a one-time first load, and a rare single-doc fallback in
+Firestore reads are: `/users?refresh=1` and the hourly sync (changed accounts
+only), `/users?full=1` and `/waitlist?refresh=1` (one collection read each),
+`/support/summary` (that period's support_money_txns rows), the one-time
+activity import, a one-time first load, and a rare single-doc fallback in
 `/users/:uid`. The only Firestore writes are
 live settings (`PUT /flags`, `PUT /notifications/policy`) — the send-history audit log
 and the users/waitlist slaves are written to SQLite (`LocalDbService`).

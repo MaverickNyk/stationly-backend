@@ -3,6 +3,7 @@ import { db } from '../config/firebase';
 
 const FieldValue = admin.firestore.FieldValue;
 import { toEpochMs } from '../utils/timestamps';
+import { AdminMirror } from '../admin/adminMirror';
 
 /**
  * `users/{uid}/devices/{deviceId}` — the merged device-and-session row.
@@ -202,6 +203,7 @@ export class UserDeviceService {
      * row login created without either path needing to know about the other.
      */
     static async upsert(uid: string, row: Partial<UserDeviceRow> & { deviceId: string }): Promise<void> {
+        AdminMirror.markDirty(uid);
         // Strip undefined HERE rather than at each call site. Firestore rejects
         // a write containing `undefined` anywhere in the object graph, and every
         // caller assembles this row from optional request fields — so leaving it
@@ -230,6 +232,7 @@ export class UserDeviceService {
      * sign the user out of a device they are still using.
      */
     static async clearTokens(uid: string, deviceId: string): Promise<void> {
+        AdminMirror.markDirty(uid);
         // ⚠️ `update`, NOT `set(merge)`.
         //
         // `set` with merge CREATES the document when it is absent, and a
