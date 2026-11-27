@@ -33,6 +33,8 @@ import { PredictionCache } from './services/predictionCache';
 // coupling; see web-temp/CAFE_KIOSK_DISPLAY.md.
 import { mountTemporaryWebApp, attachTemporaryKioskStream } from './tempWebHost';
 import { AdminDataService } from './admin/adminDataService';
+import { emailPublicRouter } from './admin/email/emailPublicRoutes';
+import { AdminAuthMiddleware } from './admin/adminAuthMiddleware';
 // ── end TEMP WEB HOST ──────────────────────────────────────────────────────
 
 dotenv.config();
@@ -48,6 +50,16 @@ app.use(cors());
 app.use(helmet({
     contentSecurityPolicy: false, // Scalar needs this for its assets
 }));
+
+// Public images (logo, store badges, mode icons, email uploads) are embedded
+// in EMAILS and in the admin console's preview, i.e. on other sites. Helmet's
+// default `Cross-Origin-Resource-Policy: same-origin` makes browsers refuse to
+// show them there (broken logo in webmail that loads images directly, and in
+// the console preview). Allow cross-origin use for these read-only routes only.
+app.use(['/assets', '/icons', '/api/v1/email-assets'], (_req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+});
 app.use(morgan('dev'));
 
 // The Syncer's ingest batches up to STATIONS_PER_TICK (250) stations into ONE
@@ -82,6 +94,13 @@ app.post(
     express.raw({ type: '*/*', limit: '1mb' }),
     StripeWebhookController.handle,
 );
+
+// Admin email studio: image uploads arrive as base64 JSON. The console
+// shrinks them to ≤~700 KB first (nginx allows ~1 MB per request), so 2 MB
+// is headroom. Its own parser, mounted before the global one for the same
+// reason as `/internal` above (the first parser to match wins). The admin key
+// is checked FIRST, so nobody without it can make the server parse a big body.
+app.use('/api/v1/admin/email', AdminAuthMiddleware.validate, express.json({ limit: '2mb' }));
 
 app.use(express.json());
 
@@ -594,6 +613,11 @@ app.get('/api/v1/support-money/web', RateLimitMiddleware.sdui, SupportMoneyContr
 // swagger spec scanner (which globs `./controllers/*`) doesn't pick
 // them up — `/docs` and `/openapi.json` stay clean.
 app.use('/api/v1/admin', adminRoutes);
+
+// Public email endpoints (images inside emails, the unsubscribe link). Opened
+// from inboxes, so no API key: mounted before `/api/v1` like the Stripe
+// webhook. Only `/api/v1/email-assets/*` and `/api/v1/email/unsubscribe`.
+app.use('/api/v1', emailPublicRouter);
 
 // Syncer → backend ingest for the live stream. Mounted BEFORE `/api/v1` so it
 // bypasses the client API-key check and rate limiters (it's machine traffic

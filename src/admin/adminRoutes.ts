@@ -8,6 +8,7 @@ import { AdminUserController } from './adminUserController';
 import { AdminDataController } from './adminDataController';
 import { AdminEmailController } from './adminEmailController';
 import { DevicePushController } from '../controllers/devicePushController';
+import { adminEmailRouter } from './email/emailController';
 
 /**
  * Admin-only routes — guarded by [AdminAuthMiddleware] which checks
@@ -194,5 +195,9 @@ adminRouter.get('/stats', AdminDataController.stats);
 adminRouter.get('/users', AdminDataController.users);
 adminRouter.get('/waitlist', AdminDataController.waitlist);
 adminRouter.get('/subscribed-stations', AdminDataController.subscribedStations);
+
+// --- Email studio (drafts, preview, audience, tests, sends, images) -------
+// See ./email/emailCampaigns.ts for how a send picks Resend batch vs broadcast.
+adminRouter.use('/email', adminEmailRouter);
 
 export default adminRouter;
