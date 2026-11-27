@@ -9,6 +9,7 @@ import { supportThankYouEmailHtml } from '../templates/supportThankYouEmailTempl
 import { isStaging, getGreetingName } from '../utils/formatters';
 import { db } from '../config/firebase';
 import * as admin from 'firebase-admin';
+import { EmailUsage } from '../admin/email/emailStores';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = 'Stationly <info@stationly.co.uk>';
@@ -20,6 +21,9 @@ export class EmailService {
      * Does not await the database write so email flow is unaffected.
      */
     private static logEmailToFirestore(emailType: string, recipient: string, subject: string, status: 'success' | 'error', errorMsg?: string, bcc?: string[]) {
+        // Count against Resend's transactional quota (each recipient is one email).
+        // Best effort: it must never get in the way of the log below.
+        try { if (status === 'success') EmailUsage.record(1 + (bcc?.length || 0)); } catch { /* counter only */ }
         db.collection('emailLogs').add({
             emailType,
             recipient,

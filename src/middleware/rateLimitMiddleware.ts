@@ -180,4 +180,30 @@ export class RateLimitMiddleware {
         standardHeaders: true,
         legacyHeaders: false,
     });
+
+    /**
+     * Images inside emails. Very generous: image proxies (Gmail, Apple Mail
+     * Privacy Protection) fetch for many recipients from few IPs, and the
+     * files are immutable, so Cloudflare absorbs most repeats anyway.
+     */
+    static emailAssets = rateLimit({
+        windowMs: 5 * 60 * 1000,
+        max: 3000,
+        keyGenerator: keyByUidOrIp,
+        validate,
+        message: { error: "Too Many Requests", message: "Too many image requests." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    /** The unsubscribe link in emails (signed, so this only stops hammering). */
+    static emailUnsubscribe = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 40,
+        keyGenerator: keyByUidOrIp,
+        validate,
+        message: { error: "Too Many Requests", message: "Too many requests. Please try again later." },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
 }

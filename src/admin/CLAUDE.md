@@ -32,6 +32,9 @@ src/admin/
 ├── adminDataService.ts      users/waitlist master→slave→cache
 │                            (Firestore master, SQLite slave, in-mem
 │                            cache); detail incl. sessions + stations.
+├── email/                   Email studio: drafts, audience, preview, test,
+│                            send (Resend batch or broadcast), images,
+│                            unsubscribe. See email/README.md.
 └── CLAUDE.md                  This file.
 ```
 
@@ -48,6 +51,10 @@ its own repo and drives these endpoints purely over HTTP (no code coupling).
 `GET /analytics/overview` · `GET /analytics/usage` · `POST /analytics/import-activity` ·
 `GET /users/:uid/activity` · `GET /support/summary` · `GET /sync-status`
 (adminInsightsService.ts, adminMirror.ts).
+`/email/*` (email/README.md): `GET /meta`, campaigns CRUD, `POST /render`,
+`POST /audience`, `POST /test`, `POST /campaigns/:id/send`, assets, opt-outs.
+Public (mounted in server.ts before `/api/v1`, no key): `GET /api/v1/email-assets/*`,
+`GET|POST /api/v1/email/unsubscribe`.
 
 ### Keeping the admin copies fresh without re-reading (adminMirror.ts)
 - Every write to an account marks the uid in SQLite `admin_dirty_users`, next to
