@@ -53,6 +53,8 @@ const RED = '#DD2C33';
  */
 const ASSET_V = 'v=2';
 const asset = (base: string, p: string) => `${base}${p}${p.includes('?') ? '&' : '?'}${ASSET_V}`;
+/** "https://www.stationly.co.uk/" → "stationly.co.uk" for display. */
+const displayUrl = (u: string) => u.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '');
 const INK = '#111111';
 const BODY = '#444444';
 const MUTED = '#888888';
@@ -85,6 +87,16 @@ function mergeTokens(s: string, ctx: RenderContext, html: boolean): string {
         return html ? esc(v) : v;
     });
 }
+
+/**
+ * Longest heading half kept unbroken in one-line mode. On a 320px phone the
+ * column is 276px (22px padding each side); bold text runs about 0.58em per
+ * character, so a 20px "md" heading fits ~23 characters and the 26px phone size
+ * of "lg"/"xl" (.hero-title) fits ~18. A longer half may wrap, so it can never
+ * push the email wider than the screen.
+ */
+export const HEADING_KEEP_MAX = { md: 22, hero: 16 } as const;
+export const headingKeepMax = (size?: 'xl' | 'lg' | 'md') => (size === 'md' ? HEADING_KEEP_MAX.md : HEADING_KEEP_MAX.hero);
 
 // ── inline formatting ────────────────────────────────────────────────────
 
@@ -142,8 +154,16 @@ function blockHtml(b: EmailBlock, ctx: RenderContext, refStart: { n: number }): 
             const eyebrow = b.eyebrow
                 ? `<p style="color:${RED};font-family:${FONT};font-size:11px;font-weight:700;letter-spacing:2.5px;margin:0 0 12px 0;text-transform:uppercase;">${inline(b.eyebrow, ctx)}</p>`
                 : '';
-            const accent = b.accent ? `<br><span style="color:${RED};">${inline(b.accent, ctx)}</span>` : '';
-            return row(`${eyebrow}<h1 class="${b.size === 'md' ? '' : 'hero-title'}" style="color:${INK};font-family:${FONT};font-size:${size}px;font-weight:800;letter-spacing:${size > 24 ? '-1px' : '-0.3px'};line-height:1.2;margin:0;">${inline(b.text, ctx)}${accent}</h1>`, '8px 40px 18px 40px', align);
+            // One line: the red part follows on the same line. Each half is kept
+            // whole (nowrap) so a narrow phone can only break BETWEEN them, never
+            // mid-phrase. A half too long to fit a phone is left free to wrap.
+            const oneLine = !!b.oneLine && !!b.accent;
+            const keepMax = headingKeepMax(b.size);
+            const keep = (s: string, html: string) => (oneLine && s.trim().length <= keepMax ? `<span style="white-space:nowrap;">${html}</span>` : html);
+            const accent = b.accent
+                ? `${oneLine ? ' ' : '<br>'}<span style="color:${RED};">${keep(b.accent, inline(b.accent, ctx))}</span>`
+                : '';
+            return row(`${eyebrow}<h1 class="${b.size === 'md' ? '' : 'hero-title'}" style="color:${INK};font-family:${FONT};font-size:${size}px;font-weight:800;letter-spacing:${size > 24 ? '-1px' : '-0.3px'};line-height:1.2;margin:0;">${keep(b.text, inline(b.text, ctx))}${accent}</h1>`, '8px 40px 18px 40px', align);
         }
         case 'text': {
             const size = b.size === 'sm' ? 13 : 15;
@@ -217,7 +237,23 @@ function blockHtml(b: EmailBlock, ctx: RenderContext, refStart: { n: number }): 
         case 'signoff': {
             const lead = b.text ? `<p style="color:${BODY};font-family:${FONT};font-size:15px;line-height:1.7;margin:0 0 10px 0;">${inline(b.text, ctx)}</p>` : '';
             const role = b.role ? `<br><span style="color:${MUTED};font-weight:400;font-size:13px;">${inline(b.role, ctx)}</span>` : '';
-            return row(`${lead}<p style="color:${INK};font-family:${FONT};font-size:15px;font-weight:700;line-height:1.5;margin:0;">${inline(b.name, ctx)}${role}</p>`, '4px 40px 26px 40px');
+            if (!b.logo && !b.url) {
+                return row(`${lead}<p style="color:${INK};font-family:${FONT};font-size:15px;font-weight:700;line-height:1.5;margin:0;">${inline(b.name, ctx)}${role}</p>`, '4px 40px 26px 40px');
+            }
+            // Card signature: logo, a thin red rule, then name / role / website.
+            const logo = b.logo
+                ? `<td valign="middle" width="48" style="width:48px;padding:0 14px 0 0;"><img src="${esc(asset(ctx.baseUrl, '/assets/stationly_logo_final.png'))}" alt="Stationly" width="48" height="48" style="display:block;border:0;width:48px;height:48px;border-radius:12px;"></td>`
+                  + `<td valign="middle" width="3" bgcolor="${RED}" style="width:3px;background:${RED};font-size:0;line-height:0;border-radius:2px;">&nbsp;</td>`
+                : '';
+            const siteUrl = b.url ? mergeTokens(b.url.trim(), ctx, false) : '';
+            const site = siteUrl && isSafeUrl(siteUrl) ? `<a href="${attrUrl(siteUrl, ctx)}" target="_blank" style="color:${RED};font-family:${FONT};font-size:13px;font-weight:600;text-decoration:none;">${esc(displayUrl(siteUrl))}</a>` : '';
+            const lines = [
+                `<div style="color:${INK};font-family:${FONT};font-size:16px;font-weight:800;line-height:1.35;letter-spacing:-0.2px;">${inline(b.name, ctx)}</div>`,
+                b.role ? `<div style="color:${MUTED};font-family:${FONT};font-size:13px;line-height:1.5;">${inline(b.role, ctx)}</div>` : '',
+                site ? `<div style="font-family:${FONT};font-size:13px;line-height:1.5;padding-top:4px;">${site}</div>` : '',
+            ].join('');
+            const card = `<table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>${logo}<td valign="middle" style="padding:2px 0 2px ${b.logo ? 14 : 0}px;">${lines}</td></tr></table>`;
+            return row(`${lead}${card}`, '4px 40px 26px 40px');
         }
         case 'divider':
             return `<tr><td style="padding:6px 40px 24px 40px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td height="1" bgcolor="#EEEEEE" style="height:1px;font-size:0;line-height:0;">&nbsp;</td></tr></table></td></tr>`;
@@ -241,7 +277,7 @@ function blockText(b: EmailBlock, ctx: RenderContext, refStart: { n: number }): 
         case 'callout': return [b.title ? plain(b.title, ctx) : '', plain(b.text, ctx)].filter(Boolean).join('\n');
         case 'list': return (b.items || []).filter((x) => x?.trim()).map((it, i) => `${b.ordered ? `${i + 1}.` : '-'} ${plain(it, ctx)}`).join('\n');
         case 'references': return [(b.title || 'References').toUpperCase(), ...(b.items || []).map((r) => `[${refStart.n++}] ${plain(r.text, ctx)}${r.url ? ` ${r.url}` : ''}`)].join('\n');
-        case 'signoff': return [b.text ? plain(b.text, ctx) : '', plain(b.name, ctx) + (b.role ? `\n${plain(b.role, ctx)}` : '')].filter(Boolean).join('\n\n');
+        case 'signoff': return [b.text ? plain(b.text, ctx) : '', plain(b.name, ctx) + (b.role ? `\n${plain(b.role, ctx)}` : '') + (b.url && isSafeUrl(mergeTokens(b.url.trim(), ctx, false)) ? `\n${mergeTokens(b.url.trim(), ctx, false)}` : '')].filter(Boolean).join('\n\n');
         case 'divider': return '---';
         case 'spacer': return '';
     }
@@ -275,7 +311,7 @@ export function renderEmail(doc: EmailDoc, ctx: RenderContext): Rendered {
 
     const reason = withUnsubscribe
         ? `You're receiving this because you have a Stationly account. <a href="${unsubscribe === '{{{RESEND_UNSUBSCRIBE_URL}}}' ? unsubscribe : esc(unsubscribe)}" target="_blank" style="color:#999999;text-decoration:underline;">Unsubscribe</a> from Stationly news.`
-        : `You're receiving this service update because you use Stationly.`;
+        : ''; // Service mail carries no "why you got this" line (owner's call).
 
     const bar = (g: string) => doc.header?.accentBars === false ? '' : `<tr><td height="4" style="height:4px;background-color:${RED};background:${g};font-size:0;line-height:0;">&nbsp;</td></tr>`;
     const logo = doc.header?.logo === false ? '' :
@@ -322,7 +358,7 @@ ${logo}${topPad}
 ${body}
 <tr><td height="12" style="height:12px;font-size:0;line-height:0;">&nbsp;</td></tr>
 <tr><td align="center" bgcolor="#FAFAFA" style="padding:20px 36px 26px 36px;background-color:#FAFAFA;border-top:1px solid #EEEEEE;">
-<p style="color:#999999;font-family:${FONT};font-size:12px;line-height:1.7;margin:0 0 8px 0;">${reason}</p>
+${reason ? `<p style="color:#999999;font-family:${FONT};font-size:12px;line-height:1.7;margin:0 0 8px 0;">${reason}</p>` : ''}
 <p style="color:#AAAAAA;font-family:${FONT};font-size:12px;line-height:1.7;margin:0;">&copy; ${new Date().getUTCFullYear()} Stationly Ltd &nbsp;&middot;&nbsp; London, UK<br><a href="${esc(ctx.webUrl)}/privacy" target="_blank" style="color:#BBBBBB;text-decoration:none;">Privacy Policy</a> &nbsp;&middot;&nbsp; <a href="${esc(ctx.webUrl)}/terms" target="_blank" style="color:#BBBBBB;text-decoration:none;">Terms</a></p>
 </td></tr>
 ${bar('linear-gradient(90deg,#B91C22,#DD2C33 50%,#B91C22)')}
@@ -335,8 +371,8 @@ ${bar('linear-gradient(90deg,#B91C22,#DD2C33 50%,#B91C22)')}
 
     const footerText = withUnsubscribe
         ? `You're receiving this because you have a Stationly account. Unsubscribe: ${unsubscribe}`
-        : `You're receiving this service update because you use Stationly.`;
-    const text = `${textBody}\n\n--\n${footerText}\nStationly Ltd, London, UK\n${ctx.webUrl}/privacy`;
+        : '';
+    const text = `${textBody}\n\n--\n${footerText ? `${footerText}\n` : ''}Stationly Ltd, London, UK\n${ctx.webUrl}/privacy`;
 
     return { subject, preheader, from: fromHeader(doc), html, text };
 }
