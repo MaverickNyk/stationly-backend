@@ -14,7 +14,7 @@ export type EmailCategory = 'service' | 'marketing';
 export type Align = 'left' | 'center';
 
 export type EmailBlock =
-    | { id: string; type: 'heading'; text: string; eyebrow?: string; size?: 'xl' | 'lg' | 'md'; align?: Align; accent?: string }
+    | { id: string; type: 'heading'; text: string; eyebrow?: string; size?: 'xl' | 'lg' | 'md'; align?: Align; accent?: string; oneLine?: boolean }
     | { id: string; type: 'text'; text: string; size?: 'md' | 'sm'; tone?: 'default' | 'muted'; align?: Align }
     | { id: string; type: 'image'; url: string; alt: string; href?: string; width?: number; rounded?: boolean; caption?: string; align?: Align }
     | { id: string; type: 'button'; label: string; url: string; variant?: 'primary' | 'dark' | 'outline'; align?: Align }
@@ -24,7 +24,7 @@ export type EmailBlock =
     | { id: string; type: 'callout'; text: string; title?: string; tone?: 'info' | 'warning' | 'success' | 'note' }
     | { id: string; type: 'list'; items: string[]; ordered?: boolean }
     | { id: string; type: 'references'; title?: string; items: Array<{ text: string; url?: string }> }
-    | { id: string; type: 'signoff'; name: string; role?: string; text?: string }
+    | { id: string; type: 'signoff'; name: string; role?: string; text?: string; logo?: boolean; url?: string }
     | { id: string; type: 'divider' }
     | { id: string; type: 'spacer'; size?: number };
 
@@ -137,7 +137,10 @@ export function validateDoc(doc: EmailDoc, opts?: { mode?: 'direct' | 'broadcast
                 if (!b.items?.length) problems.push(`${at}: add at least one reference.`);
                 for (const r of b.items || []) if (r.url && !isSafeUrl(r.url)) problems.push(`${at}: reference links must start with https://.`);
                 break;
-            case 'signoff': if (!b.name?.trim()) problems.push(`${at}: add a name.`); break;
+            case 'signoff':
+                if (!b.name?.trim()) problems.push(`${at}: add a name.`);
+                if (b.url && !isSafeUrl(b.url)) problems.push(`${at}: the website link must start with https://.`);
+                break;
         }
     }
 
@@ -151,4 +154,15 @@ export function validateDoc(doc: EmailDoc, opts?: { mode?: 'direct' | 'broadcast
         if (/\{\{/.test(`${doc.subject || ''} ${doc.preheader || ''}`)) problems.push('In a broadcast, keep personal fields like {{first_name}} out of the subject and preview text.');
     }
     return problems;
+}
+
+/** Resend rejects a broadcast name over 70 characters. Keep the campaign id (it
+ *  ties the Resend broadcast back to the campaign) and shorten the name instead. */
+export const BROADCAST_NAME_MAX = 70;
+export function broadcastName(name: string, id: string): string {
+    const suffix = ` (${id})`;
+    const room = Math.max(0, BROADCAST_NAME_MAX - suffix.length);
+    const base = (name || '').trim() || 'Untitled email';
+    const short = base.length > room ? `${base.slice(0, Math.max(0, room - 1)).trimEnd()}…` : base;
+    return `${short}${suffix}`.slice(0, BROADCAST_NAME_MAX);
 }
