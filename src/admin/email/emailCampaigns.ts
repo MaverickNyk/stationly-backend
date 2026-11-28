@@ -22,7 +22,7 @@ import * as admin from 'firebase-admin';
 import { db } from '../../config/firebase';
 import { getBaseUrl, getWebUrl, isStaging } from '../../utils/formatters';
 import { AdminDataService } from '../adminDataService';
-import { EmailDoc, emptyDoc, validateDoc } from './emailDoc';
+import { EmailDoc, emptyDoc, validateDoc, broadcastName } from './emailDoc';
 import { renderEmail, RenderRecipient, fromHeader, firstNameOf } from './emailRender';
 import { AudienceFilter, AudienceResult, Recipient, resolveAudience, parseEmailList, EMAIL_RE } from './emailAudience';
 import { EMAIL_LIMITS, EmailOptOuts, EmailUsage, UsageSnapshot, unsubscribeUrl } from './emailStores';
@@ -374,7 +374,7 @@ async function runBroadcast(c: Campaign, recipients: Recipient[]): Promise<void>
     await progress(c.id, 'Creating the broadcast', recipients.length, recipients.length);
     const out = renderEmail(c.doc, { mode: 'broadcast', baseUrl: getBaseUrl(), webUrl: getWebUrl(), subjectPrefix: isStaging() ? '[Staging] ' : '' });
     const broadcastId = await R.createAndSendBroadcast({
-        segmentId: seg.id, name: `${c.name} (${c.id})`.slice(0, 200), from: fromHeader(c.doc),
+        segmentId: seg.id, name: broadcastName(c.name, c.id), from: fromHeader(c.doc),
         subject: out.subject, html: out.html, text: out.text, previewText: out.preheader || undefined, replyTo: c.doc.replyTo,
     });
     await STATE().set({ lastBroadcastId: broadcastId, lastBroadcastAt: now() }, { merge: true });
